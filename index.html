@@ -9432,12 +9432,13 @@ function applyHackingTreatment(intensity, rect, prng) {
         else if (r2 < 0.6) disrupted += prng.nextInt(0, 15).toString(16).toUpperCase();
         else disrupted += prng.pick(['X', '#', '@', '!', '?', '*', '%', '&']);
       }
-      // Randomly rotate some disrupted text for extra chaos
-      if (prng.nextFloat() < 0.3 * intensity) {
-        let angle = prng.pick([90, -90, 45, -45, 180]);
+      // CRITICAL: always consume same PRNG regardless of rotation decision
+      let rotateRoll = prng.nextFloat();
+      let angle = prng.pick([90, -90, 45, -45, 180]); // always consume
+      if (rotateRoll < 0.3 * intensity) {
         drawFallbackTextRotated(disrupted, dx, dy, fontSize, angle);
       } else {
-        _drawBuiltinText(disrupted, dx, dy, fontSize); // use builtin to avoid font selection
+        drawFallbackText(disrupted, dx, dy, fontSize);
       }
     }
   }
