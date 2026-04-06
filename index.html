@@ -1849,18 +1849,33 @@ function applyPresence(prof, fi, fc, t) {
     case 'dropout':
       visible = animDropout(fi, Math.round(prof.phase * 0xFFFF), prof.dropoutProb);
       break;
-    case 'scaleIn':
+    case 'scaleIn': {
       scale = animScalePresence(t, 'in', 0.1, prof.easing);
+      // Mirror-exit: 75% chance to also scale out at loop end (randomized by phase)
+      let mirrorOut = _profileHash(Math.round(prof.phase * 0xFFFF), 80) < 0.75;
+      if (mirrorOut) {
+        let outDur = 0.08 + _profileHash(Math.round(prof.phase * 0xFFFF), 81) * 0.08;
+        let outScale = animScalePresence(t, 'out', outDur, prof.easing);
+        scale = Math.min(scale, outScale);
+      }
       break;
+    }
     case 'scaleOut':
       scale = animScalePresence(t, 'out', 0.12, prof.easing);
       break;
     case 'scaleInOut':
       scale = animScalePresence(t, 'inOut', 0.1, prof.easing);
       break;
-    case 'pop':
+    case 'pop': {
       scale = animScalePresence(t, 'pop', 0.25, ease.outElastic);
+      // Mirror-exit for pop: 70% chance to scale out at end
+      let popMirror = _profileHash(Math.round(prof.phase * 0xFFFF), 82) < 0.70;
+      if (popMirror) {
+        let outScale = animScalePresence(t, 'out', 0.1, ease.inCubic);
+        scale = Math.min(scale, outScale);
+      }
       break;
+    }
   }
   // Apply loop target window
   if (prof.loopTarget) {
@@ -1979,8 +1994,17 @@ function buildCellAnim(cellIndex, cells) {
     phaseOffset: cascadeT * spread,
     cascadeActive: _compBus.cascadeProgress > cascadeT * 0.7,
     localPulse: anim.oscillate(fi, fc, fc, spd, 1.0, cascadeT * 0.5),
-    // Assembly resolves quickly — within first 12% of loop with fast cascade spread
-    assemblyT: Math.max(0, Math.min(1, (_compBus.cascadeProgress - cascadeT * 0.08) / 0.12))
+    // Assembly: fast scale-in at loop start, hold, scale-out at loop end
+    // Uses normalized loop position t (NOT wrapping cascadeProgress)
+    assemblyT: (function() {
+      let t = fi / fc; // raw loop position 0-1, does NOT wrap
+      let cellDelay = cascadeT * 0.06; // cascade stagger
+      let inEnd = 0.10 + cellDelay;    // fully assembled by 10-16% of loop
+      let outStart = 0.88 - cellDelay; // start disassembly at 82-88% of loop
+      if (t < inEnd) return Math.max(0, t / inEnd);           // ramp in
+      if (t > outStart) return Math.max(0, (1 - t) / (1 - outStart)); // ramp out
+      return 1; // hold at full
+    })()
   };
 }
 
