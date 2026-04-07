@@ -1997,14 +1997,33 @@ function buildCellAnim(cellIndex, cells) {
     // Assembly: fast scale-in at loop start, hold, scale-out at loop end
     // Uses normalized loop position t (NOT wrapping cascadeProgress)
     assemblyT: (function() {
-      let t = fi / fc; // raw loop position 0-1, does NOT wrap
-      let cellDelay = cascadeT * 0.06; // cascade stagger
-      let inEnd = 0.10 + cellDelay;    // fully assembled by 10-16% of loop
-      let outStart = 0.88 - cellDelay; // start disassembly at 82-88% of loop
-      if (t < inEnd) return Math.max(0, t / inEnd);           // ramp in
-      if (t > outStart) return Math.max(0, (1 - t) / (1 - outStart)); // ramp out
-      return 1; // hold at full
-    })()
+      let t = fi / fc;
+      let cellDelay = cascadeT * 0.06;
+      let inEnd = 0.10 + cellDelay;
+      let outStart = 0.88 - cellDelay;
+      if (t < inEnd) return Math.max(0, t / inEnd);
+      if (t > outStart) return Math.max(0, (1 - t) / (1 - outStart));
+      return 1;
+    })(),
+
+    // Content stability: 0 = fully unstable/flickering, 1 = fully stable
+    // Content becomes MORE stable as border assembly completes
+    contentStability: (function() {
+      let t = fi / fc;
+      let cellDelay = cascadeT * 0.06;
+      let inEnd = 0.10 + cellDelay;
+      let outStart = 0.88 - cellDelay;
+      // Content lags behind border: starts stabilizing slightly after border appears
+      let contentIn = inEnd + 0.03 + cellDelay * 0.5; // small random-ish fudge per cell
+      let contentOut = outStart - 0.02;
+      if (t < contentIn) return Math.max(0, ease.outCubic(t / contentIn));
+      if (t > contentOut) return Math.max(0, ease.outCubic((1 - t) / (1 - contentOut)));
+      return 1;
+    })(),
+
+    // Border entrance transition type (randomized per cell, stable across frames)
+    // 0=scaleIn, 1=flickerIn, 2=glitchBlockIn, 3=drawOn, 4=segmentFlicker
+    borderTransition: Math.floor(_profileHash(cellIndex * 7919 + 0xB0AD, 90) * 5)
   };
 }
 
@@ -7929,10 +7948,12 @@ function generateBorder(rect, s, style, weight, padding, prng) {
 
     let pres = applyPresence(borderProf, animCtx.frameIndex, animCtx.frameCount, animCtx.t);
 
-    // Assembly: borders appear quickly at loop start via fast assemblyT
+    // Assembly progress
     let assemblyScale = _cellAnim ? _cellAnim.assemblyT : 1;
-    // Apply outCubic easing for snappy appearance — 10% of loop max
     assemblyScale = assemblyScale < 1 ? ease.outCubic(assemblyScale) : 1;
+
+    // Border entrance transition type (from cellAnim, 5 types)
+    let borderTransType = _cellAnim ? _cellAnim.borderTransition : 0;
 
     // Combine presence + assembly
     let effectiveScale = pres.scale * assemblyScale;
@@ -7941,12 +7962,35 @@ function generateBorder(rect, s, style, weight, padding, prng) {
       borderHidden = true;
     }
 
-    if (!borderHidden && effectiveScale < 1 && effectiveScale > 0.02) {
-      let sc = effectiveScale;
-      let cx = bx + bw / 2, cy = by + bh / 2;
-      svgRec.beginGroupWithTransform('anim-border', `translate(${svgRec._r(cx)}, ${svgRec._r(cy)}) scale(${sc.toFixed(4)}) translate(${svgRec._r(-cx)}, ${svgRec._r(-cy)})`);
-      push(); translate(cx, cy); scale(sc); translate(-cx, -cy);
-      _borderAnimGroupOpen = true;
+    if (!borderHidden) {
+      if (borderTransType === 0 && effectiveScale < 1 && effectiveScale > 0.02) {
+        // Type 0: Scale in from center (original behavior)
+        let sc = effectiveScale;
+        let cx = bx + bw / 2, cy = by + bh / 2;
+        svgRec.beginGroupWithTransform('anim-border', `translate(${svgRec._r(cx)}, ${svgRec._r(cy)}) scale(${sc.toFixed(4)}) translate(${svgRec._r(-cx)}, ${svgRec._r(-cy)})`);
+        push(); translate(cx, cy); scale(sc); translate(-cx, -cy);
+        _borderAnimGroupOpen = true;
+      } else if (borderTransType === 1 && assemblyScale < 0.95) {
+        // Type 1: Flicker/strobe in — border strobes at decreasing rate until stable
+        let ratchet = Math.max(1, Math.round(5 - assemblyScale * 4));
+        let flickerVisible = animStrobe(animCtx.frameIndex, ratchet, assemblyScale * 0.5 + 0.3, _cellAnim.cascadeT);
+        if (!flickerVisible) borderHidden = true;
+      } else if (borderTransType === 2 && assemblyScale < 0.95) {
+        // Type 2: Glitch block in — random chunks of border appear/disappear
+        let chunkVis = _profileHash(animCtx.frameIndex * 17 + Math.round(_cellAnim.cascadeT * 1000), 93);
+        if (chunkVis > assemblyScale) borderHidden = true;
+      } else if (borderTransType === 3 && effectiveScale < 1 && effectiveScale > 0.02) {
+        // Type 3: Draw on — border scales in from one corner via clip-like transform
+        let sc = effectiveScale;
+        let cx = bx, cy = by; // scale from top-left corner
+        svgRec.beginGroupWithTransform('anim-border', `translate(${svgRec._r(cx)}, ${svgRec._r(cy)}) scale(${sc.toFixed(4)}) translate(${svgRec._r(-cx)}, ${svgRec._r(-cy)})`);
+        push(); translate(cx, cy); scale(sc); translate(-cx, -cy);
+        _borderAnimGroupOpen = true;
+      } else if (borderTransType === 4 && assemblyScale < 0.95) {
+        // Type 4: Segment flicker — individual border segments randomly visible
+        let segFlicker = _profileHash(animCtx.frameIndex * 7 + Math.round(_cellAnim.cascadeT * 777), 94);
+        if (segFlicker > assemblyScale * 1.2) borderHidden = true;
+      }
     }
   }
   if (borderHidden) _drawingSuppressed = true;
@@ -8452,6 +8496,41 @@ function generate(frameIndex) {
     svgSetStrokeWeight(state.geometry.strokeWeight);
     svgNoFill();
 
+    // Content instability: suppress drawing probabilistically when content is unstable
+    // This creates flickering/glitching content during border assembly phases
+    let _contentWasSuppressed = false;
+    if (_cellAnim && _cellAnim.contentStability < 0.95) {
+      let stability = _cellAnim.contentStability;
+      // Pick a content transition style per cell (from cellAnim.borderTransition)
+      let contentTransType = _cellAnim.borderTransition;
+      let shouldSuppress = false;
+
+      if (contentTransType === 1) {
+        // Ratchet flicker: content strobes in at increasing rate as stability grows
+        let ratchetRate = Math.max(1, Math.round(6 - stability * 5)); // 6→1 as stability grows
+        shouldSuppress = !animStrobe(animCtx.frameIndex, ratchetRate, stability * 0.6 + 0.2, _cellAnim.cascadeT);
+      } else if (contentTransType === 2) {
+        // Glitch block: content appears in random rectangular chunks
+        // More chunks visible as stability increases
+        let chunkHash = _profileHash(animCtx.frameIndex * 31 + i * 97, 91);
+        shouldSuppress = chunkHash > stability;
+      } else if (contentTransType === 3) {
+        // Progressive reveal: content hidden until stability exceeds threshold
+        shouldSuppress = stability < 0.4;
+      } else if (contentTransType === 4) {
+        // Segment flicker: individual draw calls randomly skip (via _drawingSuppressed toggling)
+        // More calls succeed as stability grows
+        let flickerChance = 1 - stability;
+        shouldSuppress = _profileHash(animCtx.frameIndex * 13 + i * 53, 92) < flickerChance * 0.7;
+      }
+      // Type 0 (scaleIn): no content suppression, content just follows scale naturally
+
+      if (shouldSuppress) {
+        _drawingSuppressed = true;
+        _contentWasSuppressed = true;
+      }
+    }
+
     // Compose archetype
     switch (archetype) {
       case 'statusPanel':      composeStatusPanel(padded, cellScale, prng); break;
@@ -8556,6 +8635,9 @@ function generate(frameIndex) {
       fragment(padded, prng);
       svgSetStrokeWeight(state.geometry.strokeWeight);
     }
+
+    // Restore drawing after content instability (border renders independently)
+    if (_contentWasSuppressed) { _drawingSuppressed = false; _contentWasSuppressed = false; }
 
     // Border
     if (state.bordersEnabled) {
