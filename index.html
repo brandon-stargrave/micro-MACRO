@@ -5006,6 +5006,406 @@ function drawBannerStripe(bx, by, bw, bh, prng) {
 }
 
 // ========================================================
+// COMPOSITION KIT
+// ========================================================
+// Shared building blocks for the archetype composers: cell-relative type and
+// line-weight roles, labelled scales, callouts, dense HUD side modules and
+// silhouette fills. Everything draws through the svg* wrappers. PRNG use never
+// depends on the animation frame or on which branch draws, so animated frames
+// stay stable.
+
+// Detail budget for a cell: 1 at ~200 px, growing with sqrt(area). Scale
+// counts (ticks, rows, satellites, stars) by it so big cells get more detail.
+function kitDensity(rect) {
+  return Math.max(0.6, Math.min(4, Math.sqrt(rect.w * rect.h) / 200));
+}
+
+// Type size for a role, proportional to the cell and clamped. Micro and body
+// stay small at any size (density comes from more lines, not bigger type);
+// title and value grow with the cell for scale contrast.
+const KIT_TYPE = {
+  title: { k: 0.060, max: 56 },
+  value: { k: 0.040, max: 32 },
+  body:  { k: 0.022, max: 12 },
+  micro: { k: 0.015, max: 9 }
+};
+function kitType(rect, role) {
+  let t = KIT_TYPE[role] || KIT_TYPE.body;
+  return Math.max(getMinTextSizePx(), Math.min(Math.min(rect.w, rect.h) * t.k, t.max));
+}
+
+// Line-weight hierarchy relative to the global stroke weight.
+const KIT_WEIGHT = { heavy: 1.7, primary: 1.0, secondary: 0.6, fine: 0.35 };
+function kitWeight(role) {
+  svgSetStrokeWeight(state.geometry.strokeWeight * (KIT_WEIGHT[role] || 1));
+}
+
+// Text anchored left / center / right of x. `seed` makes it animate like drawAnimText.
+function kitText(str, x, y, size, align, seed, hint) {
+  str = String(str);
+  if (align === 'center' || align === 'right') {
+    let w = measureFallbackText(str, size);
+    x -= align === 'center' ? w / 2 : w;
+  }
+  if (seed) drawAnimText(str, x, y, size, seed, hint);
+  else drawFallbackText(str, x, y, size);
+}
+
+// Tick ring: minor ticks every step, majors every `major`, optional numerals.
+// opts: { count, major, len, inward, a0, a1, labels, labelSize, labelFn, baseline }
+function kitTickRing(cx, cy, r, opts) {
+  let o = Object.assign({ count: 72, major: 6, len: r * 0.06, inward: true, a0: 0, a1: TWO_PI,
+                          labels: false, labelSize: 8, labelFn: null, baseline: false }, opts);
+  let full = Math.abs(o.a1 - o.a0) >= TWO_PI - 1e-6;
+  let n = full ? o.count : o.count + 1;
+  let dir = o.inward ? -1 : 1;
+  let ds = state.plotter ? state.plotter.detailScale : 1;
+  if (o.baseline) svgArc(cx, cy, r * 2, r * 2, o.a0, o.a1);
+  for (let i = 0; i < n; i++) {
+    let a = o.a0 + (o.a1 - o.a0) * i / o.count;
+    let isMajor = i % o.major === 0;
+    let isMid = !isMajor && o.major % 2 === 0 && i % (o.major / 2) === 0;
+    let len = o.len * ds * (isMajor ? 1 : isMid ? 0.65 : 0.4);
+    let c = Math.cos(a), sn = Math.sin(a);
+    svgLine(cx + c * r, cy + sn * r, cx + c * (r + dir * len), cy + sn * (r + dir * len));
+    if (o.labels && isMajor) {
+      let lr = r + dir * (o.len * ds + o.labelSize * 1.1);
+      let label = o.labelFn ? o.labelFn(i, a) : String(Math.round(i * 360 / o.count)).padStart(3, '0');
+      kitText(label, cx + c * lr, cy + sn * lr + o.labelSize * 0.4, o.labelSize, 'center');
+    }
+  }
+}
+
+// Linear scale with major/minor ticks and optional numbers.
+// opts: { vertical, divisions, major, len, labels, from, to, side (+1 / -1), labelSize, baseline }
+function kitRuler(x, y, length, opts) {
+  let o = Object.assign({ vertical: false, divisions: 20, major: 5, len: 6, labels: true,
+                          from: 0, to: 100, side: 1, labelSize: 7, baseline: true }, opts);
+  let ds = state.plotter ? state.plotter.detailScale : 1;
+  if (o.baseline) {
+    if (o.vertical) svgLine(x, y, x, y + length); else svgLine(x, y, x + length, y);
+  }
+  for (let i = 0; i <= o.divisions; i++) {
+    let t = i / o.divisions;
+    let isMajor = i % o.major === 0;
+    let len = o.len * ds * (isMajor ? 1 : 0.5) * o.side;
+    if (o.vertical) {
+      let ty = y + t * length;
+      svgLine(x, ty, x + len, ty);
+      if (o.labels && isMajor) kitText(Math.round(o.from + (o.to - o.from) * t), x + len + o.side * 2 + (o.side < 0 ? 0 : 0), ty + o.labelSize * 0.4, o.labelSize, o.side < 0 ? 'right' : 'left');
+    } else {
+      let tx = x + t * length;
+      svgLine(tx, y, tx, y + len);
+      if (o.labels && isMajor) kitText(Math.round(o.from + (o.to - o.from) * t), tx, y + len + (o.side > 0 ? o.labelSize * 1.1 : -o.labelSize * 0.3), o.labelSize, 'center');
+    }
+  }
+}
+
+// Callout: small ring on the target, angled leader, horizontal shelf, label
+// above the shelf and an optional sub-label below.
+function kitCallout(px, py, lx, ly, label, sub, size) {
+  size = size || getMinTextSizePx();
+  let toRight = lx >= px;
+  let w = Math.max(measureFallbackText(label, size), sub ? measureFallbackText(sub, size * 0.8) : 0) + size * 0.6;
+  kitWeight('fine');
+  svgCircle(px, py, size * 0.55);
+  svgLine(px, py, lx, ly);
+  let sx2 = toRight ? lx + w : lx - w;
+  svgLine(lx, ly, sx2, ly);
+  let tx = toRight ? lx + size * 0.3 : sx2 + size * 0.3;
+  kitText(label, tx, ly - size * 0.35, size);
+  if (sub) kitText(sub, tx, ly + size * 1.05, size * 0.8);
+}
+
+// Dimension line between two points, offset sideways, with extension lines,
+// end ticks and a centred label.
+function kitDimension(x1, y1, x2, y2, off, label, size) {
+  let dx = x2 - x1, dy = y2 - y1, L = Math.hypot(dx, dy) || 1;
+  let nx = -dy / L * off, ny = dx / L * off;
+  let ax = x1 + nx, ay = y1 + ny, bx = x2 + nx, by = y2 + ny;
+  kitWeight('fine');
+  svgLine(x1, y1, ax + nx * 0.15, ay + ny * 0.15);
+  svgLine(x2, y2, bx + nx * 0.15, by + ny * 0.15);
+  svgLine(ax, ay, bx, by);
+  let t = Math.min(4, L * 0.05), ux = dx / L, uy = dy / L;
+  svgLine(ax - (ux - uy) * t, ay - (uy + ux) * t, ax + (ux - uy) * t, ay + (uy + ux) * t);
+  svgLine(bx - (ux - uy) * t, by - (uy + ux) * t, bx + (ux - uy) * t, by + (uy + ux) * t);
+  if (label) {
+    size = size || getMinTextSizePx();
+    kitText(label, (ax + bx) / 2 + nx / Math.abs(off || 1) * size * 0.8, (ay + by) / 2 + ny / Math.abs(off || 1) * size * 0.8 + size * 0.35, size, 'center');
+  }
+}
+
+// Module frame: corner ticks, a header rule and a micro title. Returns the inner content rect.
+function kitFrame(rect, title, size) {
+  let { x, y, w, h } = rect;
+  size = size || getMinTextSizePx();
+  kitWeight('fine');
+  drawCornerBrackets(x, y, w, h, Math.min(w, h) * 0.12);
+  let top = y;
+  if (title && h > size * 4) {
+    kitText(title, x + size * 0.4, y + size * 1.2, size);
+    let tw = measureFallbackText(title, size);
+    svgLine(x + size * 0.8 + tw, y + size * 0.85, x + w - size * 0.4, y + size * 0.85);
+    top = y + size * 2;
+  }
+  return { x: x + size * 0.4, y: top, w: w - size * 0.8, h: y + h - top - size * 0.4 };
+}
+
+// Split a large, micro-scale cell into a main field plus HUD strips (header,
+// side column, footer) so big cells read as dense instrument panels instead of
+// one shape in empty space. Small or macro cells get the whole rect as main.
+// Always consumes the same 4 PRNG draws.
+function kitLayout(rect, s, prng, opts) {
+  opts = opts || {};
+  let r1 = prng.nextFloat(), r2 = prng.nextFloat(), r3 = prng.nextFloat(), r4 = prng.nextFloat();
+  let { x, y, w, h } = rect;
+  let out = { main: rect, header: null, side: null, footer: null };
+  let big = Math.min(w, h) > (opts.minSize || 280);
+  if (!big || !detailActive(opts.layer || 'secondaryText', s)) return out;
+  let gap = Math.min(w, h) * 0.025;
+  let mx = x, my = y, mw = w, mh = h;
+  if (opts.header !== false && r1 < 0.75) {
+    let hh = Math.max(kitType(rect, 'body') * 3, h * 0.07);
+    out.header = { x: mx, y: my, w: mw, h: hh };
+    my += hh + gap; mh -= hh + gap;
+  }
+  if (opts.footer !== false && r2 < 0.65) {
+    let fh = h * (0.13 + r4 * 0.07);
+    out.footer = { x: mx, y: my + mh - fh, w: mw, h: fh };
+    mh -= fh + gap;
+  }
+  if (opts.side !== false && r3 < 0.8 && w / h > 0.75) {
+    let sw = w * (0.22 + r4 * 0.08);
+    let onLeft = r1 > 0.5;
+    out.side = { x: onLeft ? mx : mx + mw - sw, y: my, w: sw, h: mh };
+    if (onLeft) mx += sw + gap;
+    mw -= sw + gap;
+  }
+  out.main = { x: mx, y: my, w: mw, h: mh };
+  return out;
+}
+
+// Fill whatever strips kitLayout returned with HUD modules.
+function kitFillLayout(lay, s, prng) {
+  if (lay.header) kitHeaderStrip(lay.header, s, prng);
+  if (lay.side) kitStack(lay.side, s, prng, true);
+  if (lay.footer) kitStack(lay.footer, s, prng, false);
+}
+
+// Header strip: title word, identifier, rule with tick row, timestamp.
+function kitHeaderStrip(r, s, prng) {
+  let size = kitType(r, 'body');
+  let title = textGen.statusLabel(prng), id = textGen.identifier(prng), ts = textGen.timestamp(prng);
+  let seed = prng.nextInt(1, 0xFFFFFF);
+  kitWeight('primary');
+  kitText(title, r.x, r.y + size * 1.2, size * 1.25, 'left', seed, 'bus:status');
+  kitWeight('fine');
+  kitText(id, r.x + r.w, r.y + size * 1.2, size * 0.85, 'right');
+  let ly = r.y + r.h - size * 0.6;
+  svgLine(r.x, ly, r.x + r.w, ly);
+  let ticks = Math.floor(r.w / (size * 1.2));
+  for (let i = 0; i <= ticks; i++) {
+    let tx = r.x + r.w * i / ticks;
+    svgLine(tx, ly, tx, ly - (i % 5 === 0 ? size * 0.6 : size * 0.3));
+  }
+  if (detailActive('versionStrings', s)) kitText(ts, r.x + r.w * 0.5, r.y + size * 1.2, size * 0.75, 'center', seed + 1, 'counter');
+}
+
+// Stack 1-4 modules along a strip (vertical column or horizontal row).
+function kitStack(r, s, prng, vertical) {
+  let along = vertical ? r.h : r.w, across = vertical ? r.w : r.h;
+  let n = Math.max(1, Math.min(4, Math.round(along / (across * 1.15))));
+  let gap = Math.min(r.w, r.h) * 0.06;
+  let step = (along - gap * (n - 1)) / n;
+  for (let i = 0; i < n; i++) {
+    let m = vertical
+      ? { x: r.x, y: r.y + i * (step + gap), w: r.w, h: step }
+      : { x: r.x + i * (step + gap), y: r.y, w: step, h: r.h };
+    kitModule(m, s, prng);
+  }
+}
+
+const KIT_MODULES = ['readout', 'ruler', 'spark', 'bars', 'matrix', 'code', 'dial', 'hex'];
+
+// One self-contained HUD module, picked to suit the rect's shape. Always
+// consumes the same PRNG draws for the pick, then the module's own.
+function kitModule(r, s, prng, kind) {
+  let pick = prng.nextFloat();
+  let aspect = r.w / r.h;
+  if (!kind) {
+    let pool = aspect > 2.2 ? ['ruler', 'spark', 'code', 'bars', 'hex']
+             : aspect < 0.45 ? ['ruler', 'bars', 'readout']
+             : ['readout', 'dial', 'matrix', 'spark', 'bars', 'code', 'hex'];
+    kind = pool[Math.floor(pick * pool.length)];
+  }
+  let size = Math.max(getMinTextSizePx(), Math.min(kitType(r, 'micro') * 1.2, 9));
+  let seed = prng.nextInt(1, 0xFFFFFF);
+  let inner = kitFrame(r, textGen.identifier(prng), size);
+  if (inner.w < size * 3 || inner.h < size * 2) return;
+  let { x, y, w, h } = inner;
+  kitWeight('secondary');
+  switch (kind) {
+    case 'readout': {
+      let rows = Math.max(1, Math.floor(h / (size * 1.45)));
+      for (let i = 0; i < rows; i++) {
+        let ky = y + size * 1.1 + i * size * 1.45;
+        let key = prng.pick(textGen._idPrefixes), val = textGen.valueReadout(prng);
+        kitText(key, x, ky, size);
+        kitText(val, x + w, ky, size, 'right', (seed + i * 97) >>> 0, 'counter');
+        let kw = measureFallbackText(key, size), vw = measureFallbackText(val, size);
+        kitWeight('fine');
+        if (w - kw - vw > size * 1.5) drawDashedLine(x + kw + size * 0.4, ky - size * 0.3, x + w - vw - size * 0.4, ky - size * 0.3, size * 0.15, size * 0.45);
+        kitWeight('secondary');
+      }
+      break;
+    }
+    case 'ruler': {
+      let vertical = aspect < 1;
+      let divs = Math.max(10, Math.round((vertical ? h : w) / (size * 0.9)));
+      divs -= divs % 10;
+      let from = prng.nextInt(0, 50) * 10;
+      let span = prng.pick([100, 200, 360, 500, 1000]);
+      if (vertical) kitRuler(x + w * 0.35, y + size * 0.5, h - size, { vertical: true, divisions: divs, major: 10, len: w * 0.25, from, to: from + span, labelSize: size });
+      else kitRuler(x, y + h * 0.35, w, { divisions: divs, major: 10, len: h * 0.25, from, to: from + span, labelSize: size });
+      // Pointer
+      let t = prng.nextFloat();
+      kitWeight('primary');
+      // drawTriangle rotation is radians: 0 points right, HALF_PI points down
+      if (vertical) { let py = y + size * 0.5 + t * (h - size); drawTriangle(x + w * 0.2, py, size * 0.6, 0); }
+      else { let px = x + t * w; drawTriangle(px, y + h * 0.18, size * 0.6, HALF_PI); }
+      break;
+    }
+    case 'spark': {
+      let n = Math.max(12, Math.floor(w / (size * 0.7)));
+      kitWeight('fine');
+      for (let gx = 0; gx <= 4; gx++) svgLine(x + w * gx / 4, y, x + w * gx / 4, y + h);
+      for (let gy = 0; gy <= 2; gy++) drawDashedLine(x, y + h * gy / 2, x + w, y + h * gy / 2, 2, 3);
+      let v = prng.nextFloat(), pts = [];
+      for (let i = 0; i < n; i++) {
+        v = Math.max(0.05, Math.min(0.95, v + (prng.nextFloat() - 0.5) * 0.35));
+        pts.push([x + w * i / (n - 1), y + h * (1 - v)]);
+      }
+      kitWeight('primary');
+      svgPolyline(pts);
+      let hi = pts.reduce((a, b) => (b[1] < a[1] ? b : a));
+      kitWeight('fine');
+      svgCircle(hi[0], hi[1], size * 0.7);
+      break;
+    }
+    case 'bars': {
+      let n = Math.max(4, Math.min(24, Math.floor(w / (size * 1.2))));
+      let bw = w / n;
+      for (let i = 0; i < n; i++) {
+        let v = 0.15 + prng.nextFloat() * 0.85;
+        let bx = x + i * bw + bw * 0.15, bh = (h - size * 1.2) * v, by = y + h - size * 1.2 - bh;
+        kitWeight('secondary');
+        svgRect(bx, by, bw * 0.7, bh);
+        if (v > 0.6 && bw > 4) { // "filled" bars: a few hatch lines instead of a fill
+          kitWeight('fine');
+          for (let hy = by + 2.5; hy < by + bh - 1; hy += 2.5) svgLine(bx, hy, bx + bw * 0.7, hy);
+        }
+      }
+      kitWeight('fine');
+      svgLine(x, y + h - size * 1.2, x + w, y + h - size * 1.2);
+      if (bw > size * 1.5) for (let i = 0; i < n; i += 2) kitText(String(i).padStart(2, '0'), x + i * bw + bw / 2, y + h - size * 0.1, size * 0.8, 'center');
+      break;
+    }
+    case 'matrix': {
+      let cols = Math.max(4, Math.floor(w / (size * 1.1))), rows = Math.max(3, Math.floor(h / (size * 1.1)));
+      let cw = w / cols, ch = h / rows;
+      for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) {
+        let v = prng.nextFloat();
+        let cx = x + (i + 0.5) * cw, cy = y + (j + 0.5) * ch;
+        if (v > 0.82) { kitWeight('secondary'); svgCircle(cx, cy, Math.min(cw, ch) * 0.7); svgPoint(cx, cy); }
+        else if (v > 0.55) { kitWeight('fine'); svgCircle(cx, cy, Math.min(cw, ch) * 0.35); }
+        else { kitWeight('fine'); svgPoint(cx, cy); }
+      }
+      break;
+    }
+    case 'code': {
+      if (aspect > 1.6) {
+        drawBarcodeLines(x, y, w, h - size * 1.3, Math.max(12, Math.floor(w / 3)), prng);
+        kitText(String(prng.nextInt(10000000, 99999999)) + String(prng.nextInt(1000, 9999)), x + w / 2, y + h, size, 'center');
+      } else {
+        let q = Math.min(w, h - size * 1.3);
+        drawDataMatrix(x + (w - q) / 2, y, q, q, 0.5, prng);
+        kitText(textGen.identifier(prng), x + w / 2, y + h, size, 'center');
+      }
+      break;
+    }
+    case 'dial': {
+      let R = Math.min(w, h) * 0.42, cx = x + w / 2, cy = y + h / 2;
+      kitWeight('secondary');
+      svgCircle(cx, cy, R * 2);
+      kitWeight('fine');
+      kitTickRing(cx, cy, R, { count: Math.max(24, Math.round(R * 1.2 / 6) * 6), major: 6, len: R * 0.14 });
+      svgCircle(cx, cy, R * 0.12);
+      let a = prng.nextFloat() * TWO_PI;
+      kitWeight('primary');
+      svgLine(cx, cy, cx + Math.cos(a) * R * 0.78, cy + Math.sin(a) * R * 0.78);
+      kitWeight('fine');
+      if (R > size * 3) kitText(textGen.valueReadout(prng), cx, cy + R * 0.5, size, 'center', seed, 'counter');
+      break;
+    }
+    case 'hex': {
+      let rows = Math.max(1, Math.floor(h / (size * 1.35)));
+      let perRow = Math.max(1, Math.floor((w - size * 4) / (size * 2.1)));
+      kitWeight('fine');
+      for (let i = 0; i < rows; i++) {
+        let ky = y + size * 1.1 + i * size * 1.35;
+        kitText((prng.nextInt(0, 0xFFFF)).toString(16).toUpperCase().padStart(4, '0'), x, ky, size);
+        let bytes = [];
+        for (let b = 0; b < perRow; b++) bytes.push(prng.nextInt(0, 255).toString(16).toUpperCase().padStart(2, '0'));
+        kitText(bytes.join(' '), x + size * 3.4, ky, size, 'left', (seed + i * 31) >>> 0, 'counter');
+      }
+      break;
+    }
+  }
+  kitWeight('primary');
+}
+
+// --- Silhouette fills (macro "solid" mode, plotter-safe) ---------------------
+
+// How a macro form should be filled at scale s. Consumes exactly 2 PRNG draws.
+// Returns null (outline only) or { kind: 'hatch' | 'cross' | 'contour', angle, spacing }.
+// Driven by the render-mode zones and the Fill Probability slider.
+function kitFillStyle(s, prng) {
+  let roll = prng.nextFloat(), pick = prng.nextFloat();
+  if (roll >= getEffectiveFillProb(s)) return null;
+  let pen = unitToPx(state.plotter.hatch.penDiameter, 'mm', state.plotter.dpi);
+  // Denser toward deep macro: 3.5x pen spacing in hybrid, ~1.6x at full silhouette
+  let k = 3.5 - Math.min(1, Math.max(0, (s - 0.3) / 0.6)) * 1.9;
+  let spacing = Math.max(pen * 1.2, pen * k, 1.2);
+  let kind = pick < 0.55 ? 'hatch' : pick < 0.8 ? 'contour' : 'cross';
+  let angle = [45, 135, 60, 30, 90, 0][Math.floor(pick * 6)];
+  return { kind, angle, spacing };
+}
+
+// Fill closed contours (arrays of [x,y]) with a style from kitFillStyle.
+// 'contour' on polygons falls back to hatch; use kitRingFill for circles.
+function kitFillContours(contours, style) {
+  if (!style) return;
+  kitWeight('fine');
+  hatchFillContours(contours, style.angle, style.spacing, 0);
+  if (style.kind === 'cross') hatchFillContours(contours, style.angle + 90, style.spacing * 1.4, 0);
+}
+
+// Engraving-style fill for a disc or ring: concentric circles from r0 out to r1.
+function kitRingFill(cx, cy, r1, r0, style) {
+  if (!style) return;
+  kitWeight('fine');
+  if (style.kind !== 'contour') {
+    let circle = (r) => Array.from({ length: 96 }, (_, i) => [cx + Math.cos(i / 96 * TWO_PI) * r, cy + Math.sin(i / 96 * TWO_PI) * r]);
+    let contours = [circle(r1)];
+    if (r0 > 0) contours.push(circle(r0));
+    kitFillContours(contours, style);
+    return;
+  }
+  for (let r = r1 - style.spacing; r > Math.max(r0, style.spacing * 0.5); r -= style.spacing) svgCircle(cx, cy, r * 2);
+}
+
+// ========================================================
 // ELEMENT GENERATORS
 // ========================================================
 // Each generator returns geometry for a given family within a bounding box.
@@ -5820,138 +6220,142 @@ function generateWireframeElement(cx, cy, size, s, prng) {
 // ========================================================
 
 function composeStatusPanel(rect, s, prng) {
-  let { x, y, w, h } = rect;
-  let pad = Math.min(w, h) * 0.07;
-  let ix = x + pad, iy = y + pad, iw = w - pad * 2, ih = h - pad * 2;
-
   svgRec.beginGroup('status-panel');
 
-  // Animation setup — independent seeds for sub-elements
+  // Independent seeds for animated sub-elements (drawn first so the stream is fixed)
   let seedLabel = prng.nextInt(0, 0xFFFFFF);
   let seedValue = prng.nextInt(0, 0xFFFFFF);
-  let seedSecondary = prng.nextInt(0, 0xFFFFFF);
+  let seedRows = prng.nextInt(0, 0xFFFFFF);
   let seedAnnot = prng.nextInt(0, 0xFFFFFF);
-
-  // Corner brackets
-  if (detailActive('cornerBrackets', s)) {
-    drawCornerBrackets(ix, iy, iw, ih, Math.min(iw, ih) * 0.12);
-  }
-
-  // Corner accent dots — with presence check
-  if (detailActive('dotMatrixTextures', s) && prng.nextFloat() < 0.5) {
-    let dotProf = animCtx ? getAnimProfile(seedAnnot + 99, s) : null;
-    let dotVis = dotProf ? applyPresence(dotProf, animCtx.frameIndex, animCtx.frameCount, animCtx.t).visible : true;
-    if (dotVis) {
-      svgPoint(ix + 2, iy + 2); svgPoint(ix + iw - 2, iy + 2);
-      svgPoint(ix + 2, iy + ih - 2); svgPoint(ix + iw - 2, iy + ih - 2);
-    }
-  }
-
   let textData = textGen.statusPanelText(prng, s < 0.15 ? 'dense' : 'medium');
-  let fontSize = Math.max(6, Math.min(ih * 0.1, 14));
-  let smallFont = fontSize * 0.7;
-  let tinyFont = fontSize * 0.5;
-  let curY = iy + pad + fontSize;
+  let accentPick = prng.nextFloat();
 
-  // Status label — bus-connected: shows shared masterStatus across all panels
-  svgSetStrokeWeight(state.geometry.strokeWeight * 1.2);
-  drawAnimText(textData.label, ix + pad, curY, fontSize, seedLabel, 'bus:status');
-  curY += fontSize * 1.3;
+  // Big cells become a full instrument panel: header + side modules + footer
+  let lay = kitLayout(rect, s, prng);
+  kitFillLayout(lay, s, prng);
+  let { x, y, w, h } = lay.main;
+  let pad = Math.min(w, h) * 0.06;
+  let ix = x + pad, iy = y + pad, iw = w - pad * 2, ih = h - pad * 2;
+  let titleSize = kitType(lay.main, 'title'), valueSize = kitType(lay.main, 'value');
+  let body = kitType(lay.main, 'body'), micro = kitType(lay.main, 'micro');
 
-  // Horizontal divider
+  if (detailActive('cornerBrackets', s)) {
+    kitWeight('secondary');
+    drawCornerBrackets(x, y, w, h, Math.min(w, h) * 0.1);
+  }
+
+  // Status word (title) over a ruled underline with a tick run
+  let curY = iy + titleSize;
+  kitWeight('heavy');
+  kitText(textData.label, ix, curY, titleSize, 'left', seedLabel, 'bus:status');
+  curY += titleSize * 0.45;
   if (detailActive('connectorLines', s)) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.5);
-    svgLine(ix + pad, curY - fontSize * 0.3, ix + iw * 0.6, curY - fontSize * 0.3);
-    svgSetStrokeWeight(state.geometry.strokeWeight);
+    kitWeight('fine');
+    svgLine(ix, curY, ix + iw * 0.62, curY);
+    let n = Math.floor(iw * 0.62 / Math.max(3, body * 0.5));
+    for (let i = 0; i <= n; i++) svgLine(ix + i * iw * 0.62 / n, curY, ix + i * iw * 0.62 / n, curY + (i % 5 ? body * 0.25 : body * 0.55));
+  }
+  curY += valueSize * 1.6;
+
+  // Primary value readout
+  kitWeight('primary');
+  kitText(textData.value, ix, curY, valueSize, 'left', seedValue, 'bus:counter');
+  curY += valueSize * 0.6;
+
+  // Segmented gauge with a scale under it
+  if (detailActive('tickMarks', s) && ih > valueSize * 6) {
+    let gw = iw * 0.62, gh = Math.max(body, ih * 0.035);
+    let fill = _compBus ? _compBus.pulsePositive : prng.nextFloat();
+    let segs = Math.max(8, Math.min(40, Math.floor(gw / (body * 0.9))));
+    let sw = gw / segs;
+    for (let i = 0; i < segs; i++) {
+      let on = i / segs < fill;
+      kitWeight(on ? 'secondary' : 'fine');
+      svgRect(ix + i * sw + 1, curY, sw - 2, gh);
+      if (on && sw > 4) for (let hx = ix + i * sw + 2.5; hx < ix + (i + 1) * sw - 2; hx += 2.5) svgLine(hx, curY + 1, hx, curY + gh - 1);
+    }
+    kitWeight('fine');
+    kitRuler(ix, curY + gh + 3, gw, { divisions: 20, major: 5, len: body * 0.5, from: 0, to: 100, labelSize: micro });
+    curY += gh + body * 2.6;
   }
 
-  // Value readout — bus-connected counter: all panels show transformations of same master value
-  drawAnimText(textData.value, ix + pad, curY + fontSize * 0.5, fontSize * 0.9, seedValue, 'bus:counter');
-  curY += fontSize * 1.5;
-
-  // Secondary value row
-  if (detailActive('secondaryText', s) && prng.nextFloat() < 0.6) {
-    let secKey = textGen.statusLabel(prng);
-    let secVal = textGen.valueReadout(prng);
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.7);
-    drawFallbackText(secKey + ': ' + secVal, ix + pad, curY, smallFont);
-    curY += smallFont * 1.4;
+  // Key/value rows fill the remaining height of the left column
+  // Space reserved at the bottom for the annotation block and footer line
+  let annotLines = detailActive('annotationTexture', s) ? textData.annotations.length : 0;
+  let bottomReserve = body * 1.8 + annotLines * micro * 1.4 + (detailActive('versionStrings', s) ? micro * 1.6 : 0);
+  if (detailActive('secondaryText', s)) {
+    let rows = Math.max(0, Math.floor((iy + ih - bottomReserve - curY) / (body * 1.55)));
+    let colW = iw * (iw > body * 16 ? 0.62 : 1);
+    for (let i = 0; i < rows; i++) {
+      let ry = curY + i * body * 1.55;
+      let key = textGen.statusLabel(prng), val = textGen.valueReadout(prng);
+      let kw = measureFallbackText(key, body), vw = measureFallbackText(val, body);
+      kitWeight('secondary');
+      if (kw + vw + body > colW) { // too narrow for both: value only
+        kitText(val, ix, ry, body, 'left', (seedRows + i * 131) >>> 0, 'counter');
+        continue;
+      }
+      kitText(key, ix, ry, body);
+      kitText(val, ix + colW, ry, body, 'right', (seedRows + i * 131) >>> 0, 'counter');
+      kitWeight('fine');
+      if (colW - kw - vw > body * 2) drawDashedLine(ix + kw + body * 0.5, ry - body * 0.3, ix + colW - vw - body * 0.5, ry - body * 0.3, body * 0.12, body * 0.5);
+    }
   }
 
-  // Mini bar bank alongside data
-  if (detailActive('connectorLines', s) && prng.nextFloat() < 0.5 && ih > fontSize * 8) {
-    let barY = curY;
-    let barH = Math.min(fontSize * 2.5, ih * 0.2);
-    let barW = iw * 0.45;
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.6);
-    drawBarBank(ix + pad, barY, barW, barH, prng.nextInt(4, 8), prng);
-    curY += barH + smallFont;
+  // Accent instrument in the right column: ring gauge, scope, or glyph
+  let R = Math.min(iw * 0.17, ih * 0.22);
+  let titleW = measureFallbackText(textData.label, titleSize);
+  if (detailActive('primaryLabels', s) && iw > body * 12 && titleW + R * 2.6 < iw && R > body * 1.5) {
+    let cx = ix + iw - R * 1.1, cy = iy + R * 1.25;
+    kitWeight('primary');
+    if (accentPick < 0.45) {
+      svgCircle(cx, cy, R * 2);
+      kitWeight('fine');
+      kitTickRing(cx, cy, R * 0.92, { count: 60, major: 5, len: R * 0.12, labels: R > body * 6, labelSize: micro, labelFn: i => String(i / 5) });
+      let a = -HALF_PI + (_compBus ? _compBus.pulsePositive : 0.6) * TWO_PI * 0.8;
+      kitWeight('primary');
+      svgArc(cx, cy, R * 1.5, R * 1.5, -HALF_PI, a);
+      svgLine(cx, cy, cx + Math.cos(a) * R * 0.7, cy + Math.sin(a) * R * 0.7);
+      svgCircle(cx, cy, R * 0.12);
+    } else if (accentPick < 0.75) {
+      svgRect(cx - R, cy - R, R * 2, R * 2);
+      kitWeight('fine');
+      drawPolarGrid(cx, cy, R * 0.9, 3, 8);
+      drawCrosshair(cx, cy, R * 2, R * 0.2);
+      kitWeight('secondary');
+      svgCircle(cx + R * 0.35, cy - R * 0.2, R * 0.18);
+      kitCallout(cx + R * 0.35, cy - R * 0.2, cx + R * 0.7, cy - R * 0.75, textGen.identifier(prng), null, micro);
+    } else {
+      generateCircleElement(cx, cy, R * 1.6, s * 0.5, prng);
+    }
+    if (detailActive('secondaryText', s)) {
+      kitWeight('fine');
+      kitText(textGen.coordinate(prng), cx, cy + R + body * 1.6, micro, 'center');
+    }
   }
 
-  // Accent glyph (upper right)
-  if (state.features.unicodeAccents && detailActive('primaryLabels', s)) {
-    let accentSize = ih * 0.18;
-    let accentX = ix + iw - pad - accentSize;
-    let accentY = iy + pad + accentSize;
-    svgSetStrokeWeight(state.geometry.strokeWeight);
-    generateCircleElement(accentX, accentY, accentSize, s * 0.5, prng);
+  // Right-edge rotated identifier
+  if (detailActive('annotationTexture', s) && iw > body * 8) {
+    kitWeight('fine');
+    drawFallbackTextRotated(textGen.identifier(prng), ix + iw + pad * 0.6, iy + ih * 0.55, micro, 90);
   }
 
-  // Right-edge rotated text
-  if (detailActive('annotationTexture', s) && prng.nextFloat() < 0.4 && iw > fontSize * 6) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.5);
-    let rotLabel = textGen.identifier(prng);
-    drawFallbackTextRotated(rotLabel, ix + iw - tinyFont * 0.5, iy + ih * 0.3, tinyFont, 90);
-  }
-
-  // Annotations — animated with cascade stagger
-  svgSetStrokeWeight(state.geometry.strokeWeight * 0.7);
+  // Annotation block + version/timestamp footer
+  kitWeight('secondary');
   if (detailActive('annotationTexture', s)) {
-    for (let i = 0; i < textData.annotations.length; i++) {
-      drawAnimText(textData.annotations[i], ix + pad, iy + ih - pad - (textData.annotations.length - i) * smallFont * 1.3, smallFont, (seedAnnot + i * 131) >>> 0, 'counter');
+    let n = textData.annotations.length;
+    for (let i = 0; i < n; i++) {
+      kitText(textData.annotations[i], ix, iy + ih - body * 1.8 - (n - 1 - i) * micro * 1.4, micro, 'left', (seedAnnot + i * 131) >>> 0, 'counter');
     }
   }
-
-  // Version string + timestamp footer — animated counters
   if (detailActive('versionStrings', s)) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.6);
-    drawAnimText(textGen.versionString(prng), ix + pad, iy + ih - pad * 0.5, smallFont, seedAnnot + 500, 'counter');
-    let ts = textGen.timestamp(prng);
-    drawAnimText(ts, ix + iw - pad - measureFallbackText(ts, smallFont), iy + ih - pad * 0.5, smallFont, seedAnnot + 501, 'counter');
+    kitWeight('fine');
+    kitText(textGen.versionString(prng), ix, iy + ih, micro, 'left', seedAnnot + 500, 'counter');
+    kitText(textGen.timestamp(prng), ix + iw, iy + ih, micro, 'right', seedAnnot + 501, 'counter');
+    svgLine(ix, iy + ih - micro * 1.3, ix + iw, iy + ih - micro * 1.3);
   }
 
-  // Panel variant overlays (PRNG consumed unconditionally)
-  let panelVariant = prng.nextFloat();
-  let variantSeed = prng.nextInt(0, 0xFFFFFF);
-  if (panelVariant < 0.15 && ih > fontSize * 8) {
-    // Alert mode — warning indicator + progress bar overlay
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-    let alertY = iy + ih * 0.55;
-    drawWarningStripes(ix + 1, alertY, iw - 2, fontSize * 0.8, Math.round(iw / 10));
-    // Blinking alert dot
-    let alertVisible = animCtx ? anim.blink(animCtx.frameIndex, 3, 2, (variantSeed % 100) / 100) : true;
-    if (alertVisible) {
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.8);
-      let dotX = ix + iw - pad * 2, dotY = iy + pad * 2;
-      svgCircle(dotX, dotY, 5);
-      svgCircle(dotX, dotY, 8);
-    }
-  } else if (panelVariant < 0.25 && iw > fontSize * 10) {
-    // Gauge-embedded — mini segmented bar beside value area
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.3);
-    let barX = ix + iw * 0.65, barY = iy + pad + fontSize * 2;
-    let barW = iw * 0.3, barH = fontSize * 1.2;
-    let segs = 6;
-    let fillRatio = _compBus ? _compBus.pulsePositive : 0.5;
-    let filledSegs = Math.round(segs * fillRatio);
-    let segW = barW / segs;
-    for (let si = 0; si < segs; si++) {
-      svgSetStrokeWeight(si < filledSegs ? state.geometry.strokeWeight * 0.5 : state.geometry.strokeWeight * 0.15);
-      svgRect(barX + si * segW + 1, barY, segW - 2, barH);
-    }
-  }
-
-  svgSetStrokeWeight(state.geometry.strokeWeight);
+  kitWeight('primary');
   svgRec.endGroup();
 }
 
