@@ -294,6 +294,7 @@
     }
     .mode-toggle button:hover { background: #ffffff14; color: #00e5ff; }
     .mode-toggle button.active { background: #00ff8825; color: #00ff88; font-weight: 600; }
+    button.secondary.active { border-color: #00ff8866; color: #00ff88; background: #00ff8818; }
     .mode-panel { display: none; }
     .mode-panel.active { display: block; }
     /* Hero slider */
@@ -619,6 +620,8 @@
     <div style="margin:6px 0">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
         <button class="secondary" id="anim-play-btn" onclick="autoEnableAndPlay()" style="min-width:60px">▶ PLAY</button>
+        <button class="secondary" id="anim-complete-btn" onclick="toggleCompleteFrame()" style="min-width:0;padding-left:8px;padding-right:8px"
+          data-tip="Complete frame: every element drawn, in place and at rest, whatever the playhead says. This is the frame to plot; SVG and PNG export and the plot stats use it while it is shown. Scrub, step or play to leave it. Key: C">◆ ALL</button>
         <span id="anim-frame-display" style="font-family:monospace;font-size:11px;color:#00ff88">F01/60 | 0.0s</span>
       </div>
       <div class="slider-row">
@@ -704,6 +707,10 @@
       <div class="check-row" data-tip="Grid ticks in the margin on the layout grid, and a colophon line (seed, scale, cells, format) in the bottom margin.">
         <input type="checkbox" id="page-frame" checked onchange="updateState('pageFrame', this.checked); doGenerateKeepSeed()">
         <label for="page-frame">Page Frame</label>
+      </div>
+      <div class="check-row" data-tip="Keeps each cell's labels clear: a line that runs through text is broken around it, and a label that lands on another is dropped. Treatments are left alone.">
+        <input type="checkbox" id="label-knockout" checked onchange="updateState('labelKnockout', this.checked); doGenerateKeepSeed()">
+        <label for="label-knockout">Clear Labels</label>
       </div>
       <div id="panel-multi" class="mode-panel">
         <div class="control-group">
@@ -1186,7 +1193,7 @@
           onchange="updateState('filenamePrefix', this.value)">
       </div>
       <div id="path-stats" class="hint" style="font-family:monospace;"></div>
-      <div class="hint">Keyboard: Enter=Generate, R=Randomize, S=SVG, P=PNG, Space=Play/Pause, ←→=Step Frame</div>
+      <div class="hint">Keyboard: Enter=Generate, R=Randomize, S=SVG, P=PNG, Space=Play/Pause, ←→=Step Frame, C=Complete Frame</div>
       <div class="hint">Plot-safe SVG is clipped, flattened and path-ordered for the plotter; see the Plotter section.</div>
     </details>
 
@@ -2647,6 +2654,252 @@ const svgRec = {
 };
 
 // ========================================================
+// LABEL KNOCKOUT (base composition only; treatments are left alone)
+// ========================================================
+
+// Composers place labels clear of each other, but not of the lines around
+// them, so rings, grids, hatching and leaders ran through text. After a cell
+// composes, every stroke that crosses a label's core is broken around the
+// label (a cartographer's halo), and a small mark under a label is dropped.
+// Strokes that only hug a label (a box around a value, an underline) never
+// reach its core and are left whole.
+const _TEXT_GROUP_IDS = new Set(['micro-text', 'font-text', 'otf-text']);
+
+function _matInv(M) {
+  let [a, b, c, d, e, f] = M, det = a * d - b * c;
+  if (Math.abs(det) < 1e-12) return null;
+  return [d / det, -b / det, -c / det, a / det, (c * f - d * e) / det, (b * e - a * f) / det];
+}
+function _matApply(M, q) { return [M[0] * q[0] + M[2] * q[1] + M[4], M[1] * q[0] + M[3] * q[1] + M[5]]; }
+
+// Parametric [t0, t1] of segment a-b inside box B = [x0, y0, x1, y1], or null.
+function _segBoxT(a, b, B) {
+  let t0 = 0, t1 = 1, dx = b[0] - a[0], dy = b[1] - a[1];
+  let P = [-dx, dx, -dy, dy], Q = [a[0] - B[0], B[2] - a[0], a[1] - B[1], B[3] - a[1]];
+  for (let k = 0; k < 4; k++) {
+    if (P[k] === 0) { if (Q[k] < 0) return null; continue; }
+    let r = Q[k] / P[k];
+    if (P[k] < 0) { if (r > t1) return null; if (r > t0) t0 = r; }
+    else { if (r < t0) return null; if (r < t1) t1 = r; }
+  }
+  return t1 > t0 ? [t0, t1] : null;
+}
+
+// The pieces of polyline pts that lie outside box B.
+function _cutPolyline(pts, B) {
+  let out = [], cur = [pts[0]];
+  let lerp = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  for (let i = 1; i < pts.length; i++) {
+    let a = pts[i - 1], b = pts[i], T = _segBoxT(a, b, B);
+    if (!T || T[1] - T[0] < 1e-9) { if (!cur.length) cur.push(a); cur.push(b); continue; }
+    if (T[0] > 1e-9) { if (!cur.length) cur.push(a); cur.push(lerp(a, b, T[0])); }
+    if (cur.length >= 2) out.push(cur);
+    cur = T[1] < 1 - 1e-9 ? [lerp(a, b, T[1]), b] : [];
+  }
+  if (cur.length >= 2) out.push(cur);
+  return out.filter(p => p.some((q, k) => k && Math.hypot(q[0] - p[k - 1][0], q[1] - p[k - 1][1]) > 0.05));
+}
+
+// Every label inside a cell's record, measured in the text's own frame (so a
+// rotated label gets a tight box): { node, parent, M (text frame -> page), Mi,
+// polys, B (frame bbox), page (page AABB), h }.
+function _cellLabels(node, M, out) {
+  for (let n of node.children) {
+    if (!n.children) continue;
+    if (n.id === 'border' || n.id === 'anim-border' || (n.id && (n.id.startsWith('treatment-') || n.id.startsWith('clone-')))) continue;
+    let M2 = n.transform ? _matMul(M, parseTransformMatrix(n.transform)) : M;
+    if (!_TEXT_GROUP_IDS.has(n.id)) { _cellLabels(n, M2, out); continue; }
+    let polys = [];
+    const gather = (g, L) => {
+      for (let c of g.children) {
+        if (c.children) gather(c, c.transform ? _matMul(L, parseTransformMatrix(c.transform)) : L);
+        else if (c.d && c.stroke && c.stroke !== 'none') for (let p of parsePathToPolylines(c.d)) polys.push(p.map(q => _matApply(L, q)));
+      }
+    };
+    gather(n, [1, 0, 0, 1, 0, 0]);
+    let Mi = _matInv(M2);
+    if (!polys.length || !Mi) continue;
+    let B = _polysBox(polys), h = B[3] - B[1];
+    if (!(h > 0.5)) continue;
+    let P = [[B[0], B[1]], [B[2], B[1]], [B[2], B[3]], [B[0], B[3]]].map(q => _matApply(M2, q));
+    let page = [Math.min(...P.map(q => q[0])), Math.min(...P.map(q => q[1])), Math.max(...P.map(q => q[0])), Math.max(...P.map(q => q[1]))];
+    // Large type collides glyph by glyph, not by its whole box
+    let toPage = b => { let Q = [[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]].map(q => _matApply(M2, q));
+      return [Math.min(...Q.map(q => q[0])), Math.min(...Q.map(q => q[1])), Math.max(...Q.map(q => q[0])), Math.max(...Q.map(q => q[1]))]; };
+    let parts = n.id !== 'micro-text' && h > 22 ? polys.map(p => toPage(_polysBox([p]))) : [page];
+    out.push({ node: n, parent: node, M: M2, Mi, polys, B, page, parts, h });
+  }
+  return out;
+}
+function _polysBox(polys) {
+  let B = [Infinity, Infinity, -Infinity, -Infinity];
+  for (let p of polys) for (let q of p) { if (q[0] < B[0]) B[0] = q[0]; if (q[1] < B[1]) B[1] = q[1]; if (q[0] > B[2]) B[2] = q[0]; if (q[1] > B[3]) B[3] = q[1]; }
+  return B;
+}
+
+// Two labels on top of each other: keep the larger (the earlier on a tie) and
+// drop the other. A copy struck twice a hair apart is a faux bold, not a clash.
+function _dropCollidingLabels(labels) {
+  // Glyph boxes are cap-height tight, so even a slight overlap is a clash
+  let core = b => { let i = Math.min(b[2] - b[0], b[3] - b[1]) * 0.06; return [b[0] + i, b[1] + i, b[2] - i, b[3] - i]; };
+  let area = b => Math.max(0, b[2] - b[0]) * Math.max(0, b[3] - b[1]);
+  let gone = new Set();
+  for (let i = 0; i < labels.length; i++) {
+    if (gone.has(i)) continue;
+    for (let j = i + 1; j < labels.length; j++) {
+      if (gone.has(j)) continue;
+      let a = labels[i], b = labels[j];
+      let hit = a.parts.some(pa => b.parts.some(pb => {
+        let ca = core(pa), cb = core(pb);
+        let o = area([Math.max(ca[0], cb[0]), Math.max(ca[1], cb[1]), Math.min(ca[2], cb[2]), Math.min(ca[3], cb[3])]);
+        return o > Math.max(0.5, Math.min(area(ca), area(cb)) * 0.04);
+      }));
+      if (!hit) continue;
+      let tol = Math.min(a.h, b.h) * 0.25;
+      if (Math.abs(a.page[0] - b.page[0]) < tol && Math.abs(a.page[1] - b.page[1]) < tol &&
+          Math.abs(a.page[2] - b.page[2]) < tol && Math.abs(a.page[3] - b.page[3]) < tol) continue;
+      let loser = area(b.page) > area(a.page) * 1.15 ? i : j;
+      gone.add(loser);
+      if (loser === i) break;
+    }
+  }
+  if (!gone.size) return labels;
+  for (let k of gone) { let L = labels[k]; L.parent.children = L.parent.children.filter(c => c !== L.node); }
+  return labels.filter((L, k) => !gone.has(k));
+}
+
+// Knockout boxes: one per label, or one per glyph contour for large type so
+// lines between letters survive. core = what a stroke must cross to be cut,
+// halo = the gap it gets.
+function _labelBoxes(labels) {
+  let out = [];
+  for (let L of labels) {
+    let parts = L.node.id !== 'micro-text' && L.h > 22 ? L.polys.map(p => _polysBox([p])) : [L.B];
+    for (let B of parts) {
+      let ins = Math.min(B[2] - B[0], B[3] - B[1]) * 0.18, pad = Math.max(1, L.h * 0.22) + state.geometry.strokeWeight * 0.5;
+      let core = [B[0] + ins, B[1] + ins, B[2] - ins, B[3] - ins];
+      if (core[2] - core[0] < 0.4 || core[3] - core[1] < 0.4) continue;
+      out.push({ M: L.M, Mi: L.Mi, core, halo: [B[0] - pad, B[1] - pad, B[2] + pad, B[3] + pad], h: L.h });
+    }
+  }
+  return out;
+}
+
+// Clear one composed cell's labels: drop a label that lands on another, then
+// break the strokes around the rest. Returns true when
+// anything changed (the canvas then needs the cell redrawn from the record).
+function knockoutCellLabels(cellGroup, cellRect) {
+  let I = [1, 0, 0, 1, 0, 0];
+  let labels = _cellLabels(cellGroup, I, []);
+  let n0 = labels.length;
+  // A small label hanging out of its cell lands in the neighbour's drawing
+  if (cellRect) {
+    let r = cellRect, sl = 1;
+    let out = labels.filter(L => L.h <= 20 && (L.page[0] < r.x - sl || L.page[1] < r.y - sl || L.page[2] > r.x + r.w + sl || L.page[3] > r.y + r.h + sl));
+    for (let L of out) L.parent.children = L.parent.children.filter(c => c !== L.node);
+    if (out.length) labels = labels.filter(L => !out.includes(L));
+  }
+  labels = _dropCollidingLabels(labels);
+  let changed = labels.length !== n0;
+  let boxes = _labelBoxes(labels);
+  if (!boxes.length) return changed;
+  // Page-space AABB of each box for a cheap reject
+  for (let b of boxes) {
+    let c = b.halo, P = [[c[0], c[1]], [c[2], c[1]], [c[2], c[3]], [c[0], c[3]]].map(q => _matApply(b.M, q));
+    b.aabb = [Math.min(...P.map(q => q[0])), Math.min(...P.map(q => q[1])), Math.max(...P.map(q => q[0])), Math.max(...P.map(q => q[1]))];
+  }
+  const walk = (node, M) => {
+    let drop = null;
+    for (let k = 0; k < node.children.length; k++) {
+      let n = node.children[k];
+      if (n.children) {
+        if (_TEXT_GROUP_IDS.has(n.id)) continue;
+        if (n.id && (n.id.startsWith('treatment-') || n.id.startsWith('clone-'))) continue;
+        walk(n, n.transform ? _matMul(M, parseTransformMatrix(n.transform)) : M);
+        continue;
+      }
+      if (!n.d || !n.stroke || n.stroke === 'none') continue;
+      let polys = parsePathToPolylines(n.d).map(p => p.map(q => _matApply(M, q)));
+      if (!polys.length) continue;
+      let ext = [Infinity, Infinity, -Infinity, -Infinity];
+      for (let p of polys) for (let q of p) { ext[0] = Math.min(ext[0], q[0]); ext[1] = Math.min(ext[1], q[1]); ext[2] = Math.max(ext[2], q[0]); ext[3] = Math.max(ext[3], q[1]); }
+      // Boxes whose core this stroke actually crosses
+      let hits = [];
+      for (let b of boxes) {
+        if (ext[2] < b.aabb[0] || ext[0] > b.aabb[2] || ext[3] < b.aabb[1] || ext[1] > b.aabb[3]) continue;
+        let crossed = 0;
+        for (let p of polys) {
+          let L = p.map(q => _matApply(b.Mi, q));
+          for (let i = 1; i < L.length && crossed <= 0.5; i++) {
+            let T = _segBoxT(L[i - 1], L[i], b.core);
+            if (T) crossed += (T[1] - T[0]) * Math.hypot(L[i][0] - L[i - 1][0], L[i][1] - L[i - 1][1]);
+          }
+          if (crossed > 0.5) break;
+        }
+        if (crossed > 0.5) hits.push(b);
+      }
+      if (!hits.length) continue;
+      changed = true;
+      // A mark no bigger than the label's type is dropped, not left in pieces
+      let size = Math.max(ext[2] - ext[0], ext[3] - ext[1]);
+      if (hits.some(b => size < b.h * 1.6)) { (drop || (drop = new Set())).add(k); continue; }
+      for (let b of hits) {
+        let next = [];
+        for (let p of polys) for (let piece of _cutPolyline(p.map(q => _matApply(b.Mi, q)), b.halo)) next.push(piece.map(q => _matApply(b.M, q)));
+        polys = next;
+      }
+      let Mi = _matInv(M);
+      if (!polys.length || !Mi) { (drop || (drop = new Set())).add(k); continue; }
+      let r = svgRec._r;
+      n.d = polys.map(p => p.map((q, i) => { let v = _matApply(Mi, q); return `${i ? 'L' : 'M'}${r(v[0])} ${r(v[1])}`; }).join('')).join('');
+    }
+    if (drop) node.children = node.children.filter((c, k) => !drop.has(k));
+  };
+  walk(cellGroup, I);
+  return changed;
+}
+
+// Repaint a cell's rect on the canvas from its SVG record, so the screen
+// shows exactly what knockouts left (and what will plot).
+function redrawCellFromRecord(cellGroup, rect) {
+  let ctx = drawingContext;
+  push();
+  resetMatrix();
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(rect.x, rect.y, rect.w, rect.h);
+  ctx.clip();
+  if (state.exportTransparent) ctx.clearRect(rect.x, rect.y, rect.w, rect.h);
+  else { ctx.fillStyle = state.bgColor; ctx.fillRect(rect.x, rect.y, rect.w, rect.h); }
+  if (animCtx && state.animation.onionSkin && _onionFrame && animCtx.frameIndex > 0) {
+    tint(255, 40);
+    image(_onionFrame, 0, 0);
+    noTint();
+  }
+  ctx.lineCap = 'square';
+  ctx.lineJoin = 'miter';
+  const draw = (node) => {
+    for (let n of node.children) {
+      if (n.children) {
+        ctx.save();
+        if (n.transform) { let T = parseTransformMatrix(n.transform); ctx.transform(T[0], T[1], T[2], T[3], T[4], T[5]); }
+        draw(n);
+        ctx.restore();
+      } else if (n.d) {
+        let p2 = new Path2D(n.d);
+        // A filled path is a point (svgPoint): p5 draws it as a dot of the
+        // stroke's width, which the fill alone matches
+        if (n.fill && n.fill !== 'none') { ctx.fillStyle = n.fill; ctx.fill(p2); }
+        else if (n.stroke && n.stroke !== 'none') { ctx.strokeStyle = n.stroke; ctx.lineWidth = n.strokeWidth; ctx.stroke(p2); }
+      }
+    }
+  };
+  draw(cellGroup);
+  ctx.restore();
+  pop();
+}
+
+// ========================================================
 // PLOT-SAFE GEOMETRY (shared by export, plot stats and plot preview)
 // ========================================================
 
@@ -3562,8 +3815,11 @@ function drawOTFontText(str, x, y, fontSize, fontObj) {
       }
     }
     if (current.length > 2) contours.push(current);
-    // Hatch all contours together so counters (holes) stay empty
+    // Hatch all contours together so counters (holes) stay empty. Grouped as
+    // text, so label knockouts treat the fill as part of the glyphs.
+    svgRec.beginGroup('otf-text');
     hatchFillContours(contours, ha, hs, gDir);
+    svgRec.endGroup();
   }
 }
 
@@ -3825,12 +4081,14 @@ const state = {
     motionAmount: 0.75,
     stillnessRatio: 0.2,
     onionSkin: false,
-    playing: false
+    playing: false,
+    showComplete: false   // show the complete (rest) frame instead of the playhead's
   },
   cellOverrides: {},
   manualLayout: null,
   exportTransparent: false,
-  pageFrame: true   // margin grid ticks + colophon line
+  pageFrame: true,   // margin grid ticks + colophon line
+  labelKnockout: true // break strokes around labels, drop labels that land on labels
 };
 
 // Initialize archetype state
@@ -5316,7 +5574,9 @@ function composeStatusPanel(rect, s, prng) {
     }
     kitWeight('fine');
     kitRuler(ix, curY + gh + 3, gw, { divisions: 20, major: 5, len: body * 0.5, from: 0, to: 100, labelSize: micro });
-    curY += gh + body * 2.6;
+    // Next row's cap line clears the scale's numerals (drawn at least min size)
+    let scaleBase = gh + 3 + body * 0.5 + Math.max(micro, getMinTextSizePx()) * 1.1;
+    curY += Math.max(gh + body * 2.6, scaleBase + body * 1.5);
   }
 
   // Key/value rows fill the remaining height of the left column
@@ -7229,7 +7489,7 @@ function composeDataReadout(rect, s, prng) {
         _txText('100', gx - micro * 0.4, gy + micro * 0.4, micro, 'right');
         _txText('0', gx - micro * 0.4, gy + gh + micro * 0.3, micro, 'right');
         _txText('-60S', gx, gy + gh + micro * 1.6, micro);
-        _txText('NOW', gx + gw, gy + gh + micro * 1.6, micro, 'right');
+        if (gw > _txW('-60S', micro) + _txW('NOW', micro) + micro) _txText('NOW', gx + gw, gy + gh + micro * 1.6, micro, 'right');
         kitWeight('secondary');
         svgLine(gx, gy + gh * (1 - hero.lim), gx + gw, gy + gh * (1 - hero.lim));
         let off = animCtx && shouldAnimate(seedHero) ? anim.step(animCtx.frameIndex, animCtx.frameCount, hero.walk.length, animCtx.frameCount, animCtx.speedMul, 0) : 0;
@@ -7247,7 +7507,10 @@ function composeDataReadout(rect, s, prng) {
         let bits = 16, bw = Math.min(rw / bits, rh * 0.3), bx0 = rx + rw - bw * bits, by0 = ry + rh * 0.25;
         let word = Math.floor(hero.v * 0xFFFF);
         kitWeight('fine');
-        _txText('STATUS WORD 0x' + word.toString(16).toUpperCase().padStart(4, '0'), bx0, by0 - micro * 0.6, micro, 'left', seedHex, 'bus:hex');
+        // Right-aligned to the field so a narrow panel shortens it instead of spilling
+        let hex = '0x' + word.toString(16).toUpperCase().padStart(4, '0');
+        let swLbl = _txW('STATUS WORD ' + hex, micro) <= rw ? 'STATUS WORD ' + hex : _txW('SW ' + hex, micro) <= rw ? 'SW ' + hex : hex;
+        _txText(swLbl, rx + rw, by0 - micro * 0.6, micro, 'right', seedHex, 'bus:hex');
         for (let b = 0; b < bits; b++) {
           let bx = bx0 + b * bw;
           kitWeight('secondary');
@@ -7532,6 +7795,20 @@ const SYM_GLYPH_FAMILIES = ['radial', 'rune', 'enclosed', 'sector', 'orbital', '
 // Build one sign in local coordinates (centre 0,0, radius R, stroke thickness T).
 // Returns { M: [{ c: [outer, ...holes], d: max inset depth, tag }], L: thin
 // polylines, acc: [x, y] of the one asymmetric accent }. Stays within ~R + T.
+// How far a form reaches from its centre, accents included.
+function symFormReach(form) {
+  let r = 0;
+  for (let m of form.M) for (let c of m.c) for (let p of c) r = Math.max(r, Math.hypot(p[0], p[1]));
+  for (let l of form.L) for (let p of l) r = Math.max(r, Math.hypot(p[0], p[1]));
+  return r;
+}
+// Scale a form about its centre, in place.
+function symScaleForm(form, k) {
+  for (let m of form.M) { m.c = m.c.map(c => c.map(p => [p[0] * k, p[1] * k])); m.d *= k; }
+  form.L = form.L.map(l => l.map(p => [p[0] * k, p[1] * k]));
+  form.acc = [form.acc[0] * k, form.acc[1] * k];
+}
+
 function symGlyphForm(fam, R, T, prng, depth) {
   let M = [], L = [], acc = [R * 0.7, -R * 0.7];
   let add = (c, d, tag) => { M.push({ c: Array.isArray(c[0][0]) ? c : [c], d: Math.max(0.5, d), tag: tag || '' }); };
@@ -7954,6 +8231,10 @@ function composeStandaloneGlyph(rect, s, prng) {
   let T = R * (tRatio + 0.05 * u);
   let form = symGlyphForm(fam, R, T, prng, 0);
   let ext = R + T * 1.1;   // reach of the form including its accent
+  // Some accents (a shell's pointer notch) reach past that and sat on the
+  // bearing ring: shrink the form until its true reach clears it
+  let reach = symFormReach(form);
+  if (reach > ext - T * 0.15) symScaleForm(form, (ext - T * 0.15) / reach);
 
   let pen = unitToPx(state.plotter.hatch.penDiameter, 'mm', state.plotter.dpi);
   let accentFill = (!fill && s >= 0.42) ? { kind: accentKind < 0.55 ? 'hatch' : 'contour', angle: hatchAng, spacing: Math.max(pen * 1.6, 2.2) } : null;
@@ -8777,7 +9058,7 @@ function composeErrorMessage(rect, s, prng) {
   // Backtrace
   let avail2 = bottom - cy;
   let regDigits = iw * (twoCol ? 0.45 : 1) > regCw * 22 * 2 ? 16 : 8;
-  let regH = wantReg ? sec * 2.1 + micro * 1.55 * regRows(Math.max(1, Math.min(4, Math.floor(iw * (twoCol ? 0.45 : 1) / (regCw * (regDigits + 6)))))) + body * 0.8 : 0;
+  let regH = wantReg ? sec * 2.1 + micro * 1.55 * regRows(Math.max(1, Math.min(4, Math.floor(iw * (twoCol ? 0.45 : 1) / (regCw * (regDigits + 7.5)))))) + body * 0.8 : 0; // same column fit as _txRegisters
   let mapH = wantMap ? sec * 2.1 + micro * 6.4 + body * 0.6 : 0;
   if (regH + mapH > avail2 * 0.6) { mapH = mapH > 0 && regH + mapH > avail2 * 0.75 ? 0 : mapH; }
   if (regH + mapH > avail2 * 0.7) regH = 0;
@@ -12860,6 +13141,12 @@ function composeNodeNetwork(rect, s, prng) {
     G.deco.transposed = true;
   }
   let nodes = G.nodes;
+  // Keep every glyph inside the panel (a bus's far branches overshot it)
+  for (let n of nodes) {
+    let e = nnExtent(n, r0), mx = e[0] + r0 * 0.4, my = e[1] + r0 * 0.4;
+    n.x = Math.min(Math.max(n.x, P.x + mx), P.x + P.w - mx);
+    n.y = Math.min(Math.max(n.y, P.y + my), P.y + P.h - my);
+  }
   let labelNames = nodes.map((n, i) => (NN_TYPE_PREFIX[n.type] || 'N') + '-' + String(g.nextInt(1, 99)).padStart(2, '0'));
   let ips = nodes.map(() => '10.' + subnet + '.' + g.nextInt(0, 31) + '.' + g.nextInt(2, 254));
   let bwPick = G.edges.map(() => g.nextFloat());
@@ -13911,14 +14198,16 @@ function composeEncodedDataBlock(rect, s, prng) {
       kitRuler(bx + rule * 0.45, qy, n * m, { vertical: true, divisions: n, major: 5, len: micro * 0.6, labels: false, side: 1 });
       if (m * 4 > micro * 2.4) kitDimension(z0x, qy + n * m + m * 2, qx, qy + n * m + m * 2, 0, null, micro);
     }
-    // scan line with arrowheads
+    // scan line with arrowheads, marked in the quiet zone on either side
+    // (drawn across the modules it read as a line struck through the code)
     if (opts.scan) {
-      let sy = qy + scanT * n * m;
+      let sy = qy + scanT * n * m, gx0 = qx - m * 0.8, gx1 = qx + n * m + m * 0.8;
+      let rail = (yy) => { svgLine(z0x - m, yy, gx0, yy); svgLine(gx1, yy, z0x + zs + m, yy); };
       kitWeight('heavy');
-      svgLine(z0x - m, sy, z0x + zs + m, sy);
+      rail(sy);
       kitWeight('fine');
-      svgLine(z0x - m, sy - m * 0.6, z0x + zs + m, sy - m * 0.6);
-      svgLine(z0x - m, sy + m * 0.6, z0x + zs + m, sy + m * 0.6);
+      rail(sy - m * 0.6);
+      rail(sy + m * 0.6);
       drawTriangle(z0x - m * 1.6, sy, Math.max(2.5, m * 0.6), 0);
       drawTriangle(z0x + zs + m * 1.6, sy, Math.max(2.5, m * 0.6), PI);
     }
@@ -15224,7 +15513,8 @@ function _mgBezel(rect, s, show) {
   }
   if (show.corners) {
     let a = Math.max(3, mn * 0.035);
-    drawCornerBrackets(x - b * 0.4, y - b * 0.4, w + b * 0.8, h + b * 0.8, a);
+    // On the cell's own corners, in the cabinet's chamfers (outset, they left the cell)
+    drawCornerBrackets(x, y, w, h, a);
   }
   let inset = rr * 0.28;
   return { x: sx + inset, y: sy + inset, w: sw - inset * 2, h: sh - inset * 2, bezelBottom: { x: x + b, y: sy + sh, w: w - b * 2, h: y + h - sy - sh } };
@@ -16515,16 +16805,19 @@ function generateBorder(rect, s, style, weight, padding, prng) {
     case 'crosshair-border': {
       // Crosshair marks at midpoint of each side
       let chLen = Math.min(bw, bh) * 0.06;
+      // Outside the frame there is only the cell padding before the gutter;
+      // a longer tick met the neighbouring cell's
+      let out = Math.min(chLen, state.multi.cellPadding * 0.8);
       // Full rectangle
       svgRect(bx, by, bw, bh);
       // Top midpoint crosshair
-      svgLine(bx + bw / 2, by - chLen, bx + bw / 2, by + chLen);
+      svgLine(bx + bw / 2, by - out, bx + bw / 2, by + chLen);
       // Bottom midpoint crosshair
-      svgLine(bx + bw / 2, by + bh - chLen, bx + bw / 2, by + bh + chLen);
+      svgLine(bx + bw / 2, by + bh - chLen, bx + bw / 2, by + bh + out);
       // Left midpoint crosshair
-      svgLine(bx - chLen, by + bh / 2, bx + chLen, by + bh / 2);
+      svgLine(bx - out, by + bh / 2, bx + chLen, by + bh / 2);
       // Right midpoint crosshair
-      svgLine(bx + bw - chLen, by + bh / 2, bx + bw + chLen, by + bh / 2);
+      svgLine(bx + bw - chLen, by + bh / 2, bx + bw + out, by + bh / 2);
       // Corner accent dots
       svgPoint(bx, by);
       svgPoint(bx + bw, by);
@@ -17754,7 +18047,7 @@ function drawPageFrame(content, cellCount) {
 // screens, but 1x while animating (the GIF / MP4 / MOV exporters read canvas
 // pixels at page size) and for pages whose 2x store would exceed ~48M pixels.
 function canvasDensity() {
-  if (state.animation.enabled) return 1;
+  if (state.animation.enabled && !state.animation.showComplete) return 1;
   let d = Math.min(2, Math.max(1, Math.floor(window.devicePixelRatio || 1)));
   return state.width * state.height * d * d > 48e6 ? 1 : d;
 }
@@ -18189,7 +18482,11 @@ function generate(frameIndex) {
     for (let tx of state.treatmentStack) {
       if (!tx.enabled) continue;
       let perCellFn = TREATMENT_PER_CELL[tx.id];
-      if (perCellFn) perCellFn(tx.intensity, padded, cellScale, archetype, cellPrng, i);
+      if (!perCellFn) continue;
+      // Grouped so label knockouts leave treatments alone (they may overlap)
+      svgRec.beginGroup('treatment-' + tx.id);
+      try { perCellFn(tx.intensity, padded, cellScale, archetype, cellPrng, i); }
+      finally { svgRec.endGroup(); }
     }
     _cellTextLog = _savedTextLog;
 
@@ -18206,6 +18503,11 @@ function generate(frameIndex) {
     // If deeper, composers leaked unclosed transform groups
     while (svgRec.groupStack.length > 2) {
       svgRec.endGroup(); // close leaked inner groups
+    }
+    // Clear the labels (border included); then repaint the cell so screen = plot
+    if (state.labelKnockout !== false && !_drawingSuppressed) {
+      let cellGroup = svgRec.groupStack[1];
+      if (cellGroup && knockoutCellLabels(cellGroup, cell)) redrawCellFromRecord(cellGroup, cell);
     }
     svgRec.endGroup(); // close cell group — stack returns to ['composition']
 
@@ -18357,7 +18659,10 @@ function refreshPlotView() {
   clearTimeout(_plotViewTimer);
   _plotViewTimer = setTimeout(() => {
     let el = document.getElementById('plot-stats');
-    if (state.animation.enabled) { if (el) el.textContent = 'plot stats: static compositions only'; return; }
+    if (state.animation.enabled && !state.animation.showComplete) {
+      if (el) el.innerHTML = 'plot stats: shown for the complete frame &mdash; press <b>◆ ALL</b>';
+      return;
+    }
     let P = plotSafeStrokes();
     let st = plotStats(P);
     if (el) {
@@ -18390,6 +18695,8 @@ function updatePathStats() {
 
 function toggleAnimParams() {
   let show = state.animation.enabled;
+  if (!show) state.animation.showComplete = false;
+  updateAnimFrameDisplay();
   let params = document.getElementById('anim-params');
   if (params) params.style.display = show ? 'block' : 'none';
   let exportRow = document.getElementById('anim-export-row');
@@ -18410,27 +18717,53 @@ function updateAnimScrubberMax() {
 }
 
 function updateAnimFrameDisplay() {
+  let btn = document.getElementById('anim-complete-btn');
+  let complete = !state.animation.enabled || state.animation.showComplete;
+  if (btn) {
+    btn.classList.toggle('active', complete);
+    btn.setAttribute('aria-pressed', complete ? 'true' : 'false');
+  }
   let el = document.getElementById('anim-frame-display');
   if (!el) return;
+  if (state.animation.enabled && state.animation.showComplete) { el.textContent = 'COMPLETE | all elements'; return; }
+  if (!state.animation.enabled) { el.textContent = 'STATIC | all elements'; return; }
   let f = state.animation.currentFrame + 1;
   let total = state.animation.frameCount;
   let timeSec = (state.animation.currentFrame / state.animation.fps).toFixed(1);
   el.textContent = `F${String(f).padStart(2, '0')}/${total} | ${timeSec}s`;
 }
 
+// Render the animation view: the playhead's frame, or the complete frame
+// while that is shown (the playhead keeps its place underneath).
 function generateFrame(index) {
   state.animation.currentFrame = index;
   let scrubber = document.getElementById('anim-scrubber');
   if (scrubber) scrubber.value = index;
   updateAnimFrameDisplay();
-  generate(index);
+  if (state.animation.showComplete) generate(); // no frame index: every element present, at rest
+  else generate(index);
   fixCanvasVisibility();
 }
 
 function scrubToFrame(index) {
   if (state.animation.playing) stopAnimPlayback();
+  state.animation.showComplete = false;
   generateFrame(index);
 }
+
+// The complete frame is the composition with nothing hidden, moved, rotated
+// or half-typed: what a static render draws. It doesn't depend on the
+// playhead, so it is the frame to plot from an animated composition.
+function toggleCompleteFrame(on) {
+  if (!state.animation.enabled) {
+    showConfirmation('ANIMATION OFF: ALREADY COMPLETE');
+    return;
+  }
+  if (state.animation.playing) stopAnimPlayback();
+  state.animation.showComplete = on === undefined ? !state.animation.showComplete : !!on;
+  generateFrame(state.animation.currentFrame || 0);
+}
+window.toggleCompleteFrame = toggleCompleteFrame;
 
 function autoEnableAnimation() {
   if (!state.animation.enabled) {
@@ -18461,6 +18794,7 @@ function toggleAnimPlayback() {
 
 function startAnimPlayback() {
   if (!state.animation.enabled) return;
+  state.animation.showComplete = false;
   state.animation.playing = true;
   let btn = document.getElementById('anim-play-btn');
   if (btn) btn.textContent = '⏸ PAUSE';
@@ -18485,6 +18819,7 @@ function stopAnimPlayback() {
 function animStepFrame(dir) {
   if (!state.animation.enabled) return;
   if (state.animation.playing) stopAnimPlayback();
+  state.animation.showComplete = false;
   let next = (state.animation.currentFrame + dir + state.animation.frameCount) % state.animation.frameCount;
   generateFrame(next);
 }
@@ -18495,12 +18830,20 @@ function animStepFrame(dir) {
 
 async function generateAllFrames(callback) {
   let total = state.animation.frameCount;
-  for (let i = 0; i < total; i++) {
-    generate(i);
-    fixCanvasVisibility();
-    await callback(i, total);
-    // Yield to UI thread for progress updates
-    await new Promise(r => setTimeout(r, 0));
+  // Frames render at 1x density whatever the view; put the view back after
+  let complete = state.animation.showComplete;
+  state.animation.showComplete = false;
+  try {
+    for (let i = 0; i < total; i++) {
+      generate(i);
+      fixCanvasVisibility();
+      await callback(i, total);
+      // Yield to UI thread for progress updates
+      await new Promise(r => setTimeout(r, 0));
+    }
+  } finally {
+    state.animation.showComplete = complete;
+    generateFrame(state.animation.currentFrame || 0);
   }
 }
 
@@ -21220,6 +21563,7 @@ function syncAllUI() {
   document.getElementById('plotter-reg-marks').checked = state.plotter.registrationMarks;
   document.getElementById('plotter-layers').checked = state.plotter.layers.enabled;
   document.getElementById('page-frame').checked = state.pageFrame !== false;
+  document.getElementById('label-knockout').checked = state.labelKnockout !== false;
   document.getElementById('plotter-split-fine').checked = state.plotter.layers.splitFine !== false;
   syncMarginLinkUI();
   document.getElementById('plotter-plot-safe').checked = !!state.plotter.plotSafe;
@@ -21245,6 +21589,7 @@ function syncAllUI() {
 
   // Animation controls
   document.getElementById('anim-enabled').checked = state.animation.enabled;
+  updateAnimFrameDisplay();
   toggleAnimParams();
   document.getElementById('anim-frames').value = state.animation.frameCount;
   document.getElementById('anim-frames-val').textContent = state.animation.frameCount;
@@ -21497,6 +21842,7 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === 'ArrowLeft' && state.animation.enabled) { e.preventDefault(); animStepFrame(-1); }
   else if (e.key === 'Home' && state.animation.enabled) { e.preventDefault(); scrubToFrame(0); }
   else if (e.key === 'End' && state.animation.enabled) { e.preventDefault(); scrubToFrame(state.animation.frameCount - 1); }
+  else if ((e.key === 'c' || e.key === 'C') && !mod && state.animation.enabled) { e.preventDefault(); toggleCompleteFrame(); }
 });
 
 // Expose functions for inline handlers
