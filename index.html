@@ -995,9 +995,9 @@
       <div class="control-group">
         <label data-tip="Chance that shapes use hatch fill instead of outline only." >Fill Probability</label>
         <div class="slider-row">
-          <input type="range" id="fill-prob" min="0" max="1" step="0.01" value="0"
+          <input type="range" id="fill-prob" min="0" max="1" step="0.01" value="0.6"
             oninput="updateState('geometry.fillProbability', +this.value); syncVal(this, 'fill-prob-val')">
-          <span class="slider-val" id="fill-prob-val">0.00</span>
+          <span class="slider-val" id="fill-prob-val">0.60</span>
         </div>
       </div>
       <div class="check-row">
@@ -2297,7 +2297,7 @@ function drawAnimText(str, x, y, fontSize, elemSeed, hintBehavior) {
     if (!behavior) {
       if (/^\d+$/.test(str)) behavior = 'counter';
       else if (prof.tier === 'chaotic') behavior = 'scramble';
-      else if (prof.tier === 'intense') behavior = Math.random() < 0.3 ? 'statusCycle' : null;
+      else if (prof.tier === 'intense') behavior = _profileHash(elemSeed, 0x51) < 0.3 ? 'statusCycle' : null; // seeded, not Math.random: frames must be reproducible
     }
     if (behavior) display = animatedText(str, behavior, elemSeed);
   }
@@ -3618,7 +3618,7 @@ const state = {
   archetypes: {},
   geometry: {
     symmetryBias: 'any', maxRadialArms: 12, organicCharacter: 0.3,
-    strokeWeight: 1.5, fillProbability: 0.0, fontBias: 'auto', softEdgeFiltering: true
+    strokeWeight: 1.5, fillProbability: 0.6, fontBias: 'auto', softEdgeFiltering: true
   },
   detail: { textDensity: 'auto', concentricRingLimit: 4, tickMarkDensity: 0.5, greebleAmount: 0.5 },
   features: { unicodeAccents: true, barcodes: true, warningIcons: true, wireframes: true, datavizElements: true },
@@ -5405,22 +5405,23 @@ function kitFillStyle(s, prng) {
 
 // Fill closed contours (arrays of [x,y]) with a style from kitFillStyle.
 // 'contour' on polygons falls back to hatch; use kitRingFill for circles.
-function kitFillContours(contours, style) {
+// `role` sets the base weight; hatchFillContours draws at 0.4x of it.
+function kitFillContours(contours, style, role) {
   if (!style) return;
-  kitWeight('fine');
+  kitWeight(role || 'primary');
   hatchFillContours(contours, style.angle, style.spacing, 0);
   if (style.kind === 'cross') hatchFillContours(contours, style.angle + 90, style.spacing * 1.4, 0);
 }
 
 // Engraving-style fill for a disc or ring: concentric circles from r0 out to r1.
-function kitRingFill(cx, cy, r1, r0, style) {
+function kitRingFill(cx, cy, r1, r0, style, role) {
   if (!style) return;
-  kitWeight('fine');
+  kitWeight(role || 'secondary');
   if (style.kind !== 'contour') {
     let circle = (r) => Array.from({ length: 96 }, (_, i) => [cx + Math.cos(i / 96 * TWO_PI) * r, cy + Math.sin(i / 96 * TWO_PI) * r]);
     let contours = [circle(r1)];
     if (r0 > 0) contours.push(circle(r0));
-    kitFillContours(contours, style);
+    kitFillContours(contours, style, role);
     return;
   }
   for (let r = r1 - style.spacing; r > Math.max(r0, style.spacing * 0.5); r -= style.spacing) svgCircle(cx, cy, r * 2);
