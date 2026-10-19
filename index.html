@@ -838,6 +838,14 @@
         <input type="checkbox" id="plotter-layers" onchange="updateState('plotter.layers.enabled', this.checked)">
         <label for="plotter-layers">Enable Layers</label>
       </div>
+      <div class="check-row" data-tip="SVG export flattens curves, clips to the clip box, joins connected strokes, drops duplicates and leaves out the background rect (plotters trace it as a frame). Off = raw export.">
+        <input type="checkbox" id="plotter-plot-safe" checked onchange="updateState('plotter.plotSafe', this.checked)">
+        <label for="plotter-plot-safe">Plot-Safe SVG</label>
+      </div>
+      <div class="check-row" data-tip="Plot-safe clip box: on = inside the margins, off = the page edge. Cell borders may use the inner half of the margin; registration marks clip to the page edge.">
+        <input type="checkbox" id="plotter-clip-margins" checked onchange="updateState('plotter.clipToMargins', this.checked)">
+        <label for="plotter-clip-margins">Clip to Margins</label>
+      </div>
       <hr class="divider">
       <div class="hint" style="margin-bottom:4px">Hatch Fill</div>
       <div class="check-row">
@@ -1406,16 +1414,26 @@ function getHatchSpacing() {
 // verts: array of [x,y] pairs. angle: degrees. spacing: px between lines.
 // gradientDir: -1/0/1 (0=uniform, 1=dense-to-sparse along scan, -1=reverse)
 function hatchFillPolygon(verts, angleDeg, spacing, gradientDir) {
-  if (!verts || verts.length < 3 || spacing < 0.5) return;
+  hatchFillContours([verts], angleDeg, spacing, gradientDir);
+}
+
+// Hatch a shape made of several closed contours in ONE even-odd scan, so the
+// holes of a glyph (O, A, B) stay empty instead of being hatched twice.
+// Spacing never drops below pen diameter x 1.2, so adjacent lines can't pool ink.
+function hatchFillContours(contours, angleDeg, spacing, gradientDir) {
+  contours = (contours || []).filter(c => c && c.length >= 3);
+  if (contours.length === 0) return;
+  let minSpacing = Math.max(0.5, unitToPx(state.plotter.hatch.penDiameter, 'mm', state.plotter.dpi) * 1.2);
+  spacing = Math.max(spacing, minSpacing);
   let a = angleDeg * PI / 180;
   let cosA = Math.cos(-a), sinA = Math.sin(-a);
 
   // Rotate vertices into axis-aligned space
-  let rv = verts.map(v => [v[0] * cosA - v[1] * sinA, v[0] * sinA + v[1] * cosA]);
+  let rcs = contours.map(c => c.map(v => [v[0] * cosA - v[1] * sinA, v[0] * sinA + v[1] * cosA]));
 
   // Bounding box in rotated space
   let yMin = Infinity, yMax = -Infinity;
-  for (let v of rv) { if (v[1] < yMin) yMin = v[1]; if (v[1] > yMax) yMax = v[1]; }
+  for (let rv of rcs) for (let v of rv) { if (v[1] < yMin) yMin = v[1]; if (v[1] > yMax) yMax = v[1]; }
 
   let range = yMax - yMin;
   if (range < spacing) return;
@@ -1425,9 +1443,9 @@ function hatchFillPolygon(verts, angleDeg, spacing, gradientDir) {
   let prevWeight = svgRec.currentStrokeWeight;
   svgSetStrokeWeight(prevWeight * 0.4);
 
-  let lineCount = 0;
+  let scanCount = 0;
   let y = yMin + spacing * 0.5;
-  while (y < yMax && lineCount < 200) {
+  while (y < yMax && scanCount < 4000) {
     // Gradient spacing modulation
     let localSpacing = spacing;
     if (gradientDir !== 0) {
@@ -1437,31 +1455,36 @@ function hatchFillPolygon(verts, angleDeg, spacing, gradientDir) {
       localSpacing = spacing * (1 - gr + gr * t * 2);
     }
 
-    // Find intersections with polygon edges
+    // Find intersections with every contour's edges
     let intersections = [];
-    for (let i = 0; i < rv.length; i++) {
-      let j = (i + 1) % rv.length;
-      let y1 = rv[i][1], y2 = rv[j][1];
-      if ((y1 <= y && y2 > y) || (y2 <= y && y1 > y)) {
-        let t2 = (y - y1) / (y2 - y1);
-        intersections.push(rv[i][0] + t2 * (rv[j][0] - rv[i][0]));
+    for (let rv of rcs) {
+      for (let i = 0; i < rv.length; i++) {
+        let j = (i + 1) % rv.length;
+        let y1 = rv[i][1], y2 = rv[j][1];
+        if ((y1 <= y && y2 > y) || (y2 <= y && y1 > y)) {
+          let t2 = (y - y1) / (y2 - y1);
+          intersections.push(rv[i][0] + t2 * (rv[j][0] - rv[i][0]));
+        }
       }
     }
     intersections.sort((a2, b2) => a2 - b2);
 
-    // Draw line segments between pairs (even-odd rule)
-    for (let k = 0; k + 1 < intersections.length; k += 2) {
-      let x1r = intersections[k], x2r = intersections[k + 1];
+    // Draw line segments between pairs (even-odd rule); alternate direction
+    // per scanline so the pen zig-zags rather than flying back each time.
+    let spans = [];
+    for (let k = 0; k + 1 < intersections.length; k += 2) spans.push([intersections[k], intersections[k + 1]]);
+    if (scanCount % 2 === 1) spans = spans.reverse().map(s => [s[1], s[0]]);
+    for (let [x1r, x2r] of spans) {
       // Rotate back to original space
       let lx1 = x1r * cosB - y * sinB;
       let ly1 = x1r * sinB + y * cosB;
       let lx2 = x2r * cosB - y * sinB;
       let ly2 = x2r * sinB + y * cosB;
       svgLine(lx1, ly1, lx2, ly2);
-      lineCount++;
     }
 
-    y += Math.max(localSpacing, 0.5);
+    scanCount++;
+    y += Math.max(localSpacing, minSpacing);
   }
 
   svgSetStrokeWeight(prevWeight);
@@ -2290,6 +2313,190 @@ function drawAnimText(str, x, y, fontSize, elemSeed, hintBehavior) {
 }
 
 // ========================================================
+// PATH GEOMETRY (parse, flatten, transform, clip)
+// ========================================================
+
+// Max deviation (px) between a curve and its flattened polyline: 0.1 px is
+// ~0.03 mm at 96 DPI, far below any pen width.
+const FLATTEN_TOL = 0.1;
+
+// Parse an SVG path d string into polylines of absolute [x,y] points, with
+// curves and arcs flattened. Handles every path command, absolute and relative.
+// Used for single-line SVG font glyphs and for plot-safe SVG export.
+function parsePathToPolylines(d) {
+  let polys = [];
+  if (!d) return polys;
+  let tokens = d.match(/[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/g);
+  if (!tokens) return polys;
+  let i = 0, cmd = '', cur = null;
+  let x = 0, y = 0, sx = 0, sy = 0;
+  let lastCtrl = null, lastCmd = '';
+  const num = () => parseFloat(tokens[i++]);
+  const hasNum = () => i < tokens.length && !/[A-Za-z]/.test(tokens[i]);
+  const lineTo = (nx, ny) => { if (!cur) { cur = [[x, y]]; polys.push(cur); } cur.push([nx, ny]); x = nx; y = ny; };
+  // Segment counts come from Wang's formula: the flattened curve stays within
+  // FLATTEN_TOL px of the true one, so flat curves get few points, tight ones many.
+  const wang = (deg, ddx, ddy) =>
+    Math.max(1, Math.min(256, Math.ceil(Math.sqrt(deg * (deg - 1) / 8 * Math.hypot(ddx, ddy) / FLATTEN_TOL))));
+
+  while (i < tokens.length) {
+    if (/[A-Za-z]/.test(tokens[i])) cmd = tokens[i++];
+    else if (!cmd) { i++; continue; }
+    let rel = cmd === cmd.toLowerCase();
+    let C = cmd.toUpperCase();
+    let ox = rel ? x : 0, oy = rel ? y : 0;
+
+    if (C === 'Z') {
+      if (cur && (x !== sx || y !== sy)) cur.push([sx, sy]);
+      x = sx; y = sy; cur = null; lastCtrl = null; lastCmd = 'Z';
+      continue;
+    }
+    if (!hasNum()) { cmd = ''; continue; }
+
+    if (C === 'M') {
+      x = num() + ox; y = num() + oy; sx = x; sy = y;
+      cur = null;
+      cmd = rel ? 'l' : 'L'; // extra coordinate pairs after M are implicit lineTo
+      lastCtrl = null; lastCmd = 'M';
+      continue;
+    }
+    if (C === 'L') { lineTo(num() + ox, num() + oy); lastCtrl = null; }
+    else if (C === 'H') { lineTo(num() + ox, y); lastCtrl = null; }
+    else if (C === 'V') { lineTo(x, num() + oy); lastCtrl = null; }
+    else if (C === 'C' || C === 'S') {
+      let x1, y1;
+      if (C === 'C') { x1 = num() + ox; y1 = num() + oy; }
+      else if (lastCtrl && /[CS]/.test(lastCmd)) { x1 = 2 * x - lastCtrl[0]; y1 = 2 * y - lastCtrl[1]; }
+      else { x1 = x; y1 = y; }
+      let x2 = num() + ox, y2 = num() + oy, ex = num() + ox, ey = num() + oy;
+      let x0 = x, y0 = y;
+      let n = Math.max(wang(3, x0 - 2 * x1 + x2, y0 - 2 * y1 + y2), wang(3, x1 - 2 * x2 + ex, y1 - 2 * y2 + ey));
+      for (let k = 1; k <= n; k++) {
+        let t = k / n, mt = 1 - t;
+        lineTo(mt*mt*mt*x0 + 3*mt*mt*t*x1 + 3*mt*t*t*x2 + t*t*t*ex,
+               mt*mt*mt*y0 + 3*mt*mt*t*y1 + 3*mt*t*t*y2 + t*t*t*ey);
+      }
+      lastCtrl = [x2, y2];
+    }
+    else if (C === 'Q' || C === 'T') {
+      let x1, y1;
+      if (C === 'Q') { x1 = num() + ox; y1 = num() + oy; }
+      else if (lastCtrl && /[QT]/.test(lastCmd)) { x1 = 2 * x - lastCtrl[0]; y1 = 2 * y - lastCtrl[1]; }
+      else { x1 = x; y1 = y; }
+      let ex = num() + ox, ey = num() + oy;
+      let x0 = x, y0 = y;
+      let n = wang(2, x0 - 2 * x1 + ex, y0 - 2 * y1 + ey);
+      for (let k = 1; k <= n; k++) {
+        let t = k / n, mt = 1 - t;
+        lineTo(mt*mt*x0 + 2*mt*t*x1 + t*t*ex, mt*mt*y0 + 2*mt*t*y1 + t*t*ey);
+      }
+      lastCtrl = [x1, y1];
+    }
+    else if (C === 'A') {
+      let rx = Math.abs(num()), ry = Math.abs(num()), phi = num() * Math.PI / 180;
+      let large = num() !== 0, sweep = num() !== 0;
+      let ex = num() + ox, ey = num() + oy;
+      for (let p of _arcToPoints(x, y, rx, ry, phi, large, sweep, ex, ey)) lineTo(p[0], p[1]);
+      x = ex; y = ey;
+      lastCtrl = null;
+    }
+    else { i++; continue; }
+    lastCmd = C;
+  }
+  return polys.filter(p => p.length >= 2);
+}
+
+// SVG endpoint arc -> points (SVG spec F.6.5 centre parameterization).
+function _arcToPoints(x1, y1, rx, ry, phi, large, sweep, x2, y2) {
+  if (rx === 0 || ry === 0 || (x1 === x2 && y1 === y2)) return [[x2, y2]];
+  let cp = Math.cos(phi), sp = Math.sin(phi);
+  let dx = (x1 - x2) / 2, dy = (y1 - y2) / 2;
+  let x1p = cp * dx + sp * dy, y1p = -sp * dx + cp * dy;
+  let lam = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
+  if (lam > 1) { let s = Math.sqrt(lam); rx *= s; ry *= s; }
+  let num = rx*rx*ry*ry - rx*rx*y1p*y1p - ry*ry*x1p*x1p;
+  let den = rx*rx*y1p*y1p + ry*ry*x1p*x1p;
+  let co = Math.sqrt(Math.max(0, num / den)) * (large === sweep ? -1 : 1);
+  let cxp = co * rx * y1p / ry, cyp = -co * ry * x1p / rx;
+  let cx = cp * cxp - sp * cyp + (x1 + x2) / 2;
+  let cy = sp * cxp + cp * cyp + (y1 + y2) / 2;
+  let ang = (ux, uy, vx, vy) => Math.atan2(ux * vy - uy * vx, ux * vx + uy * vy);
+  let t1 = ang(1, 0, (x1p - cxp) / rx, (y1p - cyp) / ry);
+  let dt = ang((x1p - cxp) / rx, (y1p - cyp) / ry, (-x1p - cxp) / rx, (-y1p - cyp) / ry);
+  if (!sweep && dt > 0) dt -= 2 * Math.PI;
+  else if (sweep && dt < 0) dt += 2 * Math.PI;
+  // Step angle keeps the chord's sagitta under FLATTEN_TOL
+  let rMax = Math.max(rx, ry);
+  let step = rMax > FLATTEN_TOL ? 2 * Math.acos(1 - FLATTEN_TOL / rMax) : Math.PI / 2;
+  let n = Math.max(3, Math.min(256, Math.ceil(Math.abs(dt) / step)));
+  let pts = [];
+  for (let k = 1; k <= n; k++) {
+    let t = t1 + dt * k / n;
+    let ex = rx * Math.cos(t), ey = ry * Math.sin(t);
+    pts.push([cp * ex - sp * ey + cx, sp * ex + cp * ey + cy]);
+  }
+  return pts;
+}
+
+// Parse an SVG transform list (translate / rotate / scale / matrix) into a
+// 2D affine matrix [a, b, c, d, e, f].
+function parseTransformMatrix(str) {
+  let M = [1, 0, 0, 1, 0, 0];
+  if (!str) return M;
+  let re = /(matrix|translate|rotate|scale)\s*\(([^)]*)\)/g, m;
+  while ((m = re.exec(str))) {
+    let v = m[2].split(/[\s,]+/).filter(s => s !== '').map(Number);
+    let T;
+    if (m[1] === 'matrix') T = v;
+    else if (m[1] === 'translate') T = [1, 0, 0, 1, v[0], v[1] || 0];
+    else if (m[1] === 'scale') T = [v[0], 0, 0, v.length > 1 ? v[1] : v[0], 0, 0];
+    else {
+      let a = v[0] * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+      T = [c, s, -s, c, 0, 0];
+      if (v.length >= 3) T = _matMul(_matMul([1, 0, 0, 1, v[1], v[2]], T), [1, 0, 0, 1, -v[1], -v[2]]);
+    }
+    M = _matMul(M, T);
+  }
+  return M;
+}
+
+function _matMul(A, B) {
+  return [A[0]*B[0] + A[2]*B[1], A[1]*B[0] + A[3]*B[1],
+          A[0]*B[2] + A[2]*B[3], A[1]*B[2] + A[3]*B[3],
+          A[0]*B[4] + A[2]*B[5] + A[4], A[1]*B[4] + A[3]*B[5] + A[5]];
+}
+
+// Clip a polyline to an axis-aligned rect [x0, y0, x1, y1] (Liang-Barsky per
+// segment). Returns the pieces that lie inside, each a polyline.
+function clipPolylineToRect(pts, rect) {
+  let [rx0, ry0, rx1, ry1] = rect;
+  let pieces = [], cur = null;
+  for (let k = 0; k + 1 < pts.length; k++) {
+    let [ax, ay] = pts[k], [bx, by] = pts[k + 1];
+    let dx = bx - ax, dy = by - ay, t0 = 0, t1 = 1, keep = true;
+    for (let [p, q] of [[-dx, ax - rx0], [dx, rx1 - ax], [-dy, ay - ry0], [dy, ry1 - ay]]) {
+      if (p === 0) { if (q < 0) { keep = false; break; } continue; }
+      let t = q / p;
+      if (p < 0) { if (t > t1) { keep = false; break; } if (t > t0) t0 = t; }
+      else { if (t < t0) { keep = false; break; } if (t < t1) t1 = t; }
+    }
+    if (!keep) { cur = null; continue; }
+    let s = [ax + dx * t0, ay + dy * t0], e = [ax + dx * t1, ay + dy * t1];
+    if (cur && t0 === 0) cur.push(e);
+    else { cur = [s, e]; pieces.push(cur); }
+    if (t1 < 1) cur = null;
+  }
+  return pieces;
+}
+
+// Background colour for SVG exports, or null to leave the background rect out.
+// Plot-safe exports never carry it: plotters and vpype trace a filled rect as
+// a page-sized frame.
+function svgExportBg() {
+  return (state.exportTransparent || state.plotter.plotSafe) ? null : state.bgColor;
+}
+
+// ========================================================
 // SVG RECORDER
 // ========================================================
 
@@ -2336,6 +2543,8 @@ const svgRec = {
   },
 
   _addPath(d, overrideStroke, overrideFill, overrideWeight) {
+    // A non-finite coordinate makes the whole path unplottable; drop it here.
+    if (!d || /NaN|Infinity|undefined/.test(d)) return;
     let entry = {
       d: d,
       stroke: overrideStroke || this.currentStroke,
@@ -2369,10 +2578,112 @@ const svgRec = {
     if (bgColor && bgColor !== 'none') {
       svg += `  <rect width="100%" height="100%" fill="${bgColor}"/>\n`;
     }
-    if (this.groups.length > 0) svg += this._serializeNodes(this.groups, '  ');
-    if (this.paths.length > 0) svg += this._serializeNodes(this.paths, '  ');
+    if (state.plotter && state.plotter.plotSafe) {
+      svg += this._serializePlotSafe();
+    } else {
+      if (this.groups.length > 0) svg += this._serializeNodes(this.groups, '  ');
+      if (this.paths.length > 0) svg += this._serializeNodes(this.paths, '  ');
+    }
     svg += `</svg>`;
     return svg;
+  },
+
+  // Plot-safe body: every path flattened to absolute polylines (transforms
+  // applied), clipped to the margins (registration marks to the page), joined
+  // where strokes connect, duplicates dropped, fill none, and sorted into
+  // Inkscape layers when layers are enabled.
+  _serializePlotSafe() {
+    let W = this.width, H = this.height, m = state.margin, p = state.plotter;
+    let page = [0, 0, W, H];
+    let content = p.clipToMargins ? [m.left, m.top, W - m.right, H - m.bottom] : page;
+    // Cell borders are drawn outward into the margin by design: let them use
+    // the inner half of it, but never reach the paper edge.
+    let borderBox = p.clipToMargins ? [m.left / 2, m.top / 2, W - m.right / 2, H - m.bottom / 2] : page;
+    let layered = p.layers.enabled;
+    let buckets = new Map(); // layer key -> Map(cell id -> strokes)
+    let seen = new Set();
+    let r = this._r;
+
+    const classify = ids => {
+      if (ids.some(id => id === 'registration-marks' || id === 'pen-reference')) return 'registration';
+      if (ids.includes('otf-text')) return 'macroText';
+      if (ids.some(id => id === 'font-text' || id === 'micro-text')) return 'microText';
+      if (ids.some(id => id === 'border' || id === 'anim-border')) return 'borders';
+      if (ids.some(id => id === 'detail' || id.startsWith('treatment-') || id.startsWith('clone-'))) return 'details';
+      return 'mainContent';
+    };
+
+    const add = (layer, cell, stroke, sw, pts) => {
+      let key = pts.map(q => r(q[0]) + ',' + r(q[1])).join(' ');
+      if (seen.has(key)) return;
+      seen.add(key);
+      let lk = layered ? layer : 'all';
+      if (!buckets.has(lk)) buckets.set(lk, new Map());
+      let cells = buckets.get(lk);
+      if (!cells.has(cell)) cells.set(cell, []);
+      let list = cells.get(cell);
+      let prev = list[list.length - 1];
+      if (prev && prev.stroke === stroke && prev.sw === sw) {
+        let end = prev.pts[prev.pts.length - 1];
+        if (Math.abs(end[0] - pts[0][0]) < 0.01 && Math.abs(end[1] - pts[0][1]) < 0.01) {
+          for (let k = 1; k < pts.length; k++) prev.pts.push(pts[k]);
+          return;
+        }
+      }
+      list.push({ stroke, sw, pts });
+    };
+
+    const walk = (nodes, M, ids) => {
+      for (let n of nodes) {
+        if (n.children) {
+          let M2 = n.transform ? _matMul(M, parseTransformMatrix(n.transform)) : M;
+          walk(n.children, M2, n.id ? ids.concat(n.id) : ids);
+        } else if (n.d && n.stroke && n.stroke !== 'none') {
+          let layer = classify(ids);
+          let rect = layer === 'registration' ? page : layer === 'borders' ? borderBox : content;
+          let cell = ids.find(id => /^cell-\d+$/.test(id)) || '';
+          for (let poly of parsePathToPolylines(n.d)) {
+            let pts = poly.map(q => [M[0]*q[0] + M[2]*q[1] + M[4], M[1]*q[0] + M[3]*q[1] + M[5]])
+                          .filter(q => Number.isFinite(q[0]) && Number.isFinite(q[1]));
+            if (pts.length < 2) continue;
+            for (let piece of clipPolylineToRect(pts, rect)) add(layer, cell, n.stroke, n.strokeWidth, piece);
+          }
+        }
+      }
+    };
+    let I = [1, 0, 0, 1, 0, 0];
+    walk(this.groups, I, []);
+    walk(this.paths, I, []);
+
+    const emitCells = (cells, indent) => {
+      let out = '';
+      for (let [cell, list] of cells) {
+        let inner = cell ? indent + '  ' : indent;
+        if (cell) out += `${indent}<g id="${cell}">\n`;
+        for (let s of list) {
+          let d = s.pts.map((q, k) => `${k ? 'L' : 'M'}${r(q[0])} ${r(q[1])}`).join('');
+          out += `${inner}<path d="${d}" stroke="${s.stroke}" stroke-width="${r(s.sw)}"/>\n`;
+        }
+        if (cell) out += `${indent}</g>\n`;
+      }
+      return out;
+    };
+
+    let out = '';
+    if (!layered) {
+      out += `  <g id="composition" fill="none">\n`;
+      if (buckets.has('all')) out += emitCells(buckets.get('all'), '    ');
+      out += `  </g>\n`;
+      return out;
+    }
+    let order = ['mainContent', 'borders', 'macroText', 'microText', 'details', 'registration'];
+    order.forEach((lk, idx) => {
+      if (!buckets.has(lk)) return;
+      out += `  <g id="layer${idx + 1}" inkscape:label="${p.layers[lk]}" inkscape:groupmode="layer" fill="none">\n`;
+      out += emitCells(buckets.get(lk), '    ');
+      out += `  </g>\n`;
+    });
+    return out;
   },
 
   _serializeNodes(nodes, indent) {
@@ -2513,6 +2824,13 @@ function svgArc(cx, cy, w, h, startAngle, stopAngle) {
   let ex = cx + rx * Math.cos(stopAngle);
   let ey = cy + ry * Math.sin(stopAngle);
   let sweep = stopAngle - startAngle;
+  if (Math.abs(sweep) >= 2 * Math.PI - 1e-6) {
+    // A full turn has identical end points, which SVG renders as nothing:
+    // split it into two half arcs through the opposite point.
+    let mx = 2 * cx - sx, my = 2 * cy - sy;
+    svgRec._addPath(`M${r(sx)} ${r(sy)}A${r(rx)} ${r(ry)} 0 1 1 ${r(mx)} ${r(my)}A${r(rx)} ${r(ry)} 0 1 1 ${r(sx)} ${r(sy)}`);
+    return;
+  }
   let largeArc = Math.abs(sweep) > Math.PI ? 1 : 0;
   let sweepFlag = sweep > 0 ? 1 : 0;
   svgRec._addPath(`M${r(sx)} ${r(sy)}A${r(rx)} ${r(ry)} 0 ${largeArc} ${sweepFlag} ${r(ex)} ${r(ey)}`);
@@ -2547,6 +2865,23 @@ function svgEndShape(close) {
   svgRec._addPath(d);
   _shapeVerts = [];
   _shapeInstability = null;
+}
+
+// Open polyline recorded as ONE path, so a glyph stroke plots as a single
+// pen-down move instead of one path per segment.
+function svgPolyline(pts) {
+  if (_drawingSuppressed || !pts || pts.length < 2) return;
+  let ei = _checkElementInstability();
+  if (ei && !ei.draw) return;
+  let ox = ei ? ei.offsetX : 0, oy = ei ? ei.offsetY : 0;
+  push();
+  noFill();
+  beginShape();
+  for (let p of pts) vertex(p[0] + ox, p[1] + oy);
+  endShape();
+  pop();
+  let r = svgRec._r;
+  svgRec._addPath(pts.map((p, i) => `${i ? 'L' : 'M'}${r(p[0] + ox)} ${r(p[1] + oy)}`).join(''));
 }
 
 function svgPoint(x, y) {
@@ -2908,6 +3243,20 @@ function drawFallbackTextVertical(str, x, y, fontSize) {
   drawFallbackTextRotated(str, x, y, fontSize, -90);
 }
 
+// Wrap drawing functions in a named SVG group so plot-safe export can sort
+// their strokes onto the right pen layer (see svgRec._serializePlotSafe).
+function _tagSvgGroup(names, id) {
+  for (let name of names) {
+    let fn = window[name];
+    window[name] = function () {
+      svgRec.beginGroup(id);
+      try { return fn.apply(this, arguments); } finally { svgRec.endGroup(); }
+    };
+  }
+}
+_tagSvgGroup(['_drawBuiltinText', '_drawDecomposedGlyph'], 'micro-text');
+_tagSvgGroup(['drawBarcodeLines', 'drawDitherFill', 'drawTextureStamp', 'drawTextureStrip', 'drawTextureGreeble'], 'detail');
+
 // ========================================================
 // FONT LOADING SYSTEM
 // ========================================================
@@ -2948,26 +3297,6 @@ function parseSVGFont(svgText, filename) {
   return { name: fontName, em, ascent, descent, defaultAdvance, glyphs, type: 'svg' };
 }
 
-// Parse SVG path d string into line segments (M/L only)
-function parseSVGPathToSegments(d) {
-  if (!d) return [];
-  let segments = [];
-  let parts = d.match(/[ML][^ML]*/gi);
-  if (!parts) return [];
-  let curX = 0, curY = 0;
-  for (let part of parts) {
-    let cmd = part[0].toUpperCase();
-    let nums = part.slice(1).trim().split(/[\s,]+/).map(Number);
-    if (cmd === 'M') {
-      curX = nums[0]; curY = nums[1];
-    } else if (cmd === 'L') {
-      segments.push([curX, curY, nums[0], nums[1]]);
-      curX = nums[0]; curY = nums[1];
-    }
-  }
-  return segments;
-}
-
 // Draw text using a loaded SVG font
 function drawSVGFontText(str, x, y, fontSize, fontObj) {
   let scale = fontSize / fontObj.em;
@@ -2985,15 +3314,11 @@ function drawSVGFontText(str, x, y, fontSize, fontObj) {
       continue;
     }
 
-    // Parse path and draw as line segments
+    // Each glyph stroke becomes one polyline (curves flattened), parsed once per glyph.
     // SVG font coords: Y-up, so we need to flip Y. Baseline is at Y=0 in font coords.
-    let segments = parseSVGPathToSegments(glyph.d);
-    for (let seg of segments) {
-      let x1 = curX + seg[0] * scale;
-      let y1 = y - seg[1] * scale;  // flip Y
-      let x2 = curX + seg[2] * scale;
-      let y2 = y - seg[3] * scale;  // flip Y
-      svgLine(x1, y1, x2, y2);
+    if (!glyph.polys) glyph.polys = parsePathToPolylines(glyph.d);
+    for (let poly of glyph.polys) {
+      svgPolyline(poly.map(p => [curX + p[0] * scale, y - p[1] * scale]));
     }
 
     curX += glyph.advance * scale;
@@ -3088,10 +3413,8 @@ function drawOTFontText(str, x, y, fontSize, fontObj) {
       }
     }
     if (current.length > 2) contours.push(current);
-    // Hatch each closed contour
-    for (let contour of contours) {
-      hatchFillPolygon(contour, ha, hs, gDir);
-    }
+    // Hatch all contours together so counters (holes) stay empty
+    hatchFillContours(contours, ha, hs, gDir);
   }
 }
 
@@ -3311,6 +3634,8 @@ const state = {
     minTextSizeUnit: 'mm',
     detailScale: 1.0,
     registrationMarks: false,
+    plotSafe: true,       // SVG export: flatten, clip, join, layer, no background rect
+    clipToMargins: true,  // plot-safe clip box: margins (true) or page edge (false)
     hatch: {
       enabled: false,
       angle: 45,
@@ -11947,7 +12272,7 @@ function generate(frameIndex) {
       if (animCtx) {
         let fLabel = 'F' + String(animCtx.frameIndex + 1).padStart(2, '0');
         // Frame number label — bottom-left margin
-        _drawBuiltinText(fLabel, mx, my + ch + markLen + 6, 4);
+        _drawBuiltinText(fLabel, mx, Math.min(state.height - 1, my + ch + markLen + 6), 4);
         // Sequence progress bar — bottom margin
         let barY = my + ch + off + markLen + 2;
         let barLen = cw * animCtx.t;
@@ -11974,18 +12299,26 @@ function generate(frameIndex) {
     svgRec.endGroup();
   }
 
-  // Pen width reference (when physical units active)
-  if (state.plotter.unit !== 'px') {
+  // Pen width reference (when physical units active, and only if the bottom
+  // margin can hold its label without touching the paper edge)
+  if (state.plotter.unit !== 'px' && state.margin.bottom >= getMinTextSizePx() + 4) {
     let penPx = state.geometry.strokeWeight;
     let penPhys = pxToUnit(penPx, state.plotter.unit, state.plotter.dpi);
     let label = penPhys.toFixed(2) + state.plotter.unit;
-    let rx = state.width - state.margin.right + 4;
-    let ry = state.height - 6;
+    // Right-aligned to the content edge and centred in the bottom margin, so
+    // it never runs off the page (the label size is clamped to min text size).
+    let textH = getMinTextSizePx();
+    let labelW = _measureBuiltinText(label, 4);
+    let rx = Math.max(0, state.width - state.margin.right - 24 - labelW);
+    let baseY = state.height - Math.max(1, (state.margin.bottom - textH) / 2);
+    let ry = baseY - textH / 2;
+    svgRec.beginGroup('pen-reference');
     svgSetStrokeWeight(penPx);
     svgLine(rx, ry, rx + 20, ry);
     svgSetStrokeWeight(penPx * 0.3);
-    _drawBuiltinText(label, rx, ry - 3, 4);
+    _drawBuiltinText(label, rx + 24, baseY, 4);
     svgSetStrokeWeight(state.geometry.strokeWeight);
+    svgRec.endGroup();
   }
 
   // Capture frame for onion skinning (canvas only, before noLoop)
@@ -12637,7 +12970,7 @@ async function exportAnimSVGLayers() {
 
   await generateAllFrames(async (i, total) => {
     // Capture the inner SVG content (groups + paths) for this frame
-    let innerSVG = svgRec._serializeInner ? svgRec._serializeInner() : svgRec.serialize(state.exportTransparent ? null : state.bgColor);
+    let innerSVG = svgRec._serializeInner ? svgRec._serializeInner() : svgRec.serialize(svgExportBg());
     // Extract just the content between <svg> tags
     let match = innerSVG.match(/<svg[^>]*>([\s\S]*)<\/svg>/);
     let content = match ? match[1] : innerSVG;
@@ -12660,7 +12993,7 @@ async function exportAnimSVGLayers() {
   let svg = `<?xml version="1.0" encoding="UTF-8"?>\n`;
   svg += `<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" `;
   svg += `width="${wStr}" height="${hStr}" viewBox="0 0 ${state.width} ${state.height}">\n`;
-  if (!state.exportTransparent) {
+  if (svgExportBg()) {
     svg += `  <rect width="100%" height="100%" fill="${state.bgColor}"/>\n`;
   }
 
@@ -12688,7 +13021,7 @@ async function exportAnimSVGSequence() {
   let ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 
   await generateAllFrames(async (i, total) => {
-    let svgContent = svgRec.serialize(state.exportTransparent ? null : state.bgColor);
+    let svgContent = svgRec.serialize(svgExportBg());
     let filename = `${state.filenamePrefix}_${state.seed}_F${String(i + 1).padStart(3, '0')}.svg`;
     files.push({ name: filename, content: svgContent });
     updateExportProgress(i, total, 'SVG Seq');
@@ -12719,7 +13052,7 @@ async function exportAnimContactSheet() {
   let allFrameContent = [];
 
   await generateAllFrames(async (i, total) => {
-    let innerSVG = svgRec.serialize(state.exportTransparent ? null : state.bgColor);
+    let innerSVG = svgRec.serialize(svgExportBg());
     let match = innerSVG.match(/<svg[^>]*>([\s\S]*)<\/svg>/);
     let content = match ? match[1] : innerSVG;
     content = content.replace(/<rect[^/]*\/>/, '');
@@ -12729,7 +13062,7 @@ async function exportAnimContactSheet() {
 
   let svg = `<?xml version="1.0" encoding="UTF-8"?>\n`;
   svg += `<svg xmlns="http://www.w3.org/2000/svg" width="${totalW}" height="${totalH}" viewBox="0 0 ${totalW} ${totalH}">\n`;
-  if (!state.exportTransparent) {
+  if (svgExportBg()) {
     svg += `  <rect width="100%" height="100%" fill="${state.bgColor}"/>\n`;
   }
 
@@ -12737,7 +13070,7 @@ async function exportAnimContactSheet() {
     let col = i % cols, row = Math.floor(i / cols);
     let tx = pad + col * (cellW + pad), ty = pad + row * (cellH + pad);
     svg += `  <g transform="translate(${tx},${ty})">\n`;
-    let cellFill = state.exportTransparent ? 'none' : state.bgColor;
+    let cellFill = svgExportBg() || 'none';
     svg += `    <rect width="${cellW}" height="${cellH}" fill="${cellFill}" stroke="${state.fgColor}" stroke-width="0.5"/>\n`;
     svg += `    ${allFrameContent[i]}\n`;
     svg += `  </g>\n`;
@@ -13932,7 +14265,7 @@ function renderError(message, prng) {
 // ========================================================
 
 function exportSVG() {
-  let svgContent = svgRec.serialize(state.exportTransparent ? null : state.bgColor);
+  let svgContent = svgRec.serialize(svgExportBg());
   let blob = new Blob([svgContent], { type: 'image/svg+xml' });
   let url = URL.createObjectURL(blob);
   let a = document.createElement('a');
@@ -13951,7 +14284,7 @@ function exportPNG() {
 }
 
 function copySVG() {
-  let svgContent = svgRec.serialize(state.exportTransparent ? null : state.bgColor);
+  let svgContent = svgRec.serialize(svgExportBg());
   navigator.clipboard.writeText(svgContent).then(() => {
     showConfirmation('COPIED');
   }).catch(() => {
@@ -13981,15 +14314,69 @@ const BUILT_IN_PRESETS = {
   'warning-label': { scale: 0.7, bordersEnabled: true, border: { style: 'ornamental' } }
 };
 
+// Default state, captured in setup() before the first randomize. Built-in
+// presets start from it so nothing leaks in from whatever was loaded before.
+let _defaultState = null;
+const PRESET_RESET_FIELDS = ['scale', 'mode', 'multi', 'bordersEnabled', 'border', 'archetypes',
+  'geometry', 'detail', 'features', 'stacking', 'treatmentStack'];
+
+// Deep-merge a saved state snapshot into `target`. Nested objects merge key by
+// key, so a snapshot from an older build keeps every field it doesn't carry;
+// arrays and the `replace` keys are taken whole.
+function mergeStateInto(target, src, replace) {
+  for (let [k, v] of Object.entries(src)) {
+    let t = target[k];
+    let mergeable = v && typeof v === 'object' && !Array.isArray(v) &&
+                    t && typeof t === 'object' && !Array.isArray(t);
+    if (mergeable && !(replace && replace.includes(k))) mergeStateInto(t, v);
+    else target[k] = v;
+  }
+}
+
+// Apply a full saved state (user preset, share string or share URL), then
+// refresh the UI and, unless told not to, regenerate.
+function _applyStateSnapshot(data, regenerate = true) {
+  let savedFonts = state.fonts;
+  data = JSON.parse(JSON.stringify(data));
+  delete data.fonts;
+  mergeStateInto(state, data, ['cellOverrides', 'manualLayout']);
+  state.fonts = savedFonts;
+  state.animation.playing = false;
+
+  // Ensure archetype state exists for all defined archetypes
+  for (let key in ARCHETYPE_DEFS) {
+    if (!state.archetypes[key]) state.archetypes[key] = { enabled: true, weight: 0.5 };
+  }
+
+  syncAllUI();
+  if (!regenerate) return;
+  if (state.animation.enabled) {
+    state.animation.currentFrame = 0;
+    _onionFrame = null;
+    generateFrame(0);
+  } else {
+    generate();
+    fixCanvasVisibility();
+  }
+}
+
 function loadPreset(name) {
   if (!name) return;
   let preset = BUILT_IN_PRESETS[name];
   if (!preset) {
-    // Check user presets
+    // User presets are full saved states: restore everything, seed included
     let userPresets = JSON.parse(localStorage.getItem('micrographics_presets') || '{}');
-    preset = userPresets[name];
+    if (userPresets[name]) _applyStateSnapshot(userPresets[name]);
+    return;
   }
-  if (!preset) return;
+
+  // Built-in presets describe a look, not a whole state: start every
+  // compositional field from its default, then apply the preset on top
+  if (_defaultState) {
+    for (let key of PRESET_RESET_FIELDS) state[key] = JSON.parse(JSON.stringify(_defaultState[key]));
+  }
+  state.cellOverrides = {};
+  state.manualLayout = null;
 
   // Reset archetypes to defaults then apply preset overrides
   if (preset.archetypes) {
@@ -14041,11 +14428,36 @@ function deleteUserPreset() {
 }
 
 function sharePreset() {
-  let data = JSON.parse(JSON.stringify(state));
-  delete data.fonts;
-  let encoded = btoa(JSON.stringify(data));
-  let url = location.href.split('#')[0] + '#preset=' + encoded;
+  let url = location.href.split('#')[0] + '#preset=' + encodeURIComponent(_encodeShareString(getShareableState()));
   navigator.clipboard.writeText(url).then(() => showConfirmation('URL COPIED'));
+}
+
+// 'MM1|' + UTF-8-safe base64 of the JSON (plain btoa throws on non-Latin1 user text)
+function _encodeShareString(data) {
+  return 'MM1|' + btoa(unescape(encodeURIComponent(JSON.stringify(data))));
+}
+
+// Accepts 'MM1|' strings, raw JSON, or the plain base64 of older share URLs
+function _decodeShareString(encoded) {
+  let raw;
+  if (encoded.startsWith('MM1|')) raw = decodeURIComponent(escape(atob(encoded.slice(4))));
+  else if (encoded.startsWith('{')) raw = encoded;
+  else raw = atob(encoded);
+  return JSON.parse(raw);
+}
+
+// Restore a state shared as #preset=… in the page URL. Returns true if one was applied.
+function _loadSharedPresetFromHash() {
+  if (!location.hash.startsWith('#preset=')) return false;
+  try {
+    let data = _decodeShareString(decodeURIComponent(location.hash.slice(8)));
+    if (typeof data.scale !== 'number') return false;
+    _applyStateSnapshot(data, false);
+    return true;
+  } catch (e) {
+    console.warn('Failed to load shared preset', e);
+    return false;
+  }
 }
 
 function getShareableState() {
@@ -14058,16 +14470,7 @@ function getShareableState() {
 
 function copyShareString() {
   let data = getShareableState();
-  let json = JSON.stringify(data);
-  // Compress: encode as base64
-  let encoded;
-  try {
-    // Use compression if available (TextEncoder + deflate via manual approach)
-    // For now, use simple base64 with a prefix marker
-    encoded = 'MM1|' + btoa(unescape(encodeURIComponent(json)));
-  } catch (e) {
-    encoded = 'MM1|' + btoa(json);
-  }
+  let encoded = _encodeShareString(data);
   // Copy to clipboard and show in textarea
   let textarea = document.getElementById('share-string-input');
   if (textarea) textarea.value = encoded;
@@ -14102,19 +14505,7 @@ function pasteShareString() {
 
 function _applyShareString(encoded) {
   try {
-    let raw;
-    if (encoded.startsWith('MM1|')) {
-      let b64 = encoded.slice(4);
-      raw = decodeURIComponent(escape(atob(b64)));
-    } else if (encoded.startsWith('{')) {
-      // Raw JSON (for development convenience)
-      raw = encoded;
-    } else {
-      // Try plain base64
-      raw = atob(encoded);
-    }
-
-    let data = JSON.parse(raw);
+    let data = _decodeShareString(encoded);
 
     // Validate it looks like a state object
     if (typeof data.scale !== 'number' || !data.seed) {
@@ -14122,36 +14513,8 @@ function _applyShareString(encoded) {
       return;
     }
 
-    // Apply state
-    // Preserve non-serializable fields
-    let savedFonts = state.fonts;
-    Object.assign(state, data);
-    state.fonts = savedFonts;
-    state.animation.playing = false;
-
-    // Ensure archetype state exists for all defined archetypes
-    for (let key in ARCHETYPE_DEFS) {
-      if (!state.archetypes[key]) state.archetypes[key] = { enabled: true, weight: 0.5 };
-    }
-
-    // Ensure animation state has all fields (backward compat with older strings)
-    if (!state.animation) {
-      state.animation = { enabled: false, frameCount: 24, fps: 12, currentFrame: 0,
-        seedOffset: 0, density: 0.7, speedMultiplier: 1.0, motionAmount: 0.65,
-        stillnessRatio: 0.2, onionSkin: false, playing: false };
-    }
-
-    syncAllUI();
-
-    if (state.animation.enabled) {
-      state.animation.currentFrame = 0;
-      _onionFrame = null;
-      generateFrame(0);
-    } else {
-      generate();
-      fixCanvasVisibility();
-    }
-
+    // Deep merge: strings from older builds keep every field they don't carry
+    _applyStateSnapshot(data);
     showConfirmation('SHARE STRING LOADED');
   } catch (e) {
     console.warn('Share string parse error:', e);
@@ -14425,18 +14788,11 @@ function setup() {
   // Set initial seed
   document.getElementById('seed-input').value = state.seed;
 
-  // Check for shared preset in URL
-  let hash = location.hash;
-  if (hash.startsWith('#preset=')) {
-    try {
-      let data = JSON.parse(atob(hash.slice(8)));
-      Object.assign(state, data);
-      syncAllUI();
-    } catch (e) { console.warn('Failed to load shared preset'); }
-  }
+  // Snapshot defaults before anything randomizes them (built-in presets start here)
+  _defaultState = getShareableState();
 
-  // Auto-generate on load
-  randomizeParams(new PRNG(Date.now()));
+  // A shared #preset= URL restores that exact state; otherwise start randomized
+  if (!_loadSharedPresetFromHash()) randomizeParams(new PRNG(Date.now()));
   syncAllUI();
   generate();
   fixCanvasVisibility();
@@ -14774,6 +15130,8 @@ function syncAllUI() {
   document.getElementById('plotter-min-text-unit').value = state.plotter.minTextSizeUnit;
   document.getElementById('plotter-reg-marks').checked = state.plotter.registrationMarks;
   document.getElementById('plotter-layers').checked = state.plotter.layers.enabled;
+  document.getElementById('plotter-plot-safe').checked = !!state.plotter.plotSafe;
+  document.getElementById('plotter-clip-margins').checked = !!state.plotter.clipToMargins;
   document.getElementById('hatch-enabled').checked = state.plotter.hatch.enabled;
   document.getElementById('hatch-angle').value = state.plotter.hatch.angle;
   document.getElementById('hatch-angle-val').textContent = state.plotter.hatch.angle;
