@@ -748,7 +748,7 @@
 
     <!-- ===== OUTPUT DIMENSIONS ===== -->
     <details class="collapsible">
-      <summary>Output Dimensions <label class="rand-toggle"><input type="checkbox" id="rand-dimensions" checked> rand</label></summary>
+      <summary>Output Dimensions</summary>
       <div class="row">
         <div class="control-group">
           <label>Unit</label>
@@ -892,32 +892,6 @@
     <details class="collapsible">
       <summary>Geometry Parameters <label class="rand-toggle"><input type="checkbox" id="rand-geometry" checked> rand</label></summary>
       <div class="control-group">
-        <label data-tip="Prefer even or odd rotational symmetry, or any.">Symmetry Bias</label>
-        <select id="symmetry-bias" onchange="updateState('geometry.symmetryBias', this.value)">
-          <option value="any">Any</option>
-          <option value="radial">Radial</option>
-          <option value="bilateral">Bilateral</option>
-          <option value="rotational">Rotational</option>
-          <option value="asymmetric">Asymmetric</option>
-        </select>
-      </div>
-      <div class="control-group">
-        <label data-tip="Maximum number of radial arms/spokes in symmetric generators." >Max Radial Arms</label>
-        <div class="slider-row">
-          <input type="range" id="max-arms" min="3" max="24" step="1" value="12"
-            oninput="updateState('geometry.maxRadialArms', +this.value); syncVal(this, 'max-arms-val')">
-          <span class="slider-val" id="max-arms-val">12</span>
-        </div>
-      </div>
-      <div class="control-group">
-        <label data-tip="How much randomness distorts geometric forms. Higher = more hand-drawn feel." >Organic Character</label>
-        <div class="slider-row">
-          <input type="range" id="organic-char" min="0" max="1" step="0.01" value="0.3"
-            oninput="updateState('geometry.organicCharacter', +this.value); syncVal(this, 'organic-char-val')">
-          <span class="slider-val" id="organic-char-val">0.30</span>
-        </div>
-      </div>
-      <div class="control-group">
         <label data-tip="Base line thickness for all vector paths." >Stroke Weight</label>
         <div class="slider-row">
           <input type="range" id="stroke-wt" min="0.25" max="5" step="0.25" value="1.5"
@@ -941,17 +915,7 @@
 
     <!-- ===== TYPE ENGINE ===== -->
     <details class="collapsible">
-      <summary>Type Engine <label class="rand-toggle"><input type="checkbox" id="rand-type" checked> rand</label></summary>
-      <div class="control-group">
-        <label data-tip="How much text/annotation content appears. Auto adjusts by scale.">Text Density</label>
-        <select id="type-text-density" onchange="updateState('detail.textDensity', this.value)">
-          <option value="auto">Auto</option>
-          <option value="none">None</option>
-          <option value="sparse">Sparse</option>
-          <option value="medium">Medium</option>
-          <option value="dense">Dense</option>
-        </select>
-      </div>
+      <summary>Type Engine</summary>
       <div class="control-group">
         <label data-tip="Horizontal spacing multiplier between text characters." >Character Spacing</label>
         <div class="slider-row">
@@ -1003,9 +967,9 @@
           onchange="updateState('typeEngine.userMacroText', this.value)">
       </div>
       <div class="control-group">
-        <label>Micro Text</label>
-        <input type="text" id="type-user-micro" value="" placeholder="Micro label..."
-          onchange="updateState('typeEngine.userMicroText', this.value)">
+        <label data-tip="Your words for labels, IDs and annotations. Separate with commas.">Micro Text</label>
+        <input type="text" id="type-user-micro" value="" placeholder="e.g. ORBITAL, KESTREL, UNIT 7"
+          onchange="updateState('typeEngine.userMicroText', this.value); doGenerateKeepSeed()">
       </div>
       <div class="control-group">
         <label data-tip="How frequently user-provided text is injected into compositions." >User Text Amount</label>
@@ -1049,14 +1013,6 @@
         </div>
       </div>
       <div class="control-group">
-        <label data-tip="Density of decorative texture fills in cell corners and edges." >Greeble Amount</label>
-        <div class="slider-row">
-          <input type="range" id="greeble-amt" min="0" max="1" step="0.01" value="0.5"
-            oninput="updateState('detail.greebleAmount', +this.value); syncVal(this, 'greeble-amt-val')">
-          <span class="slider-val" id="greeble-amt-val">0.50</span>
-        </div>
-      </div>
-      <div class="control-group">
         <label>Detail Scale</label>
         <div class="slider-row">
           <input type="range" id="detail-scale" min="0.5" max="2.0" step="0.05" value="1.0"
@@ -1065,12 +1021,6 @@
         </div>
         <div class="hint">Size multiplier for ticks, dashes, stamps. 0.5=finer, 2.0=bolder.</div>
       </div>
-      <hr class="divider">
-      <div class="check-row"><input type="checkbox" id="feat-unicode" checked onchange="updateState('features.unicodeAccents', this.checked)"><label for="feat-unicode">Unicode Accents</label></div>
-      <div class="check-row"><input type="checkbox" id="feat-barcodes" checked onchange="updateState('features.barcodes', this.checked)"><label for="feat-barcodes">Barcodes</label></div>
-      <div class="check-row"><input type="checkbox" id="feat-warnings" checked onchange="updateState('features.warningIcons', this.checked)"><label for="feat-warnings">Warning Icons</label></div>
-      <div class="check-row"><input type="checkbox" id="feat-wireframes" checked onchange="updateState('features.wireframes', this.checked)"><label for="feat-wireframes">Wireframes</label></div>
-      <div class="check-row"><input type="checkbox" id="feat-dataviz" checked onchange="updateState('features.datavizElements', this.checked)"><label for="feat-dataviz">Dataviz Elements</label></div>
       <hr class="divider">
       <div class="check-row">
         <input type="checkbox" id="stacking-toggle" onchange="updateState('stacking.enabled', this.checked)">
@@ -3088,7 +3038,21 @@ const textGen = {
   _pathNames: ['LOG','DATA','SYS','ERR','NET','CORE','DUMP','CONFIG','PROC','REG','CACHE','TEMP','BIN','AUTH','KEY'],
   _pathExts: ['TXT','XML','DAT','LOG','CFG','BIN','SYS','HEX','RAW','DMP'],
 
-  statusLabel(prng) { return prng.pick(this._statusWords); },
+  // User Micro Text (Type Engine): comma/line-separated words that replace
+  // generated labels at the chosen rate (or always, with Blend off). With the
+  // field empty no extra PRNG draws are made, so seeds render as before.
+  _userWord(prng) {
+    let te = state.typeEngine;
+    let raw = te && te.userMicroText ? te.userMicroText.trim() : '';
+    if (!raw) return null;
+    let words = raw.split(/[,\n]+/).map(w => w.trim().toUpperCase()).filter(Boolean);
+    if (!words.length) return null;
+    let roll = prng.nextFloat(), pick = prng.nextFloat();
+    if (te.userTextBlend !== false && roll >= te.userTextAmount) return null;
+    return words[Math.floor(pick * words.length)];
+  },
+
+  statusLabel(prng) { return this._userWord(prng) || prng.pick(this._statusWords); },
 
   valueReadout(prng) {
     let u = prng.pick(this._units);
@@ -3099,6 +3063,8 @@ const textGen = {
   },
 
   identifier(prng) {
+    let user = this._userWord(prng);
+    if (user) return user.replace(/\s+/g, '_') + '-' + prng.nextInt(0, 0xFFF).toString(16).toUpperCase().padStart(3, '0');
     let prefix = prng.pick(this._idPrefixes);
     let sep = prng.pick(this._idSeps);
     let isHex = prng.nextFloat() > 0.5;
@@ -3153,7 +3119,7 @@ const textGen = {
 
   overrideLabel(prng) { return prng.pick(this._overrideWords); },
 
-  annotation(prng) { return prng.pick(this._annotations); },
+  annotation(prng) { let u = this._userWord(prng); return u ? u + ': ' + prng.pick(['OK', 'ACTIVE', 'LOGGED', 'SYNC', 'NOMINAL']) : prng.pick(this._annotations); },
 
   accentChar(prng) {
     let pool = [];
@@ -20824,6 +20790,14 @@ function doGenerate() {
   }, 10);
 }
 
+// Re-render the current seed after a content setting changes.
+function doGenerateKeepSeed() {
+  let locked = state.lockSeed;
+  state.lockSeed = true;
+  doGenerate();
+  state.lockSeed = locked;
+}
+
 function newSeed() {
   state.seed = generateSeed();
   document.getElementById('seed-input').value = state.seed;
@@ -20908,7 +20882,7 @@ function randomizeParams(prng) {
 
   // Geometry
   if (isRandEnabled('rand-geometry')) {
-    state.geometry.organicCharacter = prng.nextFloat() * 0.6;
+    state.geometry.fillProbability = 0.3 + prng.nextFloat() * 0.6; // how often macro forms get hatched silhouettes
   }
 
   // Detail
@@ -21003,30 +20977,16 @@ function syncAllUI() {
   document.getElementById('border-padding').value = state.border.padding;
   document.getElementById('seed-input').value = state.seed;
   document.getElementById('lock-seed').checked = state.lockSeed;
-  document.getElementById('symmetry-bias').value = state.geometry.symmetryBias;
-  document.getElementById('max-arms').value = state.geometry.maxRadialArms;
-  document.getElementById('max-arms-val').textContent = state.geometry.maxRadialArms;
-  document.getElementById('organic-char').value = state.geometry.organicCharacter;
-  document.getElementById('organic-char-val').textContent = state.geometry.organicCharacter.toFixed(2);
   document.getElementById('stroke-wt').value = state.geometry.strokeWeight;
   document.getElementById('stroke-wt-val').textContent = state.geometry.strokeWeight.toFixed(2);
   document.getElementById('fill-prob').value = state.geometry.fillProbability;
   document.getElementById('fill-prob-val').textContent = state.geometry.fillProbability.toFixed(2);
   document.getElementById('soft-edge').checked = state.geometry.softEdgeFiltering;
   // text-density was moved to Type Engine section as type-text-density
-  let tdEl = document.getElementById('text-density') || document.getElementById('type-text-density');
-  if (tdEl) tdEl.value = state.detail.textDensity;
   document.getElementById('ring-limit').value = state.detail.concentricRingLimit;
   document.getElementById('ring-limit-val').textContent = state.detail.concentricRingLimit;
   document.getElementById('tick-density').value = state.detail.tickMarkDensity;
   document.getElementById('tick-density-val').textContent = state.detail.tickMarkDensity.toFixed(2);
-  document.getElementById('greeble-amt').value = state.detail.greebleAmount;
-  document.getElementById('greeble-amt-val').textContent = state.detail.greebleAmount.toFixed(2);
-  document.getElementById('feat-unicode').checked = state.features.unicodeAccents;
-  document.getElementById('feat-barcodes').checked = state.features.barcodes;
-  document.getElementById('feat-warnings').checked = state.features.warningIcons;
-  document.getElementById('feat-wireframes').checked = state.features.wireframes;
-  document.getElementById('feat-dataviz').checked = state.features.datavizElements;
   renderTreatmentStackUI();
   document.getElementById('filename-prefix').value = state.filenamePrefix;
   document.getElementById('stacking-toggle').checked = state.stacking.enabled;
@@ -21034,7 +20994,6 @@ function syncAllUI() {
   document.getElementById('stacking-prob-val').textContent = state.stacking.probability.toFixed(2);
 
   // Type Engine controls
-  document.getElementById('type-text-density').value = state.detail.textDensity;
   document.getElementById('type-char-spacing').value = state.typeEngine.charSpacing;
   document.getElementById('type-char-spacing-val').textContent = state.typeEngine.charSpacing.toFixed(2);
   document.getElementById('type-hero-labels').checked = state.typeEngine.heroSources.labels;
