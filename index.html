@@ -18676,6 +18676,15 @@ function getArchetypeFamily(archetype) {
 // GENERATION PIPELINE
 // ========================================================
 
+// Backing-store density: the display's (up to 2x) for crisp lines on Retina
+// screens, but 1x while animating (the GIF / MP4 / MOV exporters read canvas
+// pixels at page size) and for pages whose 2x store would exceed ~48M pixels.
+function canvasDensity() {
+  if (state.animation.enabled) return 1;
+  let d = Math.min(2, Math.max(1, Math.floor(window.devicePixelRatio || 1)));
+  return state.width * state.height * d * d > 48e6 ? 1 : d;
+}
+
 function generate(frameIndex) {
   // Animation context setup
   if (frameIndex !== undefined && state.animation.enabled) {
@@ -18705,7 +18714,7 @@ function generate(frameIndex) {
   // total (20000x20000 rendered blank): scale an oversized page down, keeping
   // its aspect ratio. Physical size in mm/in is unaffected only if DPI is
   // lowered to match, so say so.
-  let maxSide = 16384, maxArea = 16384 * 16384 * 0.9;
+  let maxSide = 16384 / canvasDensity(), maxArea = 16384 * 16384 * 0.9 / (canvasDensity() * canvasDensity());
   let over = Math.max(state.width / maxSide, state.height / maxSide, Math.sqrt(state.width * state.height / maxArea));
   if (over > 1) {
     state.width = Math.floor(state.width / over);
@@ -18718,6 +18727,8 @@ function generate(frameIndex) {
   svgRec.reset(state.width, state.height);
 
   // Setup canvas — only resize if dimensions changed (avoids p5.js visibility bug)
+  let pd = canvasDensity();
+  if (pixelDensity() !== pd) pixelDensity(pd); // resizes the backing store
   if (width !== state.width || height !== state.height) {
     resizeCanvas(state.width, state.height);
   }
