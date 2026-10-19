@@ -790,7 +790,7 @@
           <input type="number" id="out-margin" min="0" max="2000" step="any" value="20"
             onchange="updateMargin(dimInputToState('margin', this.value))">
           <div class="check-row" style="min-width:80px">
-            <input type="checkbox" id="margin-link" checked onchange="updateState('margin.linked', this.checked)">
+            <input type="checkbox" id="margin-link" checked onchange="updateState('margin.linked', this.checked); syncMarginLinkUI()">
             <label for="margin-link" style="font-size:0.75em">Linked</label>
           </div>
         </div>
@@ -1383,7 +1383,17 @@ function setPlotterUnit(unit) {
 }
 
 function setPlotterDPI(dpi) {
+  let old = state.plotter.dpi;
   state.plotter.dpi = Math.max(72, Math.min(2400, dpi));
+  // In physical units the page and margins keep their size in mm/in, so the
+  // pixel dimensions rescale (before, changing DPI after a paper preset
+  // silently changed the paper size)
+  if (state.plotter.unit !== 'px' && old > 0 && old !== state.plotter.dpi) {
+    let k = state.plotter.dpi / old;
+    state.width = Math.round(state.width * k);
+    state.height = Math.round(state.height * k);
+    for (let side of ['top', 'right', 'bottom', 'left']) state.margin[side] = Math.round(state.margin[side] * k);
+  }
   refreshDimensionDisplays();
 }
 
@@ -2008,7 +2018,10 @@ let _cellOverrideVariant = null; // Set before composer call to override variant
 
 // Interactive editing state
 let _editMode = false;
-let _selectedCell = null;   // index into _cellMeta, or null
+let _selectedCell = null;   // cell index (not an index into _cellMeta, which skips cells), or null
+let _lastCellRects = [];    // every cell's rect from the last generate, by cell index
+// Metadata for a cell index; _cellMeta has no entry for cells that drew nothing.
+function _metaForCell(i) { return i === null ? null : _cellMeta.find(c => c.index === i) || null; }
 let _dragEdge = null;       // active edge drag info
 let _undoStack = [];
 let _redoStack = [];
@@ -3211,7 +3224,7 @@ function _measureBuiltinText(str, fontSize) {
 // Primary text drawing — uses loaded fonts when available, builtin otherwise
 function drawFallbackText(str, x, y, fontSize) {
   fontSize = Math.max(fontSize, getMinTextSizePx());
-  if (loadedFonts.ready && _cellPRNG) {
+  if (_cellPRNG) { // getTextRenderer makes its draw even before fonts load (then returns builtin)
     // CRITICAL: Always call getTextRenderer to consume PRNG for font selection,
     // even when drawing is suppressed. This keeps the PRNG stream stable.
     let renderer = getTextRenderer(_cellScale, state.geometry.fontBias, _cellPRNG, fontSize);
@@ -3228,7 +3241,7 @@ function drawFallbackText(str, x, y, fontSize) {
 // Measure text width
 function measureFallbackText(str, fontSize) {
   fontSize = Math.max(fontSize, getMinTextSizePx());
-  if (loadedFonts.ready && _cellPRNG) {
+  if (_cellPRNG) { // getTextRenderer makes its draw even before fonts load (then returns builtin)
     let renderer = getTextRenderer(_cellScale, state.geometry.fontBias, _cellPRNG, fontSize);
     return renderer.measure(str, fontSize);
   }
@@ -3449,17 +3462,20 @@ function measureOTFontText(str, fontSize, fontObj) {
 // Get the appropriate text renderer for a given scale
 // Per-generate font assignments — randomized each generate, re-rolled per cell
 let _genFonts = { micro: null, macro: null };
+// Both draws happen whether or not fonts have loaded (or some failed), so the
+// PRNG stream - and every choice after it - is the same either way.
 function randomizeFontSelection(prng) {
-  if (loadedFonts.micro.length > 0) _genFonts.micro = prng.pick(loadedFonts.micro);
-  if (loadedFonts.macro.length > 0) _genFonts.macro = prng.pick(loadedFonts.macro);
+  let rm = prng.nextFloat(), rM = prng.nextFloat();
+  _genFonts.micro = loadedFonts.micro.length ? loadedFonts.micro[Math.floor(rm * loadedFonts.micro.length)] : null;
+  _genFonts.macro = loadedFonts.macro.length ? loadedFonts.macro[Math.floor(rM * loadedFonts.macro.length)] : null;
 }
 // Re-roll fonts for each cell (called from pipeline loop)
-function rerollCellFonts(prng) {
-  if (loadedFonts.micro.length > 0) _genFonts.micro = prng.pick(loadedFonts.micro);
-  if (loadedFonts.macro.length > 0) _genFonts.macro = prng.pick(loadedFonts.macro);
-}
+function rerollCellFonts(prng) { randomizeFontSelection(prng); }
 
 function getTextRenderer(s, fontBias, prng, fontSize) {
+  // Drawn first and unconditionally: the stream must not depend on whether
+  // fonts have loaded or an explicit font is chosen.
+  let roll = prng ? prng.nextFloat() : 0.5;
   if (!loadedFonts.ready) return { draw: _drawBuiltinText, measure: _measureBuiltinText };
 
   let font = null;
@@ -3479,7 +3495,6 @@ function getTextRenderer(s, fontBias, prng, fontSize) {
     // threshold falls from ~6x to ~2x min text size as s rises. Deciding by size
     // instead of a per-call roll means a string is measured and drawn in the same
     // face, and big headings turn macro before small labels do.
-    let roll = prng ? prng.nextFloat() : 0.5; // still drawn: keeps the cell PRNG stream length
     let macroMin = getMinTextSizePx() * (2 + Math.max(0, 0.75 - s) / 0.45 * 4);
     let useMicro = s < 0.3 || (s <= 0.75 && (fontSize ? fontSize < macroMin : roll < 1 - (s - 0.3) / 0.45));
     if (useMicro && _genFonts.micro) {
@@ -3492,7 +3507,7 @@ function getTextRenderer(s, fontBias, prng, fontSize) {
     // Final fallback: pick from any available
     if (!font) {
       let allFonts = [...loadedFonts.micro, ...loadedFonts.macro];
-      font = allFonts.length > 0 ? (prng ? prng.pick(allFonts) : allFonts[0]) : null;
+      font = allFonts.length > 0 ? allFonts[Math.floor(roll * allFonts.length)] : null; // reuse the roll: no extra, conditional draw
     }
   }
 
@@ -3541,7 +3556,7 @@ async function loadAllFonts() {
       try { let r = await fetch('fonts/micro/' + filename); text = await r.text(); }
       catch(e) { text = await xhrLoadText('fonts/micro/' + filename); }
       let font = parseSVGFont(text, filename);
-      if (font) { loadedFonts.micro.push(font); console.log('Loaded micro font: ' + font.name); }
+      if (font) { font._order = FONT_MANIFEST.micro.indexOf(filename); loadedFonts.micro.push(font); console.log('Loaded micro font: ' + font.name); }
     } catch(e) { console.warn('Failed to load micro font ' + filename + ':', e.message); }
   });
 
@@ -3558,12 +3573,16 @@ async function loadAllFonts() {
         font = opentype.parse(buf);
       }
       let name = font.names.fontFamily?.en || filename.replace(/\.\w+$/, '');
-      loadedFonts.macro.push({ name, otFont: font, type: 'otf' });
+      loadedFonts.macro.push({ name, otFont: font, type: 'otf', _order: FONT_MANIFEST.macro.indexOf(filename) });
       console.log('Loaded macro font: ' + name);
     } catch(e) { console.warn('Failed to load macro font ' + filename + ':', e.message); }
   });
 
   await Promise.allSettled([...microPromises, ...macroPromises]);
+  // Manifest order, not network-arrival order: fonts are picked by PRNG index,
+  // so arrival order made the same seed pick different fonts between loads.
+  loadedFonts.micro.sort((a, b) => a._order - b._order);
+  loadedFonts.macro.sort((a, b) => a._order - b._order);
 
   await Promise.resolve(); // ensure microtask flush
   loadedFonts.ready = loadedFonts.micro.length > 0 || loadedFonts.macro.length > 0;
@@ -3718,6 +3737,14 @@ function updateScale(val) {
   }
 }
 
+// Linked margins edit all four sides from one field; unlinked shows the four.
+function syncMarginLinkUI() {
+  let ind = document.getElementById('margin-individual');
+  if (ind) ind.style.display = state.margin.linked ? 'none' : '';
+  let link = document.getElementById('margin-link');
+  if (link) link.checked = !!state.margin.linked;
+}
+
 function updateMargin(val) {
   if (state.margin.linked) {
     state.margin.top = state.margin.right = state.margin.bottom = state.margin.left = val;
@@ -3781,10 +3808,11 @@ function computeCellScales(cells, globalScale, scaleBias) {
   let areas = cells.map(c => c.w * c.h);
   let areaMin = Math.min(...areas);
   let areaMax = Math.max(...areas);
-  let areaRange = areaMax - areaMin || 1;
+  let areaRange = areaMax - areaMin;
   for (let i = 0; i < cells.length; i++) {
-    let areaNorm = (areas[i] - areaMin) / areaRange;
-    if (cells.length === 1) areaNorm = 0.5;
+    // Equal areas (or one cell) sit at the middle: they were all 0, which
+    // shifted every cell 0.3 toward micro
+    let areaNorm = areaRange > 1e-6 ? (areas[i] - areaMin) / areaRange : 0.5;
     let rangeWidth = 0.6;
     let baseScale = globalScale + (areaNorm - 0.5) * rangeWidth;
     cells[i].scale = Math.max(0, Math.min(1, baseScale + scaleBias));
@@ -5167,7 +5195,11 @@ function getEffectiveTextDensity(s) {
 // Check if an archetype is compatible with a cell's aspect ratio
 function isAspectRatioCompatible(archetype, w, h) {
   let aspect = w / h;
-  let radialTypes = ['targetingReticle', 'standaloneGlyph', 'globeSphere', 'sealBadge', 'meterGauge'];
+  // Strips are handled by composeArchetypeCell: friezes for these, a rotated
+  // frame for tall cells of these
+  if (FRIEZE_ARCHETYPES.has(archetype)) return true;
+  if (ROTATE_TALL_ARCHETYPES.has(archetype) && aspect < 1) return true;
+  let radialTypes = ['targetingReticle', 'meterGauge'];
   let linearTypes = ['encodedData', 'datavizFragment', 'nodeNetwork', 'spectrogram', 'miniGame'];
   if (radialTypes.includes(archetype) && (aspect > 2.5 || aspect < 1 / 2.5)) return false;
   // Linear types handle wide/tall cells well
@@ -18505,6 +18537,19 @@ function generate(frameIndex) {
   // Randomize font selection for this generation
   randomizeFontSelection(prng);
 
+  // Browsers can't allocate canvases past ~16384 px a side or ~268M px in
+  // total (20000x20000 rendered blank): scale an oversized page down, keeping
+  // its aspect ratio. Physical size in mm/in is unaffected only if DPI is
+  // lowered to match, so say so.
+  let maxSide = 16384, maxArea = 16384 * 16384 * 0.9;
+  let over = Math.max(state.width / maxSide, state.height / maxSide, Math.sqrt(state.width * state.height / maxArea));
+  if (over > 1) {
+    state.width = Math.floor(state.width / over);
+    state.height = Math.floor(state.height / over);
+    refreshDimensionDisplays();
+    showConfirmation('CANVAS LIMITED TO ' + state.width + 'x' + state.height + ' PX - LOWER DPI');
+  }
+
   // Setup SVG recorder
   svgRec.reset(state.width, state.height);
 
@@ -18539,7 +18584,7 @@ function generate(frameIndex) {
   let contentRect = { x: ml, y: mx, w: state.width - ml - mr, h: state.height - mx - mb };
 
   if (contentRect.w < 32 || contentRect.h < 32) {
-    renderError('CANVAS TOO SMALL // MINIMUM 64x64 REQUIRED', prng);
+    renderError('CANVAS TOO SMALL // CONTENT AREA MUST BE 32x32 PX INSIDE MARGINS', prng);
     return;
   }
 
@@ -18594,6 +18639,7 @@ function generate(frameIndex) {
   buildCompBus(cells, contentRect, prng);
   _cellCount = cells.length;
   _cellMeta = [];
+  _lastCellRects = cells.map(c => ({ x: c.x, y: c.y, w: c.w, h: c.h }));
 
   svgRec.beginGroup('composition');
 
@@ -18624,6 +18670,11 @@ function generate(frameIndex) {
       h: cell.h - state.multi.cellPadding * 2
     };
     if (padded.w < 20 || padded.h < 20) continue;
+    // With borders on, content sits inside the border padding and the border
+    // runs on the padded rect, so it stays inside its cell. (Drawn outward by
+    // its padding it crossed the gutter: 10-30 overlapping pairs per page.)
+    let bp = state.bordersEnabled ? Math.min(state.border.padding, padded.w * 0.1, padded.h * 0.1) : 0;
+    let inner = { x: padded.x + bp, y: padded.y + bp, w: padded.w - bp * 2, h: padded.h - bp * 2 };
 
     svgRec.beginGroup('cell-' + i);
     svgSetStroke(state.fgColor);
@@ -18632,9 +18683,9 @@ function generate(frameIndex) {
 
     // Very small cells: fill with texture pattern instead of full archetype
     if (cells.length > 1 && (origPadded.w < 50 || origPadded.h < 50) && cellPrng.nextFloat() < 0.6) {
-      drawTextureGreeble(padded.x + 2, padded.y + 2, padded.w - 4, padded.h - 4, cellScale, cellPrng);
+      drawTextureGreeble(inner.x + 2, inner.y + 2, inner.w - 4, inner.h - 4, cellScale, cellPrng);
       if (state.bordersEnabled) {
-        generateBorder(padded, cellScale, state.border.style, state.border.weight, state.border.padding, cellPrng);
+        generateBorder(inner, cellScale, state.border.style, state.border.weight, bp, cellPrng);
       }
       svgRec.endGroup();
       continue;
@@ -18821,8 +18872,12 @@ function generate(frameIndex) {
       }
     }
 
-    // Compose archetype (aspect-aware: see composeArchetypeCell)
-    composeArchetypeCell(archetype, padded, cellScale, cellPrng);
+    // Compose archetype (aspect-aware: see composeArchetypeCell). A composer
+    // that throws loses its own cell, not the page.
+    let suppressedBefore = _drawingSuppressed;
+    try { composeArchetypeCell(archetype, inner, cellScale, cellPrng); }
+    catch (err) { console.error(`${archetype} failed in cell ${i}:`, err); }
+    finally { _drawingSuppressed = suppressedBefore; }
 
     // Store debug metadata for tooltip (after composer runs, so variant info is populated)
     _cellMeta.push({
@@ -18871,7 +18926,7 @@ function generate(frameIndex) {
 
     // Border
     if (state.bordersEnabled) {
-      generateBorder(padded, cellScale, state.border.style, state.border.weight, state.border.padding, cellPrng);
+      generateBorder(inner, cellScale, state.border.style, state.border.weight, bp, cellPrng);
     }
 
     // Safety: drain any leaked SVG groups before closing cell group
@@ -18974,8 +19029,9 @@ function generate(frameIndex) {
     svgRec.endGroup();
   }
 
-  // Capture frame for onion skinning (canvas only, before noLoop)
-  if (animCtx) {
+  // Capture frame for onion skinning (canvas only, before noLoop) - only when
+  // onion skin is on: a full-canvas get() every frame is wasted otherwise
+  if (animCtx && state.animation.onionSkin) {
     _onionFrame = get();
   }
 
@@ -18985,8 +19041,8 @@ function generate(frameIndex) {
   noLoop();
 
   // Edit mode: draw selection highlight (canvas only, not SVG)
-  if (_editMode && _selectedCell !== null && _cellMeta[_selectedCell]) {
-    let sr = _cellMeta[_selectedCell].rect;
+  if (_editMode && _metaForCell(_selectedCell)) {
+    let sr = _metaForCell(_selectedCell).rect;
     push();
     noFill();
     stroke('#00ff88');
@@ -19157,7 +19213,19 @@ function downloadBlob(blob, filename) {
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 2000); // revoking at once can cancel the download
+}
+
+// gif.js runs its encoder in a Web Worker, and a worker script must be
+// same-origin: pointing it at the CDN URL threw SecurityError. Fetch it once
+// and serve it from a blob: URL instead.
+let _gifWorkerURL = null;
+async function gifWorkerURL() {
+  if (_gifWorkerURL) return _gifWorkerURL;
+  let res = await fetch('https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.worker.js');
+  if (!res.ok) throw new Error('GIF worker HTTP ' + res.status);
+  _gifWorkerURL = URL.createObjectURL(new Blob([await res.text()], { type: 'application/javascript' }));
+  return _gifWorkerURL;
 }
 
 async function exportAnimGIF() {
@@ -19182,8 +19250,14 @@ async function exportAnimGIF() {
     quality: 10,
     width: state.width,
     height: state.height,
-    workerScript: 'https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.worker.js'
+    workerScript: null
   };
+  try { gifOpts.workerScript = await gifWorkerURL(); }
+  catch (e) {
+    showConfirmation('GIF ENCODER UNAVAILABLE (OFFLINE?)');
+    if (progressEl) progressEl.style.display = 'none';
+    return;
+  }
   if (isTransparent) {
     gifOpts.transparent = CHROMA;
     gifOpts.background = chromaCss;
@@ -20600,9 +20674,15 @@ function applyHackingTreatment(intensity, rect, prng, cellData) {
       cellFloodT *= intensity * drama;
       if (cellFloodT < 0.15) return;
 
-      let fontSize = Math.max(3, Math.min(cr.w * 0.03, 5));
-      let cols = Math.max(2, Math.floor(cr.w / (fontSize * 1.0)));
-      let rows = Math.max(1, Math.floor(cr.h / (fontSize * 1.3)));
+      // Grid pitch from the size glyphs are actually drawn at (min text size),
+      // capped per cell: a 3-5px grid overdrew ~20x at 300 DPI (+290K paths).
+      // Built-in glyphs: no font pick, so the cell PRNG is untouched while the
+      // flood grows across animation frames.
+      let fontSize = Math.max(getMinTextSizePx(), Math.min(cr.w * 0.03, 5));
+      let pitchX = fontSize * 0.9, pitchY = fontSize * 1.3;
+      let cols = Math.max(2, Math.floor(cr.w / pitchX));
+      let rows = Math.max(1, Math.floor(cr.h / pitchY));
+      rows = Math.min(rows, Math.max(1, Math.floor(1200 / cols)));
       let floodCols = Math.round(cols * Math.min(1, cellFloodT));
 
       // 50% XXXX fill, 50% hex dump fill
@@ -20610,14 +20690,10 @@ function applyHackingTreatment(intensity, rect, prng, cellData) {
 
       for (let row = 0; row < rows; row++) {
         for (let col = 0; col < floodCols; col++) {
-          let fx = cr.x + col * fontSize * 1.0 + 1;
-          let fy = cr.y + row * fontSize * 1.3 + fontSize + 1;
-          if (isHex) {
-            let hexChar = '0123456789ABCDEF'[Math.floor(_profileHash(ci * 1000 + row * 50 + col, 0x4857) * 16)];
-            drawFallbackText(hexChar, fx, fy, fontSize);
-          } else {
-            drawFallbackText('X', fx, fy, fontSize);
-          }
+          let fx = cr.x + col * pitchX + 1;
+          let fy = cr.y + row * pitchY + fontSize + 1;
+          let ch = isHex ? '0123456789ABCDEF'[Math.floor(_profileHash(ci * 1000 + row * 50 + col, 0x4857) * 16)] : 'X';
+          _drawBuiltinText(ch, fx, fy, fontSize);
         }
       }
     });
@@ -20854,22 +20930,18 @@ const TREATMENT_PER_CELL = {
     // Progressive flood from cell edge
     if (eff > 0.4 && floodRoll < eff * 0.5) {
       svgSetStrokeWeight(state.geometry.strokeWeight * 0.2);
-      let fontSize = Math.max(2, Math.min(w * 0.025, 4));
-      let cols = Math.max(1, Math.floor(w / (fontSize * 0.9)));
-      let rows = Math.max(1, Math.floor(h / (fontSize * 1.2)));
+      // Pitch from the drawn (min text) size; built-in glyphs, no PRNG use
+      let fontSize = Math.max(getMinTextSizePx(), Math.min(w * 0.025, 4));
+      let pitchX = fontSize * 0.9, pitchY = fontSize * 1.2;
+      let cols = Math.max(1, Math.floor(w / pitchX));
+      let rows = Math.max(1, Math.floor(h / pitchY));
       let floodProgress = Math.min(1, loopT * 1.5 * eff);
       let floodCols = Math.round(cols * floodProgress);
       let isHex = _profileHash(ci * 443, 0x4860) < 0.5;
       for (let row = 0; row < Math.min(rows, 4); row++) {
         for (let col = 0; col < floodCols; col++) {
-          let fx = x + col * fontSize * 0.9 + 1;
-          let fy = y + row * fontSize * 1.2 + fontSize + 1;
-          if (isHex) {
-            let hc = '0123456789ABCDEF'[Math.floor(_profileHash(ci * 1100 + row * 50 + col, 0x4861) * 16)];
-            drawFallbackText(hc, fx, fy, fontSize);
-          } else {
-            drawFallbackText('X', fx, fy, fontSize);
-          }
+          let ch = isHex ? '0123456789ABCDEF'[Math.floor(_profileHash(ci * 1100 + row * 50 + col, 0x4861) * 16)] : 'X';
+          _drawBuiltinText(ch, x + col * pitchX + 1, y + row * pitchY + fontSize + 1, fontSize);
         }
       }
     }
@@ -20926,7 +20998,7 @@ function exportSVG() {
   a.href = url;
   a.download = `${state.filenamePrefix}_${state.seed}_${ts}.svg`;
   a.click();
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
   showConfirmation('TRANSMITTED');
 }
 
@@ -20978,6 +21050,7 @@ const PRESET_RESET_FIELDS = ['scale', 'mode', 'multi', 'bordersEnabled', 'border
 // arrays and the `replace` keys are taken whole.
 function mergeStateInto(target, src, replace) {
   for (let [k, v] of Object.entries(src)) {
+    if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue; // shared data must not reach prototypes
     let t = target[k];
     let mergeable = v && typeof v === 'object' && !Array.isArray(v) &&
                     t && typeof t === 'object' && !Array.isArray(t);
@@ -20986,14 +21059,34 @@ function mergeStateInto(target, src, replace) {
   }
 }
 
+// Cell overrides arrive from share links: keep only known archetypes and
+// variants (their names reach the tooltip's HTML) and plain numeric fields.
+function _sanitizeCellOverrides(ov) {
+  let out = {};
+  if (!ov || typeof ov !== 'object') return out;
+  for (let [k, v] of Object.entries(ov)) {
+    if (!/^\d+$/.test(k) || !v || typeof v !== 'object') continue;
+    let clean = {};
+    for (let [f, val] of Object.entries(v)) {
+      if (f === 'archetype') { if (ARCHETYPE_DEFS[val]) clean.archetype = val; }
+      else if (f === 'variant') { if (typeof val === 'string' && Object.values(VARIANT_DEFS).some(l => l && l.includes(val))) clean.variant = val; }
+      else if (typeof val === 'number' || typeof val === 'boolean' || val === null) clean[f] = val;
+    }
+    out[k] = clean;
+  }
+  return out;
+}
+
 // Apply a full saved state (user preset, share string or share URL), then
 // refresh the UI and, unless told not to, regenerate.
 function _applyStateSnapshot(data, regenerate = true) {
+  if (state.animation && state.animation.playing) stopAnimPlayback(); // else the old interval keeps running
   let savedFonts = state.fonts;
   data = JSON.parse(JSON.stringify(data));
   delete data.fonts;
   mergeStateInto(state, data, ['cellOverrides', 'manualLayout']);
   state.fonts = savedFonts;
+  state.cellOverrides = _sanitizeCellOverrides(state.cellOverrides);
   state.animation.playing = false;
 
   // Ensure archetype state exists for all defined archetypes
@@ -21013,12 +21106,25 @@ function _applyStateSnapshot(data, regenerate = true) {
   }
 }
 
+// User presets live in localStorage, which can be blocked (private mode,
+// file://, policy) or hold corrupt JSON. Never let that abort setup().
+function _loadUserPresets() {
+  try {
+    let v = JSON.parse(localStorage.getItem('micrographics_presets') || '{}');
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  } catch (e) { console.warn('User presets unavailable:', e.message); return {}; }
+}
+function _saveUserPresets(presets) {
+  try { localStorage.setItem('micrographics_presets', JSON.stringify(presets)); }
+  catch (e) { console.warn('Could not save user presets:', e.message); showConfirmation('PRESET NOT SAVED'); }
+}
+
 function loadPreset(name) {
   if (!name) return;
   let preset = BUILT_IN_PRESETS[name];
   if (!preset) {
     // User presets are full saved states: restore everything, seed included
-    let userPresets = JSON.parse(localStorage.getItem('micrographics_presets') || '{}');
+    let userPresets = _loadUserPresets();
     if (userPresets[name]) _applyStateSnapshot(userPresets[name]);
     return;
   }
@@ -21062,10 +21168,10 @@ function loadPreset(name) {
 function saveUserPreset() {
   let name = prompt('Preset name:');
   if (!name) return;
-  let presets = JSON.parse(localStorage.getItem('micrographics_presets') || '{}');
+  let presets = _loadUserPresets();
   presets[name] = JSON.parse(JSON.stringify(state));
   delete presets[name].fonts; // Don't save font data
-  localStorage.setItem('micrographics_presets', JSON.stringify(presets));
+  _saveUserPresets(presets);
   rebuildUserPresetList();
 }
 
@@ -21073,9 +21179,9 @@ function deleteUserPreset() {
   let sel = document.getElementById('preset-select');
   let name = sel.value;
   if (!name || BUILT_IN_PRESETS[name]) return;
-  let presets = JSON.parse(localStorage.getItem('micrographics_presets') || '{}');
+  let presets = _loadUserPresets();
   delete presets[name];
-  localStorage.setItem('micrographics_presets', JSON.stringify(presets));
+  _saveUserPresets(presets);
   rebuildUserPresetList();
   sel.value = '';
 }
@@ -21176,7 +21282,7 @@ function _applyShareString(encoded) {
 }
 
 function rebuildUserPresetList() {
-  let presets = JSON.parse(localStorage.getItem('micrographics_presets') || '{}');
+  let presets = _loadUserPresets();
   let sel = document.getElementById('preset-select');
   // Remove existing user optgroup
   let existing = sel.querySelector('optgroup[label="User"]');
@@ -21546,9 +21652,11 @@ function newSeed() {
   doGenerate();
 }
 
-function setMode(mode) {
+// keepOverrides: syncing the UI to a loaded state must not wipe the cell
+// edits that state carries; only a click on the mode buttons clears them.
+function setMode(mode, keepOverrides) {
   state.mode = mode;
-  clearCellOverrides();
+  if (!keepOverrides) clearCellOverrides();
   document.querySelectorAll('.mode-toggle button').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.mode === mode);
   });
@@ -21698,7 +21806,7 @@ function doRandomize() {
 function syncAllUI() {
   document.getElementById('scale-slider').value = state.scale;
   updateScale(state.scale);
-  setMode(state.mode);
+  setMode(state.mode, true);
   document.getElementById('multi-depth').value = state.multi.depth;
   document.getElementById('multi-depth-val').textContent = state.multi.depth;
   document.getElementById('multi-irreg').value = state.multi.irregularity;
@@ -21783,6 +21891,7 @@ function syncAllUI() {
   document.getElementById('plotter-min-text-unit').value = state.plotter.minTextSizeUnit;
   document.getElementById('plotter-reg-marks').checked = state.plotter.registrationMarks;
   document.getElementById('plotter-layers').checked = state.plotter.layers.enabled;
+  syncMarginLinkUI();
   document.getElementById('plotter-plot-safe').checked = !!state.plotter.plotSafe;
   document.getElementById('plotter-clip-margins').checked = !!state.plotter.clipToMargins;
   document.getElementById('hatch-enabled').checked = state.plotter.hatch.enabled;
@@ -22037,11 +22146,14 @@ document.addEventListener('keydown', (e) => {
   let tag = document.activeElement.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
-  if (e.key === 'Enter') { e.preventDefault(); doGenerate(); }
-  else if (e.key === 'r' || e.key === 'R') { e.preventDefault(); doRandomize(); }
-  else if (e.key === 's' || e.key === 'S') { e.preventDefault(); exportSVG(); }
-  else if (e.key === 'p' || e.key === 'P') { e.preventDefault(); exportPNG(); }
-  else if ((e.metaKey || e.ctrlKey) && e.key === 'c') { e.preventDefault(); copySVG(); }
+  let mod = e.metaKey || e.ctrlKey || e.altKey;
+  // Single-letter shortcuts only without modifiers, so Cmd/Ctrl+R, S and P
+  // keep doing reload, save and print
+  if (e.key === 'Enter' && !mod) { e.preventDefault(); doGenerate(); }
+  else if ((e.key === 'r' || e.key === 'R') && !mod) { e.preventDefault(); doRandomize(); }
+  else if ((e.key === 's' || e.key === 'S') && !mod) { e.preventDefault(); exportSVG(); }
+  else if ((e.key === 'p' || e.key === 'P') && !mod) { e.preventDefault(); exportPNG(); }
+  else if ((e.metaKey || e.ctrlKey) && (e.key === 'c' || e.key === 'C') && !window.getSelection().toString()) { e.preventDefault(); copySVG(); }
   // Animation keys
   else if (e.key === ' ' && state.animation.enabled) { e.preventDefault(); toggleAnimPlayback(); }
   else if (e.key === 'ArrowRight' && state.animation.enabled) { e.preventDefault(); animStepFrame(1); }
@@ -22189,8 +22301,8 @@ function clearSingleCellOverride() {
 }
 
 function copyCellStyle() {
-  if (_selectedCell === null || !_cellMeta[_selectedCell]) return;
-  let cm = _cellMeta[_selectedCell];
+  if (!_metaForCell(_selectedCell)) return;
+  let cm = _metaForCell(_selectedCell);
   let ov = state.cellOverrides[String(_selectedCell)];
   _cellClipboard = {
     archetype: (ov && ov.archetype) || cm.archetype,
@@ -22257,14 +22369,24 @@ function buildCellEditorHTML(cellMeta) {
 function refreshCellEditor() {
   let tooltip = document.getElementById('cell-tooltip');
   if (!tooltip || !tooltip.classList.contains('pinned') || _selectedCell === null) return;
-  let cm = _cellMeta[_selectedCell];
+  let cm = _metaForCell(_selectedCell);
   if (cm) tooltip.innerHTML = buildCellEditorHTML(cm);
+}
+
+// Where the composition is actually drawn inside the canvas element. The
+// element is letterboxed (object-fit: contain), so its box is not the image's.
+function canvasDrawBox(canvas) {
+  let r = canvas.getBoundingClientRect();
+  let scale = Math.min(r.width / state.width, r.height / state.height);
+  return { left: r.left + (r.width - state.width * scale) / 2, top: r.top + (r.height - state.height * scale) / 2, scale };
 }
 
 // ---- Edge detection for border dragging ----
 function findNearestEdge(mx, my) {
   if (!_cellMeta || _cellMeta.length < 2) return null;
-  let THRESH = 8;
+  // 8 screen pixels, in canvas units (a fixed 8 canvas px is ~1 screen px at 300 DPI)
+  let canvas = document.querySelector('#canvas-container canvas');
+  let THRESH = canvas ? 8 / canvasDrawBox(canvas).scale : 8;
   let best = null, bestDist = THRESH;
   for (let cm of _cellMeta) {
     let r = cm.rect;
@@ -22299,37 +22421,22 @@ function findNearestEdge(mx, my) {
 function applyEdgeDrag(edge, delta) {
   if (!state.manualLayout) return;
   let minSize = state.multi.minCellSize || 40;
+  let vert = edge.type === 'vertical';
+  // Cells on each side of the edge: `before` ends at it, `after` starts at it
+  let before = [], after = [];
   for (let idx of edge.cells) {
     let c = state.manualLayout[idx];
     if (!c) continue;
-    if (edge.type === 'vertical') {
-      // Cell's right edge matches edge.pos → expand/shrink width
-      if (Math.abs(c.x + c.w - edge.pos) < 3) {
-        let newW = c.w + delta;
-        if (newW < minSize) continue;
-        c.w = newW;
-      }
-      // Cell's left edge matches edge.pos → shift x and shrink width
-      else if (Math.abs(c.x - edge.pos) < 3) {
-        let newW = c.w - delta;
-        if (newW < minSize) continue;
-        c.x += delta;
-        c.w = newW;
-      }
-    } else {
-      if (Math.abs(c.y + c.h - edge.pos) < 3) {
-        let newH = c.h + delta;
-        if (newH < minSize) continue;
-        c.h = newH;
-      }
-      else if (Math.abs(c.y - edge.pos) < 3) {
-        let newH = c.h - delta;
-        if (newH < minSize) continue;
-        c.y += delta;
-        c.h = newH;
-      }
-    }
+    let start = vert ? c.x : c.y, size = vert ? c.w : c.h;
+    if (Math.abs(start + size - edge.pos) < 3) before.push(c);
+    else if (Math.abs(start - edge.pos) < 3) after.push(c);
   }
+  // Clamp the move so no cell on either side drops below the minimum size.
+  // (Skipping cells one at a time pulled neighbours apart.)
+  for (let c of before) delta = Math.max(delta, minSize - (vert ? c.w : c.h));
+  for (let c of after) delta = Math.min(delta, (vert ? c.w : c.h) - minSize);
+  for (let c of before) { if (vert) c.w += delta; else c.h += delta; }
+  for (let c of after) { if (vert) { c.x += delta; c.w -= delta; } else { c.y += delta; c.h -= delta; } }
 }
 
 // Cell tooltip + interactive editor (adapted from original tooltip)
@@ -22343,11 +22450,8 @@ function applyEdgeDrag(edge, delta) {
   function mouseToCanvas(e) {
     let canvas = container.querySelector('canvas');
     if (!canvas) return null;
-    let rect = canvas.getBoundingClientRect();
-    return {
-      mx: (e.clientX - rect.left) * (state.width / rect.width),
-      my: (e.clientY - rect.top) * (state.height / rect.height)
-    };
+    let b = canvasDrawBox(canvas);
+    return { mx: (e.clientX - b.left) / b.scale, my: (e.clientY - b.top) / b.scale };
   }
 
   function hitTestCell(mx, my) {
@@ -22371,13 +22475,11 @@ function applyEdgeDrag(edge, delta) {
   function positionTooltipAtCell(cellMeta) {
     let canvas = container.querySelector('canvas');
     if (!canvas) return;
-    let rect = canvas.getBoundingClientRect();
-    let sx = rect.width / state.width;
-    let sy = rect.height / state.height;
+    let b = canvasDrawBox(canvas);
     let cr = cellMeta.rect;
-    let tx = rect.left + (cr.x + cr.w) * sx + 8;
-    let ty = rect.top + cr.y * sy;
-    if (tx + 260 > window.innerWidth) tx = rect.left + cr.x * sx - 260;
+    let tx = b.left + (cr.x + cr.w) * b.scale + 8;
+    let ty = b.top + cr.y * b.scale;
+    if (tx + 260 > window.innerWidth) tx = b.left + cr.x * b.scale - 260;
     if (ty + 200 > window.innerHeight) ty = window.innerHeight - 220;
     tooltip.style.left = tx + 'px';
     tooltip.style.top = Math.max(4, ty) + 'px';
@@ -22488,9 +22590,8 @@ function applyEdgeDrag(edge, delta) {
       e.preventDefault();
       // Snapshot layout for manual mode
       if (!state.manualLayout) {
-        state.manualLayout = _cellMeta.map(cm => ({
-          x: cm.rect.x, y: cm.rect.y, w: cm.rect.w, h: cm.rect.h
-        }));
+        // Every cell, indexed by cell index (_cellMeta skips cells that drew nothing)
+        state.manualLayout = _lastCellRects.map(r => ({ x: r.x, y: r.y, w: r.w, h: r.h }));
       }
       pushUndo();
       _dragEdgeLocal = edge;
@@ -22534,7 +22635,7 @@ function applyEdgeDrag(edge, delta) {
       _selectedCell = hit.index;
       generate(); fixCanvasVisibility();
       // Refresh pinned editor
-      let cm = _cellMeta[_selectedCell];
+      let cm = _metaForCell(_selectedCell);
       if (cm) {
         tooltip.innerHTML = buildCellEditorHTML(cm);
         tooltip.classList.add('pinned');
