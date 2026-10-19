@@ -1229,16 +1229,16 @@
 
 const ARCHETYPE_DEFS = {
   statusPanel:      { label: 'Status Panel',      range: [0.00, 0.35] },
-  targetingReticle: { label: 'Targeting Reticle',  range: [0.00, 0.55] },
+  targetingReticle: { label: 'Targeting Reticle',  range: [0.00, 0.80] },
   meterGauge:       { label: 'Meter / Gauge',      range: [0.00, 0.45] },
   dataReadout:      { label: 'Data Readout',       range: [0.00, 0.25] },
-  nodeNetwork:      { label: 'Node / Network',     range: [0.05, 0.50] },
+  nodeNetwork:      { label: 'Node / Network',     range: [0.05, 0.75] },
   standaloneGlyph:  { label: 'Standalone Glyph',   range: [0.35, 1.00] },
   heroText:         { label: 'Hero Text',          range: [0.35, 0.90] },
-  starChart:        { label: 'Star Chart',         range: [0.00, 0.65] },
+  starChart:        { label: 'Star Chart',         range: [0.00, 0.85] },
   asciiArt:         { label: 'ASCII Art',          range: [0.00, 1.00] },
   sigil:            { label: 'Sigil',              range: [0.30, 1.00] },
-  globeSphere:      { label: 'Globe / Sphere',     range: [0.10, 0.65] },
+  globeSphere:      { label: 'Globe / Sphere',     range: [0.10, 0.85] },
   sealBadge:        { label: 'Seal / Badge',       range: [0.25, 0.90] },
   errorMessage:     { label: 'Error Message',      range: [0.00, 0.35] },
   terminalBlock:    { label: 'Terminal Block',      range: [0.00, 0.30] },
@@ -1284,6 +1284,15 @@ const DETAIL_SHEDDING = [
   { layer: 'allInternal',        threshold: 0.80 }
 ];
 
+
+// Excluded from auto border selection: corner-dots touch across gutters,
+// tabbed pokes into the gutter, hexagonal and warning-stripe are too loud
+// for a whole page of cells.
+const BORDER_AUTO_EXCLUDED = new Set(['corner-dots', 'tabbed', 'hexagonal', 'warning-stripe']);
+// Panels that draw their own frame (window chrome, cabinet bezel) get no
+// cell border on top of it.
+const SELF_FRAMED_ARCHETYPES = new Set(['terminalBlock', 'errorMessage', 'miniGame', 'dataReadout']);
+let _pageBorderStyle = null;
 
 const BORDER_STYLES_BY_SCALE = {
   'corner-bracket':    [0.00, 0.75],
@@ -3844,55 +3853,101 @@ function syncVal(slider, labelId) {
 // SUBDIVISION (Multi Mode)
 // ========================================================
 
-function subdivideRect(rect, depth, irregularity, minSize, gap, prng) {
+// BSP subdivision. Split lines snap to a modular grid over `grid.rect` (12
+// units each way) so gutters line up across branches, and a split that would
+// leave a sliver (child aspect > 3:1) tries the other axis or keeps the cell.
+function subdivideRect(rect, depth, irregularity, minSize, gap, prng, grid) {
+  grid = grid || { rect, ux: rect.w / 12, uy: rect.h / 12 };
+  let snap = (v, o, u) => o + Math.round((v - o) / u) * u;
   let cells = [{ x: rect.x, y: rect.y, w: rect.w, h: rect.h }];
+  let sliver = (a, b) => Math.max(a / b, b / a) > 3;
   for (let d = 0; d < depth; d++) {
     let next = [];
     for (let cell of cells) {
       let canSplitH = cell.h > minSize * 2 + gap;
       let canSplitV = cell.w > minSize * 2 + gap;
+      // Draws happen unconditionally so the stream doesn't depend on geometry
+      let rSplit = prng.nextFloat(), rAxis = prng.nextFloat(), rOff = prng.nextFloat();
       if (!canSplitH && !canSplitV) { next.push(cell); continue; }
       // Probability of splitting decreases for smaller cells
       let areaRatio = (cell.w * cell.h) / (rect.w * rect.h);
-      if (prng.nextFloat() > 0.3 + areaRatio * 0.7) { next.push(cell); continue; }
+      if (rSplit > 0.3 + areaRatio * 0.7) { next.push(cell); continue; }
 
-      let splitH;
-      if (canSplitH && canSplitV) {
-        // Bias toward splitting the longer dimension
-        splitH = cell.h > cell.w ? prng.nextFloat() < 0.7 : prng.nextFloat() < 0.3;
-      } else {
-        splitH = canSplitH;
-      }
-
-      if (splitH) {
-        let mid = cell.h * 0.5;
-        let offset = (prng.nextFloat() - 0.5) * irregularity * (cell.h - minSize * 2);
-        let splitY = Math.max(minSize, Math.min(cell.h - minSize, mid + offset));
-        next.push({ x: cell.x, y: cell.y, w: cell.w, h: splitY - gap / 2 });
-        next.push({ x: cell.x, y: cell.y + splitY + gap / 2, w: cell.w, h: cell.h - splitY - gap / 2 });
-      } else {
-        let mid = cell.w * 0.5;
-        let offset = (prng.nextFloat() - 0.5) * irregularity * (cell.w - minSize * 2);
-        let splitX = Math.max(minSize, Math.min(cell.w - minSize, mid + offset));
-        next.push({ x: cell.x, y: cell.y, w: splitX - gap / 2, h: cell.h });
-        next.push({ x: cell.x + splitX + gap / 2, y: cell.y, w: cell.w - splitX - gap / 2, h: cell.h });
-      }
+      // Bias toward splitting the longer dimension
+      let preferH = canSplitH && canSplitV ? (cell.h > cell.w ? rAxis < 0.7 : rAxis < 0.3) : canSplitH;
+      let tryAxis = splitH => {
+        let len = splitH ? cell.h : cell.w, origin = splitH ? cell.y : cell.x;
+        let mid = len * 0.5 + (rOff - 0.5) * irregularity * (len - minSize * 2);
+        let pos = snap(origin + mid, splitH ? grid.rect.y : grid.rect.x, splitH ? grid.uy : grid.ux) - origin;
+        pos = Math.max(minSize, Math.min(len - minSize, pos));
+        let a = pos - gap / 2, b = len - pos - gap / 2;
+        if (splitH ? (sliver(cell.w, a) || sliver(cell.w, b)) : (sliver(a, cell.h) || sliver(b, cell.h))) return null;
+        return splitH
+          ? [{ x: cell.x, y: cell.y, w: cell.w, h: a }, { x: cell.x, y: cell.y + pos + gap / 2, w: cell.w, h: b }]
+          : [{ x: cell.x, y: cell.y, w: a, h: cell.h }, { x: cell.x + pos + gap / 2, y: cell.y, w: b, h: cell.h }];
+      };
+      let kids = (preferH ? canSplitH : canSplitV) ? tryAxis(preferH) : null;
+      if (!kids && (preferH ? canSplitV : canSplitH)) kids = tryAxis(!preferH);
+      if (kids) next.push(...kids); else next.push(cell);
     }
     cells = next;
   }
   return cells;
 }
 
+// Page layout with a focal cell: a hero rect is carved first on a thirds
+// split - a full-width/height band, or a corner block with an L-shaped
+// remainder - and the rest is subdivided around it on the same grid. Without
+// it the largest cell was only 36-44% of the page, so pages read as collages.
+function layoutPage(rect, depth, irregularity, minSize, gap, prng) {
+  let rHero = prng.nextFloat(), rKind = prng.nextFloat(), rFrac = prng.nextFloat(), rSide = prng.nextFloat(), rSide2 = prng.nextFloat();
+  let grid = { rect, ux: rect.w / 12, uy: rect.h / 12 };
+  if (depth < 2 || rHero > 0.8) return subdivideRect(rect, depth, irregularity, minSize, gap, prng, grid);
+  let frac = [0.5, 0.583, 0.667][Math.floor(rFrac * 3)];
+  let snapLen = (L, u) => Math.round(L / u) * u;
+  if (rKind < 0.6) {
+    // Band across the long axis
+    let horiz = rect.w >= rect.h;
+    let L = horiz ? rect.w : rect.h, u = horiz ? grid.ux : grid.uy;
+    let heroL = snapLen(L * frac, u);
+    if (L - heroL - gap < minSize) return subdivideRect(rect, depth, irregularity, minSize, gap, prng, grid);
+    let first = rSide < 0.5;
+    let hero = horiz
+      ? { x: first ? rect.x : rect.x + L - heroL, y: rect.y, w: heroL, h: rect.h }
+      : { x: rect.x, y: first ? rect.y : rect.y + L - heroL, w: rect.w, h: heroL };
+    let rest = horiz
+      ? { x: first ? rect.x + heroL + gap : rect.x, y: rect.y, w: L - heroL - gap, h: rect.h }
+      : { x: rect.x, y: first ? rect.y + heroL + gap : rect.y, w: rect.w, h: L - heroL - gap };
+    return [hero, ...subdivideRect(rest, depth - 1, irregularity, minSize, gap, prng, grid)];
+  }
+  // Corner block: hero takes frac of both axes, the L-shaped rest is two rects
+  let hw = snapLen(rect.w * frac, grid.ux), hh = snapLen(rect.h * frac, grid.uy);
+  if (rect.w - hw - gap < minSize || rect.h - hh - gap < minSize) return subdivideRect(rect, depth, irregularity, minSize, gap, prng, grid);
+  let left = rSide < 0.5, top = rSide2 < 0.5;
+  let hero = { x: left ? rect.x : rect.x + rect.w - hw, y: top ? rect.y : rect.y + rect.h - hh, w: hw, h: hh };
+  let side = { x: left ? rect.x + hw + gap : rect.x, y: hero.y, w: rect.w - hw - gap, h: hh };
+  let band = { x: rect.x, y: top ? rect.y + hh + gap : rect.y, w: rect.w, h: rect.h - hh - gap };
+  return [hero,
+    ...subdivideRect(side, Math.max(0, depth - 2), irregularity, minSize, gap, prng, grid),
+    ...subdivideRect(band, depth - 1, irregularity, minSize, gap, prng, grid)];
+}
+
 function computeCellScales(cells, globalScale, scaleBias) {
   if (cells.length === 0) return;
   let areas = cells.map(c => c.w * c.h);
-  let areaMin = Math.min(...areas);
-  let areaMax = Math.max(...areas);
-  let areaRange = areaMax - areaMin;
+  // By area RANK, not min-max: the largest cell (the hero) is always the most
+  // macro and the smallest the most micro, however close the areas are.
+  // Equal areas share their average rank.
+  let order = areas.map((a, i) => i).sort((p, q) => areas[p] - areas[q]);
+  let rank = new Array(cells.length);
+  for (let k = 0; k < order.length; ) {
+    let j = k;
+    while (j + 1 < order.length && Math.abs(areas[order[j + 1]] - areas[order[k]]) < 1e-6) j++;
+    for (let m = k; m <= j; m++) rank[order[m]] = (k + j) / 2;
+    k = j + 1;
+  }
   for (let i = 0; i < cells.length; i++) {
-    // Equal areas (or one cell) sit at the middle: they were all 0, which
-    // shifted every cell 0.3 toward micro
-    let areaNorm = areaRange > 1e-6 ? (areas[i] - areaMin) / areaRange : 0.5;
+    let areaNorm = cells.length > 1 ? rank[i] / (cells.length - 1) : 0.5;
     let rangeWidth = 0.6;
     let baseScale = globalScale + (areaNorm - 0.5) * rangeWidth;
     cells[i].scale = Math.max(0, Math.min(1, baseScale + scaleBias));
@@ -4473,12 +4528,20 @@ const FRIEZE_ARCHETYPES = new Set(['standaloneGlyph', 'sigil', 'sealBadge', 'glo
 // are composed in a frame rotated 90 degrees so they run bottom-to-top.
 const ROTATE_TALL_ARCHETYPES = new Set(['heroText', 'spectrogram', 'datavizFragment', 'encodedData']);
 
+// Friezes are an accent, not a habit: only for strips of at least 2.4:1 and
+// once per page (at 1.7:1 with no limit, half of all radial cells became
+// friezes and macro pages read as specimen sheets). Other strips go to linear
+// archetypes via isAspectRatioCompatible.
+const FRIEZE_MIN_ASPECT = 2.4;
+let _friezeBudget = 1; // reset per generate()
+
 function composeArchetypeCell(archetype, rect, s, prng) {
   let fn = ARCHETYPE_COMPOSERS[archetype] || composeStandaloneGlyph;
   let aspect = rect.w / rect.h;
   let long = Math.max(aspect, 1 / aspect);
 
-  if (FRIEZE_ARCHETYPES.has(archetype) && long >= 1.7) {
+  if (FRIEZE_ARCHETYPES.has(archetype) && long >= FRIEZE_MIN_ASPECT) {
+    _friezeBudget--;
     composeFrieze(fn, rect, s, prng, aspect >= 1);
     return;
   }
@@ -4500,7 +4563,7 @@ function composeArchetypeCell(archetype, rect, s, prng) {
 // set rather than copies. Always consumes the same draws for a given rect.
 function composeFrieze(fn, rect, s, prng, horizontal) {
   let along = horizontal ? rect.w : rect.h, across = horizontal ? rect.h : rect.w;
-  let n = Math.max(2, Math.min(5, Math.round(along / across)));
+  let n = Math.max(2, Math.min(3, Math.round(along / across)));
   let gap = across * 0.1;
   let railH = detailActive('connectorLines', s) ? Math.max(getMinTextSizePx() * 1.8, across * 0.08) : 0;
   let tileAcross = across - railH;
@@ -4977,9 +5040,16 @@ function getEffectiveFillProb(s) {
 // Check if an archetype is compatible with a cell's aspect ratio
 function isAspectRatioCompatible(archetype, w, h) {
   let aspect = w / h;
-  // Strips are handled by composeArchetypeCell: friezes for these, a rotated
-  // frame for tall cells of these
-  if (FRIEZE_ARCHETYPES.has(archetype)) return true;
+  let long = Math.max(aspect, 1 / aspect);
+  // Frieze archetypes: natively up to a moderate aspect (games and star
+  // charts are rectangular, the rest are centred forms); strips past the
+  // frieze threshold only while the page's frieze budget lasts
+  if (FRIEZE_ARCHETYPES.has(archetype)) {
+    let native = (archetype === 'miniGame' || archetype === 'starChart') ? FRIEZE_MIN_ASPECT : 1.8;
+    if (long <= native) return true;
+    return long >= FRIEZE_MIN_ASPECT && _friezeBudget > 0;
+  }
+  // A rotated frame handles tall cells of these
   if (ROTATE_TALL_ARCHETYPES.has(archetype) && aspect < 1) return true;
   let radialTypes = ['targetingReticle', 'meterGauge'];
   let linearTypes = ['encodedData', 'datavizFragment', 'nodeNetwork', 'spectrogram', 'miniGame'];
@@ -16324,12 +16394,8 @@ function generateBorder(rect, s, style, weight, padding, prng) {
   svgSetStrokeWeight(state.geometry.strokeWeight * weight);
 
   if (style === 'auto') {
-    // Select based on scale
-    let eligible = [];
-    for (let [sty, range] of Object.entries(BORDER_STYLES_BY_SCALE)) {
-      if (softEdgeWeight(s, range) > 0) eligible.push(sty);
-    }
-    style = eligible.length > 0 ? prng.pick(eligible) : 'corner-bracket';
+    prng.nextFloat(); // the old per-cell pick's draw, kept so the cell stream is unchanged
+    style = _pageBorderStyle || 'corner-bracket';
   }
 
   switch (style) {
@@ -17713,11 +17779,13 @@ function generate(frameIndex) {
   let cells, generatedCells;
   if (state.mode === 'multi') {
     // Apply slider modulation to subdivision
-    let effectiveDepth = Math.round(state.multi.depth - (state.scale - 0.5) * 1.5);
-    effectiveDepth = Math.max(1, Math.min(state.multi.depth, effectiveDepth));
-    let effectiveMinCell = state.multi.minCellSize * (1.0 + state.scale * 0.3);
+    // The slider drives density: about depth+2 levels at deep micro down to 1
+    // at deep macro (it was +-0.75 levels, so the layout barely changed)
+    let effectiveDepth = Math.round(state.multi.depth + 1.5 - state.scale * (state.multi.depth + 0.5));
+    effectiveDepth = Math.max(1, Math.min(state.multi.depth + 2, effectiveDepth));
+    let effectiveMinCell = state.multi.minCellSize * (1.0 + state.scale * 0.8);
 
-    generatedCells = subdivideRect(contentRect, effectiveDepth, state.multi.irregularity, effectiveMinCell, state.multi.cellGap, prng);
+    generatedCells = layoutPage(contentRect, effectiveDepth, state.multi.irregularity, effectiveMinCell, state.multi.cellGap, prng);
     computeCellScales(generatedCells, state.scale, state.multi.scaleBias);
     // Use manual layout if available and cell count matches.
     // Archetype selection always uses generatedCells (original dims/scales) so that
@@ -17754,6 +17822,18 @@ function generate(frameIndex) {
 
   // Track usage across cells for diversity enforcement
   let usageCount = {};       // archetype → count
+  _friezeBudget = 1;
+  // One border vocabulary per page (picked per cell, a page mixed five or six).
+  // Styles that collide at shared gutters or fight composed panels are left
+  // out of auto; they stay available when chosen explicitly.
+  let borderRoll = prng.nextFloat();
+  _pageBorderStyle = null;
+  if (state.border.style === 'auto') {
+    let pool = Object.entries(BORDER_STYLES_BY_SCALE)
+      .filter(([sty, range]) => !BORDER_AUTO_EXCLUDED.has(sty) && softEdgeWeight(state.scale, range) > 0)
+      .map(([sty]) => sty);
+    _pageBorderStyle = pool.length ? pool[Math.floor(borderRoll * pool.length)] : 'corner-bracket';
+  }
   let groupCount = {};       // visual group → count
   let macroCellCount = 0;    // cells with scale > 0.5
 
@@ -17824,6 +17904,10 @@ function generate(frameIndex) {
       let sw = softEdgeWeight(cellScale, def.range);
       if (sw <= 0) continue;
       if (!isAspectRatioCompatible(key, origPadded.w, origPadded.h)) continue;
+      // One headline per page (unless the user's macro text asks for repeats),
+      // and one dense macro ASCII mass: two of either compete for the eye
+      if (cells.length > 1 && key === 'heroText' && !forceHero && (usageCount.heroText || 0) >= 1) continue;
+      if (cells.length > 1 && key === 'asciiArt' && cellScale > 0.6 && (usageCount.asciiArt || 0) >= 1) continue;
 
       let w = a.weight * sw;
 
@@ -17997,7 +18081,9 @@ function generate(frameIndex) {
     // Compose archetype (aspect-aware: see composeArchetypeCell). A composer
     // that throws loses its own cell, not the page.
     let suppressedBefore = _drawingSuppressed;
-    try { composeArchetypeCell(archetype, inner, cellScale, cellPrng); }
+    // Self-framed panels take the full padded rect and get no cell border
+    let selfFramed = SELF_FRAMED_ARCHETYPES.has(archetype);
+    try { composeArchetypeCell(archetype, selfFramed ? padded : inner, cellScale, cellPrng); }
     catch (err) { console.error(`${archetype} failed in cell ${i}:`, err); }
     finally { _drawingSuppressed = suppressedBefore; }
 
@@ -18046,8 +18132,8 @@ function generate(frameIndex) {
     // Clear content instability before border (border renders independently, always stable)
     _contentInstability = null;
 
-    // Border
-    if (state.bordersEnabled) {
+    // Border (skipped for panels that frame themselves)
+    if (state.bordersEnabled && !selfFramed) {
       generateBorder(inner, cellScale, state.border.style, state.border.weight, bp, cellPrng);
     }
 
