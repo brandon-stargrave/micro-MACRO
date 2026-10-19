@@ -1263,7 +1263,7 @@ const ARCHETYPE_DEFS = {
 };
 
 const VARIANT_DEFS = {
-  meterGauge: ['radarChart','radialBars','concentricArcs','ringOfBlocks','polarHeatstrip','chasingLightRing','stackedArcs','segmentedLEDBar','thermometerBar'],
+  meterGauge: ['needleDial','radarChart','radialBars','concentricArcs','ringOfBlocks','polarHeatstrip','chasingLightRing','stackedArcs','segmentedLEDBar','thermometerBar'],
   sealBadge: ['gear','serrated','wavy','dotted','ratchet','double-ring'],
   asciiArt: ['checker','altPairs','hStripes','diagStripes','zigzag','gradient','rings','cross','seq2','seq3','scatter','blockCols','maze','terrain','binaryRain','conway','spiralGalaxy'],
   datavizFragment: ['histogram','waveform','scatter','polar','hBarBank','candlestick','oscilloscope','heatmap','sankey','stackedArea'],
@@ -1272,9 +1272,14 @@ const VARIANT_DEFS = {
   dataReadout: ['telemetry','ledger','split','register'],
   errorMessage: ['dump','panic','dialog'],
   terminalBlock: ['shell','boot','monitor','split'],
-  statusPanel: null, targetingReticle: null,
-  nodeNetwork: null, standaloneGlyph: null, heroText: null,
-  starChart: null, sigil: null, globeSphere: null,
+  targetingReticle: ['fireControl','radarScope','periscope','lockOn'],
+  globeSphere: ['orbital','groundStation','scanBands','polar'],
+  statusPanel: null,
+  nodeNetwork: null,
+  standaloneGlyph: null,
+  heroText: null,
+  starChart: null,
+  sigil: null,
   encodedData: null
 };
 
@@ -6375,642 +6380,1424 @@ function composeStatusPanel(rect, s, prng) {
   svgRec.endGroup();
 }
 
-function composeTargetingReticle(rect, s, prng) {
-  let { x, y, w, h } = rect;
-  let cx = x + w / 2, cy = y + h / 2;
-  let maxR = Math.min(w, h) * 0.4;
+// ========================================================
+// RADIAL INSTRUMENTS — shared helpers (reticle, gauge, globe)
+// ========================================================
 
+// Anchored, optionally animated text whose font-PRNG use is frame-independent.
+// drawAnimText skips its draw (and so its font roll) on frames where presence
+// hides the text; stand in with measure calls so the cell stream stays fixed.
+function _radText(str, x, y, size, align, seed, hint) {
+  str = String(str);
+  if (seed && animCtx) {
+    let prof = getAnimProfile(seed, _cellScale);
+    if (prof.active && !applyPresence(prof, animCtx.frameIndex, animCtx.frameCount, animCtx.t).visible) {
+      if (align === 'center' || align === 'right') measureFallbackText(str, size);
+      measureFallbackText(str, size);
+      return;
+    }
+  }
+  kitText(str, x, y, size, align, seed, hint);
+}
+
+// Whether an animated element is shown this frame (same rule as drawAnimText).
+function _radVisible(seed) {
+  if (!animCtx || !seed) return true;
+  let prof = getAnimProfile(seed, _cellScale);
+  return !prof.active || applyPresence(prof, animCtx.frameIndex, animCtx.frameCount, animCtx.t).visible;
+}
+
+// Seamless loop motion: whole turns / whole cycles per loop so the last frame
+// meets the first (style guide rule 15).
+function _radSpin(on, turns) {
+  if (!on || !animCtx) return 0;
+  return (animCtx.frameIndex / animCtx.frameCount) * turns * TWO_PI;
+}
+function _radOsc(on, cycles, phase) {
+  if (!on || !animCtx) return 0;
+  return 0.5 - 0.5 * Math.cos(((animCtx.frameIndex / animCtx.frameCount) * cycles + phase) * TWO_PI);
+}
+
+function _radPen() { return unitToPx(state.plotter.hatch.penDiameter, 'mm', state.plotter.dpi); }
+
+// Closed annular-sector contour (r0 <= 0 gives a wedge from the centre).
+function _radSector(cx, cy, r0, r1, a0, a1) {
+  let n = Math.max(4, Math.ceil(Math.abs(a1 - a0) / 0.05));
+  let pts = [];
+  for (let i = 0; i <= n; i++) { let a = a0 + (a1 - a0) * i / n; pts.push([cx + Math.cos(a) * r1, cy + Math.sin(a) * r1]); }
+  if (r0 > 0.5) for (let i = n; i >= 0; i--) { let a = a0 + (a1 - a0) * i / n; pts.push([cx + Math.cos(a) * r0, cy + Math.sin(a) * r0]); }
+  else pts.push([cx, cy]);
+  return pts;
+}
+function _radClosed(pts) { svgPolyline(pts.concat([pts[0]])); }
+// Plotter-safe "solid": parallel hatch inside contours. hatchFillContours
+// draws at 0.4x the current weight, so start from a real weight role.
+function _radHatch(contours, angleDeg, spacing, role) {
+  kitWeight(role || 'primary');
+  hatchFillContours(contours, angleDeg, Math.max(spacing, _radPen() * 1.3), 0);
+}
+
+// Macro band between r0 and r1: the kit fill style when the Fill slider
+// grants one, otherwise engraved offset contour rings (outline-only solid).
+function _radBand(cx, cy, r1, r0, style, rings) {
+  let circ = (r) => Array.from({ length: 120 }, (_, i) => [cx + Math.cos(i / 120 * TWO_PI) * r, cy + Math.sin(i / 120 * TWO_PI) * r]);
+  if (style && style.kind !== 'contour') {
+    _radHatch([circ(r1), circ(r0)], style.angle, style.spacing);
+    if (style.kind === 'cross') _radHatch([circ(r1), circ(r0)], style.angle + 90, style.spacing * 1.4);
+    return;
+  }
+  let n = style ? Math.max(1, Math.floor((r1 - r0) / style.spacing)) : (rings || 3);
+  kitWeight(style ? 'secondary' : 'primary');
+  for (let i = 1; i < n + (style ? 0 : 1); i++) svgCircle(cx, cy, (r0 + (r1 - r0) * i / (n + (style ? 0 : 1))) * 2);
+}
+// Dashed circle / arc built from short arcs (dash count fixed, so it can rotate).
+function _radDashArc(cx, cy, r, a0, a1, dashes, duty) {
+  for (let i = 0; i < dashes; i++) {
+    let s0 = a0 + (a1 - a0) * i / dashes;
+    svgArc(cx, cy, r * 2, r * 2, s0, s0 + (a1 - a0) / dashes * duty);
+  }
+}
+// Text width check at a size (measure consumes the font roll; call it unconditionally per layout).
+function _radFits(str, size, maxW) { return measureFallbackText(String(str), size) <= maxW; }
+
+// Callout from a target point with the leader along (dx, dy). Tries the four
+// mirrored placements and takes the first whose label box stays inside `b`
+// and passes `ok(x0, y0, x1, y1)` (e.g. keep clear of a bezel). Returns false
+// and draws nothing when none fits.
+function _radCallout(px, py, dx, dy, label, sub, size, b, ok) {
+  let w = Math.max(measureFallbackText(label, size), sub ? measureFallbackText(sub, size * 0.8) : 0) + size * 0.6;
+  for (let [fx, fy] of [[1, 1], [-1, 1], [1, -1], [-1, -1]]) {
+    let lx = px + dx * fx, ly = py + dy * fy;
+    let x0 = dx * fx >= 0 ? lx : lx - w, x1 = x0 + w;
+    let y0 = ly - size * 1.3, y1 = ly + size * (sub ? 1.9 : 0.5);
+    if (x0 < b.x || x1 > b.x + b.w || y0 < b.y || y1 > b.y + b.h) continue;
+    if (ok && !ok(x0, y0, x1, y1)) continue;
+    kitCallout(px, py, lx, ly, label, sub, size);
+    return true;
+  }
+  return false;
+}
+
+// Chevron (open V) at (x, y) pointing along angle a.
+function _radChevron(x, y, a, size) {
+  let bx = x - Math.cos(a) * size, by = y - Math.sin(a) * size;
+  let nx = -Math.sin(a) * size * 0.8, ny = Math.cos(a) * size * 0.8;
+  svgPolyline([[bx + nx, by + ny], [x, y], [bx - nx, by - ny]]);
+}
+
+// Header line for a radial instrument: status word (bus-animated), optional
+// mode tag, identifier on the right, rule underneath. Everything is fitted to
+// the width; pieces that do not fit are dropped, longest-lived first.
+function _radHeader(r, status, tag, id, body, micro, seed, idHint) {
+  let hy = r.y + body * 1.25;
+  let ts = body * 1.2;
+  let wOf = (sz) => Math.max(measureFallbackText(status, sz), measureFallbackText('SCANNING', sz));
+  let sw = wOf(ts);
+  if (sw > r.w * 0.65) { ts = Math.max(getMinTextSizePx(), ts * r.w * 0.65 / sw); sw = wOf(ts); }
+  let idw = measureFallbackText(id, micro), tw = tag ? measureFallbackText(tag, micro) : 0;
+  if (sw <= r.w) { kitWeight('primary'); _radText(status, r.x, hy, ts, 'left', seed, 'bus:status'); }
+  kitWeight('fine');
+  if (tag && sw + tw + idw + body * 3 <= r.w) _radText(tag, r.x + sw + body * 1.2, hy, micro, 'left');
+  if (sw + idw + body * 1.5 <= r.w) _radText(id, r.x + r.w, hy, micro, 'right', idHint ? seed + 7 : 0, idHint);
+  svgLine(r.x, r.y + body * 1.7, r.x + r.w, r.y + body * 1.7);
+}
+
+// Tall cells: shrink the main rect to the content height and centre it, so a
+// header and footer stay attached to the instrument instead of the cell edges.
+function _radCompact(m, needH) {
+  if (m.h <= needH * 1.06) return m;
+  return { x: m.x, y: m.y + (m.h - needH) / 2, w: m.w, h: needH };
+}
+
+// Arrange a main rect into a square instrument field plus an optional data
+// panel: to the right in wide cells, underneath in tall ones, so leftover
+// space carries tables instead of air. `left` / `below` reserve ruler strips
+// beside and under the field. Whatever is still spare is trimmed by centring.
+function _radArrange(m, topH, botH, body, allowPanel, left, below) {
+  left = left || 0; below = below || 0;
+  let fw = m.w - left, fh = m.h - topH - botH - below;
+  let minP = body * 12;
+  if (allowPanel && fw - fh > minP) {
+    let pw = Math.min(fw - fh - body, Math.max(minP, body * 26));
+    let x0 = m.x + (m.w - (left + fh + body + pw)) / 2;
+    let field = { x: x0 + left, y: m.y + topH, w: fh, h: fh };
+    return { m, field, panel: { x: field.x + fh + body, y: field.y, w: pw, h: fh + below }, side: true };
+  }
+  if (allowPanel && fh - fw > minP * 0.8) {
+    let ph = Math.min(fh - fw - body, Math.max(minP * 0.8, body * 15));
+    m = _radCompact(m, topH + fw + below + body + ph + botH);
+    let field = { x: m.x + left, y: m.y + topH, w: fw, h: fw };
+    return { m, field, panel: { x: m.x, y: field.y + fw + below + body, w: m.w, h: ph }, side: false };
+  }
+  m = _radCompact(m, topH + botH + below + Math.min(fw, fh));
+  return { m, field: { x: m.x + left, y: m.y + topH, w: m.w - left, h: m.h - topH - botH - below }, panel: null, side: false };
+}
+
+// Two-column data table in a framed module; rows that do not fit are dropped.
+function _radTable(r, title, rows, body, micro, seed) {
+  let inner = kitFrame(r, title, micro);
+  let rh = Math.max(micro * 1.5, body * 1.3);
+  let n = Math.min(rows.length, Math.floor((inner.h - micro * 0.4) / rh));
+  for (let i = 0; i < n; i++) {
+    let ry = inner.y + rh * (i + 0.9);
+    let [k, v] = rows[i];
+    if (measureFallbackText(k, micro) + measureFallbackText(v, micro) + body > inner.w) continue;
+    kitWeight('fine');
+    _radText(k, inner.x, ry, micro, 'left');
+    kitWeight('secondary');
+    _radText(v, inner.x + inner.w, ry, micro, 'right', seed ? (seed + i) >>> 0 : 0, 'counter');
+    kitWeight('fine');
+    if (i % 2) drawDashedLine(inner.x, ry + rh * 0.3, inner.x + inner.w, ry + rh * 0.3, 1, 3);
+  }
+  return inner.y + rh * n;
+}
+
+// Small registration cross.
+function _radRegMark(x, y, size) {
+  svgLine(x - size, y, x + size, y);
+  svgLine(x, y - size, x, y + size);
+}
+
+// ---- Targeting Reticle ----
+// Fire-control / scan optics. Four looks, each a full instrument:
+//   fireControl  bearing ring + duplex posts + mil-dot stadia + lead chevrons + heading tape
+//   radarScope   PPI scope: labelled range rings, hatched rotating sweep, contacts with tails
+//   periscope    mil-graduated bezel, split-image rangefinder, stadia arc, pitch ladder
+//   lockOn       segmented rotating rings, convergence brackets, carets onto a locked track
+const RETICLE_VARIANTS = ['fireControl', 'radarScope', 'periscope', 'lockOn'];
+
+function composeTargetingReticle(rect, s, prng) {
   svgRec.beginGroup('targeting-reticle');
 
-  // Animation setup
+  // ---- Every PRNG draw happens here, before any branch on frame or detail ----
   let elemSeed = prng.nextInt(0, 0xFFFFFF);
+  let zone = getAnimZoneParams(s);
+  prng.nextInt(zone.minCycle, zone.maxCycle); // legacy cycle draw (kept so the stream length is stable)
+  let variant = prng.weightedPick(RETICLE_VARIANTS, [1.2, 1.1, 0.9, 1.0]);
+  if (_cellOverrideVariant && RETICLE_VARIANTS.includes(_cellOverrideVariant)) variant = _cellOverrideVariant;
+  _cellVariantInfo = variant;
+  let fill = kitFillStyle(s, prng);
+  let F = [];
+  for (let i = 0; i < 48; i++) F.push(prng.nextFloat());
+  let modSeed = prng.nextInt(1, 0x7FFFFFFF);
+  let T = {
+    status: textGen.statusLabel(prng), id: textGen.identifier(prng), tgt: textGen.identifier(prng),
+    ver: textGen.versionString(prng), ts: textGen.timestamp(prng), coord: textGen.coordinate(prng),
+    contacts: [0, 1, 2, 3, 4, 5].map(() => textGen.identifier(prng).replace(/[-._:]/, ''))
+  };
+  let laySeed = prng.nextInt(1, 0x7FFFFFFF); // private stream for the kit side modules
+  let lay = kitLayout(rect, s, prng);
+
+  let m = lay.main;
+  let d = kitDensity(m);
+  let body = kitType(m, 'body'), micro = kitType(m, 'micro');
+  let pen = _radPen();
   let animated = shouldAnimate(elemSeed);
-  let zone = animated ? getAnimZoneParams(s) : null;
-  let cycle = animated ? prng.nextInt(zone.minCycle, zone.maxCycle) : 0;
-  let phase = animated ? (elemSeed % 1000) / 1000 : 0;
+  let phase = (elemSeed % 1000) / 1000;
+  let showText = detailActive('primaryLabels', s);
+  let showSec = detailActive('secondaryText', s);
+  let showTicks = detailActive('tickMarks', s) && state.detail.tickMarkDensity > 0;
+  let showRings = detailActive('secondaryRings', s);
+  let showCross = detailActive('crosshairs', s);
+  let showInner = detailActive('internalDetail', s);
+  let showVer = detailActive('versionStrings', s);
+  let showAnnot = detailActive('annotationTexture', s);
+  let macro = s > 0.42;
+  let isFC = variant === 'fireControl', isPPI = variant === 'radarScope';
+  let isPeri = variant === 'periscope', isLock = variant === 'lockOn';
 
-  // Ring rotation — tick marks and dashed rings rotate around center
-  // Ring rotation: mostly smooth, small chance for erratic
-  let ringEnvShape = _profileHash(elemSeed, 60) < 0.15 ? 'attackDecay' : (_profileHash(elemSeed, 61) < 0.5 ? 'swell' : 'plateau');
-  let ringEaseFn = _profileHash(elemSeed, 62) < 0.1 ? ease.outElastic : ease.inOutCubic;
-  let ringAngle = animated ? anim.rotate(animCtx.frameIndex, animCtx.frameCount, cycle * 5, animCtx.speedMul * 0.3, phase) * animEnvelope(animCtx.t, ringEnvShape, ringEaseFn) * animCtx.motionAmount * (_compBus ? _compBus.dramaCurve : 1) : 0;
-  let hasRingAnim = ringAngle !== 0;
+  // ---- Vertical budget: header line, optional heading tape, readout row ----
+  let topH = showText && m.h > body * 10 ? body * 1.9 : 0;
+  let botH = showSec && m.h > body * 14 ? body * 2.6 + (showVer ? micro * 1.5 : 0) : 0;
+  let tapeH = (isFC || isPeri) && showTicks && m.h > 300 && m.w > 260 ? Math.max(body * 3.2, m.h * 0.07) : 0;
+  let arr = _radArrange(m, topH + tapeH, botH, body, showSec && m.w > 200 && m.h > 200);
+  m = arr.m;
+  let area = arr.field, panel = arr.panel;
+  let half = Math.min(area.w, area.h) / 2;
+  let numSz = Math.max(getMinTextSizePx(), Math.min(body * 0.95, half * 0.05));
+  let outerLabels = showText && showTicks && half > numSz * 9;
+  let R = half - (outerLabels ? numSz * 2.4 : half * 0.04);
+  let cx = area.x + area.w / 2, cy = area.y + area.h / 2;
+  let DEG = PI / 180;
+  let brgA = (b) => -HALF_PI + b * DEG; // bearing (deg, clockwise from up) -> screen angle
 
-  // Primary ring (static — rings themselves don't move)
-  svgCircle(cx, cy, maxR * 2);
+  // Plotter "solid" for the macro end: kit fill style, else a default hatch
+  let solid = fill;
 
-  // Secondary rings (solid, static)
-  if (detailActive('secondaryRings', s)) {
-    let ringCount = Math.min(state.detail.concentricRingLimit, prng.nextInt(1, 3));
-    for (let i = 1; i <= ringCount; i++) {
-      svgCircle(cx, cy, maxR * 2 * (1 - i * 0.2));
+  // Target track (shared by several layers)
+  let tb = F[0] * 360;
+  let tr = isLock ? 0.16 + F[1] * 0.18 : 0.34 + F[1] * 0.36;
+  let tx = cx + Math.cos(brgA(tb)) * tr * R, ty = cy + Math.sin(brgA(tb)) * tr * R;
+  let hdg = F[2] * TWO_PI;                       // target heading (screen radians)
+  let rangeKm = (tr * (isPPI ? 24 : 8)).toFixed(2);
+  let elev = ((F[3] - 0.3) * 40).toFixed(1);
+
+  // ---- Bezel: heavy ring band with inward bearing graduation ----
+  let bandIn = R * (macro ? 0.86 : 0.94);
+  kitWeight('heavy');
+  svgCircle(cx, cy, R * 2);
+  kitWeight(macro ? 'heavy' : 'secondary');
+  svgCircle(cx, cy, bandIn * 2);
+  if (macro || (solid && s > 0.3)) _radBand(cx, cy, R, bandIn, solid, 3);
+
+  if (showTicks) {
+    kitWeight('fine');
+    if (isPeri) {
+      // Mils: 6400 per turn, minor every 100, major every 800
+      kitTickRing(cx, cy, R, { count: 64 * (d > 1.6 ? 2 : 1), major: 8 * (d > 1.6 ? 2 : 1), len: (R - bandIn) * 0.95, inward: true, a0: -HALF_PI, a1: -HALF_PI + TWO_PI });
+    } else {
+      let k = Math.max(1, Math.min(4, Math.round(d * (0.5 + state.detail.tickMarkDensity))));
+      if (k === 3) k = 2;
+      let count = 36 * k;
+      while (count > 36 && TWO_PI * R / count < 3.2) count /= 2;
+      kitTickRing(cx, cy, R, { count, major: count / 12, len: (R - bandIn) * 0.95, inward: true, a0: -HALF_PI, a1: -HALF_PI + TWO_PI });
+    }
+    // North index: heavy caret outside the ring
+    kitWeight('primary');
+    drawTriangle(cx, cy - R - R * 0.03, R * 0.03, HALF_PI);
+  }
+  if (outerLabels) {
+    let labW = measureFallbackText(isPeri ? '00' : '000', numSz);
+    let steps = isPeri ? [45, 90] : [30, 60, 90];
+    let step = steps.find(st => TWO_PI * R * st / 360 > labW * 1.7) || 90;
+    kitWeight('fine');
+    for (let b = 0; b < 360; b += step) {
+      let a = brgA(b), lr = R + numSz * 1.15;
+      if (b === 0 && showTicks) continue; // the north index caret stands in for 000
+      let lab = isPeri ? String(Math.round(b / 360 * 64)).padStart(2, '0') : String(b).padStart(3, '0');
+      _radText(lab, cx + Math.cos(a) * lr, cy + Math.sin(a) * lr + numSz * 0.4, numSz, 'center');
     }
   }
 
-  // Dashed concentric ring — animated rotation
-  if (detailActive('secondaryRings', s) && prng.nextFloat() < 0.5) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.5);
-    if (hasRingAnim) {
-      let deg = ringAngle * 180 / PI;
-      svgRec.beginGroupWithTransform('anim-dash-ring', `rotate(${svgRec._r(deg)}, ${svgRec._r(cx)}, ${svgRec._r(cy)})`);
-      push(); translate(cx, cy); rotate(ringAngle); translate(-cx, -cy);
+  // ---- Rotating rings (secondary structure) ----
+  let bezelRot = F[4] * TWO_PI + _radSpin(animated, isLock ? 1 : -1);
+  if (showRings) {
+    let rB = R * (isLock ? 0.8 : 0.84);
+    if (isLock) {
+      // Segmented rotating ring; alternate segments hatched
+      let segs = 6 + Math.floor(F[5] * 3) * 2;
+      let gapA = TWO_PI / segs * 0.22;
+      for (let i = 0; i < segs; i++) {
+        let a0 = bezelRot + i * TWO_PI / segs, a1 = a0 + TWO_PI / segs - gapA;
+        let poly = _radSector(cx, cy, rB - R * 0.045, rB, a0, a1);
+        kitWeight(macro ? 'primary' : 'secondary');
+        _radClosed(poly);
+        if (i % 2 === 0) _radHatch([poly], a0 / DEG + 90, Math.max(pen * 1.5, R * 0.018));
+      }
+      // Counter-rotating dashed ring
+      kitWeight('fine');
+      let rD = R * 0.62, rot2 = F[6] * TWO_PI - _radSpin(animated, 2);
+      _radDashArc(cx, cy, rD, rot2, rot2 + TWO_PI, 24 + Math.round(d * 8), 0.55);
+    } else {
+      kitWeight('fine');
+      svgCircle(cx, cy, rB * 2);
+      if (showTicks) kitTickRing(cx, cy, rB, { count: 72, major: 18, len: R * 0.028, inward: false, a0: bezelRot, a1: bezelRot + TWO_PI });
+      kitWeight('secondary');
+      for (let i = 0; i < 3; i++) {
+        let a = bezelRot + i * TWO_PI / 3;
+        drawTriangle(cx + Math.cos(a) * (rB - R * 0.035), cy + Math.sin(a) * (rB - R * 0.035), R * 0.022, a + PI);
+      }
     }
-    drawDashedRing(cx, cy, maxR * 0.55, prng.nextInt(8, 14));
-    if (hasRingAnim) { pop(); svgRec.endGroup(); }
-    svgSetStrokeWeight(state.geometry.strokeWeight);
-  }
 
-  // Primary crosshair (static)
-  if (detailActive('crosshairs', s)) {
-    let gap = detailActive('internalDetail', s) ? maxR * 0.12 : 0;
-    drawCrosshair(cx, cy, maxR * 2, gap);
-  }
-
-  // Diagonal crosshair (45° offset, thinner)
-  if (detailActive('crosshairs', s) && prng.nextFloat() < 0.4) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-    let dLen = maxR * 0.6;
-    let dGap = maxR * 0.15;
-    for (let i = 0; i < 4; i++) {
-      let a = PI / 4 + (i / 4) * TWO_PI;
-      svgLine(cx + dGap * cos(a), cy + dGap * sin(a),
-              cx + dLen * cos(a), cy + dLen * sin(a));
-    }
-    svgSetStrokeWeight(state.geometry.strokeWeight);
-  }
-
-  // Tick marks — animated rotation (counter-rotates to dashed ring)
-  if (detailActive('tickMarks', s) && state.detail.tickMarkDensity > 0) {
-    let tickCount = Math.round(prng.nextInt(4, 12) * state.detail.tickMarkDensity);
-    let tickAngle = hasRingAnim ? -ringAngle * 1.5 : 0; // counter-rotate faster
-    if (tickAngle !== 0) {
-      let deg = tickAngle * 180 / PI;
-      svgRec.beginGroupWithTransform('anim-ticks', `rotate(${svgRec._r(deg)}, ${svgRec._r(cx)}, ${svgRec._r(cy)})`);
-      push(); translate(cx, cy); rotate(tickAngle); translate(-cx, -cy);
-    }
-    drawRadialTicks(cx, cy, maxR, tickCount, maxR * 0.08);
-    if (tickAngle !== 0) { pop(); svgRec.endGroup(); }
-  }
-
-  // Partial arcs — animated sweep
-  if (s < 0.4 && prng.nextFloat() < 0.6) {
-    let arcR = maxR * 0.7;
-    let baseStart = prng.nextFloat() * TWO_PI;
-    let sweepOffset = animated ? anim.sweep(animCtx.frameIndex, animCtx.frameCount, cycle * 2, animCtx.speedMul, phase) * TWO_PI : 0;
-    let start = baseStart + sweepOffset;
-    svgArc(cx, cy, arcR * 2, arcR * 2, start, start + PI * (0.5 + prng.nextFloat() * 0.5));
-  }
-
-  // Data arc segment with value in one quadrant
-  if (detailActive('internalDetail', s) && prng.nextFloat() < 0.5) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.8);
-    let dataR = maxR * 1.15;
-    let dataStart = -HALF_PI + prng.nextFloat() * HALF_PI;
-    let dataSpan = HALF_PI * (0.3 + prng.nextFloat() * 0.4);
-    svgArc(cx, cy, dataR * 2, dataR * 2, dataStart, dataStart + dataSpan);
-    // Value along arc
-    if (detailActive('secondaryText', s)) {
-      let midA = dataStart + dataSpan / 2;
-      let fontSize = Math.max(4, maxR * 0.08);
-      let val = textGen.valueReadout(prng);
-      drawFallbackText(val, cx + (dataR + fontSize) * cos(midA), cy + (dataR + fontSize) * sin(midA), fontSize);
+    // Range rings
+    let nRings = Math.min(state.detail.concentricRingLimit, isPPI ? 3 + (d > 1.5 ? 1 : 0) : isPeri ? 1 : 2);
+    let ringMax = isPPI ? R * 0.84 : R * 0.6;
+    let labA = brgA(isPPI ? 45 + F[7] * 30 : 135);
+    for (let i = 1; i <= nRings; i++) {
+      let rr = ringMax * i / (isPPI ? nRings : nRings + 0.6);
+      if (isPPI && i === nRings) continue; // the bezel inner ring closes the scope
+      kitWeight('fine');
+      if (isPPI) svgCircle(cx, cy, rr * 2);
+      else _radDashArc(cx, cy, rr, 0, TWO_PI, Math.max(12, Math.round(rr / 4)), 0.5);
+      if (showSec && R > 70) {
+        let lab = isPPI ? String(Math.round(24 * i / nRings)) + (i === nRings - 1 ? 'NM' : '') : String(i * 2);
+        _radText(lab, cx + Math.cos(labA) * rr + micro * 0.3, cy + Math.sin(labA) * rr - micro * 0.3, micro, 'left');
+      }
     }
   }
 
-  // Range ruler near one edge
-  if (detailActive('tickMarks', s) && prng.nextFloat() < 0.35) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.5);
-    let rulerLen = maxR * 0.5;
-    let rulerX = cx + maxR * 0.8;
-    let rulerY = cy - rulerLen / 2;
-    drawRangeRuler(rulerX, rulerY, rulerLen, 5, 3, true);
-    svgSetStrokeWeight(state.geometry.strokeWeight);
-  }
+  // ---- Crosshair: fine wires, duplex posts, stadia ----
+  let gap = R * (macro ? 0.1 : 0.07);
+  let postIn = R * (isPeri ? 0.55 : 0.62);
+  if (showCross) {
+    let posts = isPPI ? [] : isPeri ? [0, 2] : isLock ? [0, 1, 2, 3] : [0, 1, 2];
+    let postW = Math.max(pen * 3, R * (macro ? 0.045 : 0.03));
+    for (let q = 0; q < 4; q++) {
+      let a = q * HALF_PI; // 0 right, 1 down, 2 left, 3 up
+      let c = Math.cos(a), sn = Math.sin(a);
+      let hasPost = posts.includes(q);
+      let wireEnd = hasPost ? postIn : (isPPI ? R * 0.84 : bandIn);
+      kitWeight('fine');
+      svgLine(cx + c * gap, cy + sn * gap, cx + c * wireEnd, cy + sn * wireEnd);
+      if (hasPost) {
+        let nx = -sn * postW / 2, ny = c * postW / 2;
+        let p0 = [cx + c * postIn, cy + sn * postIn], p1 = [cx + c * bandIn, cy + sn * bandIn];
+        let poly = [[p0[0] + nx, p0[1] + ny], [p1[0] + nx, p1[1] + ny], [p1[0] - nx, p1[1] - ny], [p0[0] - nx, p0[1] - ny]];
+        kitWeight('heavy');
+        _radClosed(poly);
+        if (macro || solid) _radHatch([poly], q % 2 ? 0 : 90, Math.max(pen * 1.4, postW / 4));
+      }
+    }
+    // Centre: gap circle + dot
+    kitWeight('secondary');
+    svgCircle(cx, cy, gap * 0.9);
+    kitWeight('primary');
+    svgCircle(cx, cy, Math.max(1.5, R * 0.008) * 2);
 
-  // Corner coordinate annotations
-  if (detailActive('annotationTexture', s) && prng.nextFloat() < 0.5) {
-    let fontSize = Math.max(4, maxR * 0.07);
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.5);
-    let coord1 = textGen.coordinate(prng);
-    drawFallbackText(coord1, x + 4, y + fontSize + 2, fontSize);
-    if (prng.nextFloat() < 0.5) {
-      let coord2 = textGen.coordinate(prng);
-      drawFallbackText(coord2, x + w - measureFallbackText(coord2, fontSize) - 4, y + h - 4, fontSize);
-    }
-  }
-
-  // Annotation text below — animated scramble/counter
-  svgSetStrokeWeight(state.geometry.strokeWeight);
-  if (detailActive('secondaryText', s)) {
-    let fontSize = Math.max(5, Math.min(maxR * 0.12, 10));
-    let code = textGen.identifier(prng);
-    let tw = measureFallbackText(code, fontSize);
-    drawAnimText(code, cx - tw / 2, cy + maxR + fontSize * 2, fontSize, elemSeed + 77, 'scramble');
-  }
-
-  // Additional variant overlays (PRNG consumed unconditionally)
-  // Variant overlays — consume PRNG unconditionally to maintain stability
-  let reticleVariant = prng.nextFloat();
-  // Pre-consume fixed PRNG for variant internals (regardless of which branch runs)
-  let _rvF1 = prng.nextFloat(), _rvF2 = prng.nextFloat(), _rvF3 = prng.nextFloat();
-  let _rvI1 = prng.nextInt(0, 0xFFFF);
-  textGen.valueReadout(prng); // always consume
-  if (reticleVariant < 0.2 && s < 0.4) {
-    // Convergence/lock mode
-    let bracketSize = maxR * 0.3;
-    let gap = maxR * 0.6;
-    if (animated && animCtx) gap = maxR * (0.3 + 0.3 * anim.pingPong(animCtx.frameIndex, animCtx.frameCount, animCtx.speedMul, phase));
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.7);
-    let corners = [[-1,-1],[1,-1],[1,1],[-1,1]];
-    for (let [dx, dy] of corners) {
-      let bx = cx + dx * gap, by = cy + dy * gap;
-      svgLine(bx, by, bx + dx * bracketSize, by); svgLine(bx, by, bx, by + dy * bracketSize);
-    }
-  } else if (reticleVariant < 0.35 && s < 0.45) {
-    // Multi-target overlay — use pre-consumed values
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.3);
-    let subCount = 1 + (_rvI1 % 2);
-    for (let si = 0; si < subCount; si++) {
-      let sa = (si === 0 ? _rvF1 : _rvF2) * TWO_PI;
-      let sd = maxR * (0.4 + _rvF3 * 0.3);
-      let sx = cx + sd * cos(sa), sy = cy + sd * sin(sa), sr = maxR * 0.15;
-      svgCircle(sx, sy, sr * 2); drawCrosshair(sx, sy, sr * 1.5, sr * 0.2);
-      drawDashedLine(cx, cy, sx, sy, 3, 4);
-    }
-  } else if (reticleVariant < 0.45) {
-    // Range-finding rulers
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-    let rulerLen = maxR * 0.6;
-    drawRangeRuler(cx + maxR * 0.75, cy - rulerLen / 2, rulerLen, 5, 3, true);
-    drawRangeRuler(cx - rulerLen / 2, cy + maxR * 0.75, rulerLen, 5, 3, false);
-    if (detailActive('secondaryText', s)) {
-      drawAnimText(_rvI1.toString(16).toUpperCase(), cx + maxR * 0.8, cy - 2, Math.max(4, maxR * 0.07), elemSeed + 88, 'bus:counter');
-    }
-  } else if (reticleVariant < 0.55) {
-    // Acquisition sweep
-    let sweepAngle = animated && animCtx ? anim.sweep(animCtx.frameIndex, animCtx.frameCount, cycle * 3, animCtx.speedMul, phase) * TWO_PI : 0;
-    let sweepR = maxR * 0.65;
-    for (let trail = 0; trail < 4; trail++) {
-      svgSetStrokeWeight(state.geometry.strokeWeight * (0.8 - trail * 0.18));
-      svgArc(cx, cy, sweepR * 2, sweepR * 2, sweepAngle - trail * 0.3 - 0.4, sweepAngle - trail * 0.3);
+    if (showTicks && !isPPI) {
+      // Mil-dot stadia on the horizontal wires
+      let n = Math.max(3, Math.min(8, Math.round(3 + d * 1.5)));
+      let u = (postIn - gap) / (n + 0.5);
+      kitWeight('fine');
+      for (let side of [-1, 1]) for (let i = 1; i <= n; i++) {
+        let px = cx + side * (gap + u * i);
+        if (i % 2 === 0) svgCircle(px, cy, Math.max(2, R * 0.014) * 2);
+        else svgLine(px, cy - R * 0.015, px, cy + R * 0.015);
+      }
+      if (!isPeri) {
+        // Bullet-drop "tree" on the lower wire, with holdover numerals
+        for (let i = 1; i <= n; i++) {
+          let py = cy + gap + u * i;
+          let hw = R * (0.02 + i * 0.012);
+          svgLine(cx - hw, py, cx + hw, py);
+          if (showSec && i % 2 === 0 && u > micro * 1.2) _radText(String(i * 2), cx + hw + micro * 0.4, py + micro * 0.35, micro, 'left');
+        }
+      }
     }
   }
 
-  svgSetStrokeWeight(state.geometry.strokeWeight);
+  // ---- Periscope: split-image rangefinder + stadia arc ----
+  if (isPeri && showInner) {
+    let off = R * (0.02 + F[8] * 0.03) * (1 - _radOsc(animated, 2, phase));
+    kitWeight('secondary');
+    // Split image: the two halves of the horizon line slide apart until ranged
+    let hy = cy - R * 0.2, tk = R * 0.025;
+    svgPolyline([[cx - postIn * 0.95, hy - off - tk], [cx - postIn * 0.95, hy - off], [cx - gap * 0.6, hy - off], [cx - gap * 0.6, hy - off + tk]]);
+    svgPolyline([[cx + postIn * 0.95, hy + off + tk], [cx + postIn * 0.95, hy + off], [cx + gap * 0.6, hy + off], [cx + gap * 0.6, hy + off - tk]]);
+    // Stadiametric arc with range numerals
+    let ra = R * 0.42;
+    kitWeight('fine');
+    svgArc(cx, cy, ra * 2, ra * 2, brgA(-50), brgA(50));
+    if (showTicks) for (let i = 0; i <= 10; i++) {
+      let a = brgA(-50 + i * 10), len = i % 5 === 0 ? R * 0.05 : R * 0.025;
+      svgLine(cx + Math.cos(a) * ra, cy + Math.sin(a) * ra, cx + Math.cos(a) * (ra + len), cy + Math.sin(a) * (ra + len));
+      if (showSec && i % 5 === 0 && R > 80) {
+        let lr = ra + R * 0.05 + micro;
+        _radText(String(2 + i), cx + Math.cos(a) * lr, cy + Math.sin(a) * lr + micro * 0.35, micro, 'center');
+      }
+    }
+  }
+
+  // ---- Sweep sector (PPI always; lockOn / fireControl get a narrow scan arc) ----
+  let sweepA = F[9] * TWO_PI + _radSpin(animated, isPPI ? 2 : 1);
+  if (isPPI && showInner) {
+    let rS = R * 0.84, wA = (22 + F[10] * 14) * DEG;
+    let poly = _radSector(cx, cy, 0, rS, sweepA - wA, sweepA);
+    _radHatch([poly], sweepA / DEG, Math.max(pen * 1.4, R * (macro ? 0.016 : 0.022)));
+    kitWeight('heavy');
+    svgLine(cx, cy, cx + Math.cos(sweepA) * rS, cy + Math.sin(sweepA) * rS);
+    // Afterglow: fading radial trail behind the wedge
+    kitWeight('fine');
+    for (let k = 1; k <= 6; k++) {
+      let a = sweepA - wA - k * wA * 0.22;
+      let len = rS * (1 - k * 0.13);
+      svgLine(cx + Math.cos(a) * gap, cy + Math.sin(a) * gap, cx + Math.cos(a) * len, cy + Math.sin(a) * len);
+    }
+  } else if (!isPeri && showInner && showRings) {
+    let rS = R * (isLock ? 0.7 : 0.75);
+    kitWeight('primary');
+    svgArc(cx, cy, rS * 2, rS * 2, sweepA - 0.5, sweepA);
+    kitWeight('fine');
+    svgArc(cx, cy, (rS - R * 0.02) * 2, (rS - R * 0.02) * 2, sweepA - 0.9, sweepA - 0.1);
+  }
+
+  // ---- Contacts ----
+  let nContacts = showInner && s < 0.46 ? (isPPI ? Math.min(6, 3 + Math.round(d)) : isLock ? 0 : 2) : 0;
+  for (let i = 0; i < nContacts; i++) {
+    let cb = F[12 + i] * 360, cr = 0.2 + F[18 + i] * 0.6;
+    let ca = brgA(cb);
+    let px = cx + Math.cos(ca) * cr * R * 0.84, py = cy + Math.sin(ca) * cr * R * 0.84;
+    if (Math.hypot(px - tx, py - ty) < R * 0.12) continue;
+    let cSeed = (elemSeed + 300 + i * 17) >>> 0;
+    let cs = Math.max(2.5, R * 0.022);
+    if (_radVisible(cSeed)) {
+      kitWeight('secondary');
+      let kind = i % 3;
+      if (kind === 0) svgCircle(px, py, cs * 2);
+      else if (kind === 1) svgRect(px - cs, py - cs, cs * 2, cs * 2);
+      else drawTriangle(px, py, cs * 1.2, -HALF_PI);
+      // Track tail: where it came from
+      let ha = F[24 + i] * TWO_PI;
+      kitWeight('fine');
+      drawDashedLine(px - Math.cos(ha) * cs * 1.5, py - Math.sin(ha) * cs * 1.5, px - Math.cos(ha) * cs * 6, py - Math.sin(ha) * cs * 6, 2, 2);
+    }
+    if (showSec && R > 90) _radText(T.contacts[i], px + cs * 1.8, py - cs * 1.2, micro, 'left', cSeed, 'counter');
+  }
+
+  // ---- Target: marker, lock brackets, lead chevrons, callout ----
+  if (showInner || macro) {
+    let ts = R * (macro ? 0.06 : 0.045);
+    kitWeight('heavy');
+    if (isLock || isPeri) {
+      _radClosed([[tx, ty - ts], [tx + ts, ty], [tx, ty + ts], [tx - ts, ty]]);
+      if (macro) _radHatch([[[tx, ty - ts], [tx + ts, ty], [tx, ty + ts], [tx - ts, ty]]], 0, Math.max(pen * 1.3, ts * 0.22));
+    } else {
+      svgCircle(tx, ty, ts * 1.2);
+      svgCircle(tx, ty, Math.max(1.2, ts * 0.2) * 2);
+    }
+    // Lock brackets: converge and open on a seamless cycle
+    let conv = isLock ? 1.6 + 1.4 * _radOsc(animated, 2, phase) : 2.2;
+    let bs = ts * conv, arm = ts * 0.9;
+    kitWeight(isLock ? 'primary' : 'secondary');
+    for (let [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      let bx = tx + sx * bs, by = ty + sy * bs;
+      svgPolyline([[bx, by - sy * arm], [bx, by], [bx - sx * arm, by]]);
+    }
+    if (isLock && showCross) {
+      // Bearing carets on the bezel pointing at the locked track
+      kitWeight('heavy');
+      let a = brgA(tb);
+      drawTriangle(cx + Math.cos(a) * (bandIn - R * 0.05), cy + Math.sin(a) * (bandIn - R * 0.05), R * 0.04, a + PI);
+      kitWeight('fine');
+      drawDashedLine(cx + Math.cos(a) * gap, cy + Math.sin(a) * gap, tx - Math.cos(a) * bs * 1.1, ty - Math.sin(a) * bs * 1.1, 3, 3);
+    }
+    // Lead chevrons along the target heading, then the aim pipper
+    if ((isFC || isLock || isPPI) && showInner) {
+      let sp = ts * 1.9;
+      kitWeight('secondary');
+      for (let k = 1; k <= 3; k++) _radChevron(tx + Math.cos(hdg) * (bs + sp * k), ty + Math.sin(hdg) * (bs + sp * k), hdg, ts * (0.75 - k * 0.12));
+      if (isFC) {
+        let pxp = tx + Math.cos(hdg) * (bs + sp * 4.6), pyp = ty + Math.sin(hdg) * (bs + sp * 4.6);
+        if (Math.hypot(pxp - cx, pyp - cy) < bandIn - ts * 2) {
+          kitWeight('primary');
+          svgCircle(pxp, pyp, ts * 1.4);
+          svgPoint(pxp, pyp);
+        }
+      }
+    }
+    // Callout with bearing / range readout
+    if (showSec && R > 60) {
+      let out = Math.atan2(ty - cy, tx - cx);
+      let dx = (Math.cos(out) >= 0 ? 1 : -1) * R * 0.22, dy = (Math.sin(out) >= 0 ? 1 : -1) * R * 0.2;
+      let csz = Math.max(getMinTextSizePx(), Math.min(body, R * 0.05));
+      // Keep the label box inside the bezel (clear of the graduated band)
+      // ... and off the crosshair wires, posts and stadia
+      let inside = (x0, y0, x1, y1) => [[x0, y0], [x1, y0], [x0, y1], [x1, y1]].every(([qx, qy]) => Math.hypot(qx - cx, qy - cy) < bandIn * 0.97)
+        && !(showCross && ((x0 < cx + R * 0.08 && x1 > cx - R * 0.08) || (y0 < cy + R * 0.04 && y1 > cy - R * 0.04)));
+      _radCallout(tx + (dx > 0 ? bs : -bs) * 0.7, ty + (dy > 0 ? bs : -bs) * 0.7, dx, dy,
+        T.tgt, 'B' + String(Math.round(tb)).padStart(3, '0') + ' R' + rangeKm, csz, area, inside);
+    }
+  }
+
+  // ---- Registration marks at the ring's bounding square ----
+  if (detailActive('cornerBrackets', s)) {
+    kitWeight('fine');
+    let rm = half * 0.93, rs = Math.max(3, half * 0.03);
+    for (let [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) _radRegMark(cx + sx * rm, cy + sy * rm, rs);
+  }
+
+  // ---- Heading tape (rectilinear scale above the scope) ----
+  if (tapeH > 0) {
+    let tw = Math.min(m.w * 0.72, R * 2.1), tx0 = cx - tw / 2, y0 = m.y + topH + tapeH * 0.72;
+    let span = 40, from = tb - span / 2;
+    kitWeight('fine');
+    svgLine(tx0, y0, tx0 + tw, y0);
+    for (let g = Math.ceil(from); g <= from + span; g++) {
+      let gx = tx0 + (g - from) / span * tw;
+      let major = ((g % 10) + 10) % 10 === 0, mid = ((g % 5) + 5) % 5 === 0;
+      if (!mid && tw / span < 3) continue;
+      svgLine(gx, y0, gx, y0 - tapeH * (major ? 0.32 : mid ? 0.2 : 0.1));
+      if (major) _radText(String(((g % 360) + 360) % 360).padStart(3, '0'), gx, y0 - tapeH * 0.42, micro, 'center');
+    }
+    kitWeight('primary');
+    drawTriangle(cx, y0 + tapeH * 0.12, tapeH * 0.1, -HALF_PI);
+    kitWeight('fine');
+    svgLine(tx0, y0 - tapeH * 0.65, tx0, y0 + tapeH * 0.15);
+    svgLine(tx0 + tw, y0 - tapeH * 0.65, tx0 + tw, y0 + tapeH * 0.15);
+    if (tx0 - m.x > body * 4.5) {
+      _radText('HDG', tx0 - body * 0.6, y0 - tapeH * 0.3, micro, 'right');
+      _radText(String(Math.round(tb)).padStart(3, '0'), tx0 - body * 0.6, y0 + body * 0.3, body, 'right', (elemSeed + 5) >>> 0, 'counter');
+    }
+  }
+
+  // ---- Elevation ladder on the side when the cell is wide ----
+  let sideRoom = (area.w - half * 2) / 2;
+  if (showTicks && showSec && sideRoom > body * 5 && area.h > 160) {
+    let lx = area.x + sideRoom * 0.55, lh = R * 1.3, ly = cy - lh / 2;
+    kitWeight('fine');
+    kitRuler(lx, ly, lh, { vertical: true, divisions: 20, major: 5, len: body * 0.7, from: 30, to: -10, side: 1, labelSize: micro });
+    let ept = (30 - parseFloat(elev)) / 40;
+    kitWeight('primary');
+    drawTriangle(lx - body * 0.5, ly + Math.max(0, Math.min(1, ept)) * lh, body * 0.4, 0);
+    _radText('ELV', lx, ly - micro * 1.2, micro, 'center');
+    // Range bar on the other side
+    let rx = area.x + area.w - sideRoom * 0.55, rw = body * 0.9;
+    kitWeight('secondary');
+    svgRect(rx - rw / 2, ly, rw, lh);
+    let fillH = lh * tr;
+    let bar = [[rx - rw / 2, ly + lh - fillH], [rx + rw / 2, ly + lh - fillH], [rx + rw / 2, ly + lh], [rx - rw / 2, ly + lh]];
+    _radHatch([bar], 45, Math.max(pen * 1.4, rw / 5));
+    kitWeight('fine');
+    for (let i = 0; i <= 8; i++) svgLine(rx + rw / 2, ly + lh * i / 8, rx + rw / 2 + (i % 4 === 0 ? body * 0.6 : body * 0.3), ly + lh * i / 8);
+    _radText('RNG', rx, ly - micro * 1.2, micro, 'center');
+  }
+
+  // ---- Track table panel (wide / tall cells) ----
+  if (panel) {
+    let rows = [[T.tgt.replace(/[-._:]/, ''), 'B' + String(Math.round(tb)).padStart(3, '0') + ' ' + rangeKm]];
+    for (let i = 0; i < 6; i++) rows.push([T.contacts[i], 'B' + String(Math.round(F[12 + i] * 360)).padStart(3, '0') + ' ' + (F[18 + i] * (isPPI ? 24 : 8)).toFixed(2)]);
+    let th = arr.side ? Math.min(panel.h, body * 1.3 * (rows.length + 2.2)) : panel.h;
+    let tw = arr.side ? panel.w : Math.min(panel.w, Math.max(panel.w * 0.55, body * 18));
+    let endY = _radTable({ x: panel.x, y: panel.y, w: tw, h: th }, 'TRACK TABLE', rows, body, micro, elemSeed + 200);
+    let rest = arr.side ? { x: panel.x, y: endY + body * 1.2, w: panel.w, h: panel.y + panel.h - endY - body * 1.2 }
+                        : { x: panel.x + tw + body, y: panel.y, w: panel.w - tw - body, h: panel.h };
+    if (rest.w > body * 8 && rest.h > body * 6) kitModule(rest, s, new PRNG(modSeed), rest.w / rest.h > 2.2 ? 'spark' : 'bars');
+  }
+
+  // ---- Header: status word, mode tag, identifier ----
+  if (topH > 0) {
+    let modeTag = 'MODE ' + { fireControl: 'F/C', radarScope: 'PPI', periscope: 'OPT', lockOn: 'STT' }[variant];
+    _radHeader(m, isLock ? 'LOCK' : T.status, modeTag, T.id, body, micro, elemSeed + 1);
+    if (showAnnot && m.w > body * 30) { kitWeight('fine'); _radText(T.coord, m.x + m.w, m.y + body * 1.25 + micro * 1.4, micro, 'right'); }
+  }
+
+  // ---- Readout row: bearing / range / elevation / closure ----
+  if (botH > 0) {
+    let ry = m.y + m.h - botH + body * 1.9;
+    let fields = [['BRG', String(Math.round(tb * 10) / 10).padStart(5, '0')], ['RNG', rangeKm + (isPPI ? 'NM' : 'KM')],
+                  ['ELV', (elev >= 0 ? '+' : '') + elev], ['VEL', String(Math.round(120 + F[30] * 680)) + 'KT'], ['TTI', (F[31] * 60).toFixed(1) + 'S']];
+    kitWeight('fine');
+    svgLine(m.x, ry - body * 1.55, m.x + m.w, ry - body * 1.55);
+    let fx = m.x, colW = m.w / fields.length;
+    for (let i = 0; i < fields.length; i++) {
+      let [k, v] = fields[i];
+      let kw = measureFallbackText(k, micro), vw = measureFallbackText(v, body);
+      if (kw + vw + body * 0.8 > colW) continue;
+      kitWeight('fine');
+      _radText(k, fx, ry, micro, 'left');
+      kitWeight('secondary');
+      _radText(v, fx + kw + body * 0.4, ry, body, 'left', (elemSeed + 40 + i) >>> 0, i === 0 ? 'bus:counter' : 'counter');
+      if (i > 0) { kitWeight('fine'); svgLine(fx - body * 0.4, ry - body * 1.1, fx - body * 0.4, ry + body * 0.2); }
+      fx += colW;
+    }
+    if (showVer) {
+      kitWeight('fine');
+      _radText(T.ver, m.x, m.y + m.h, micro, 'left', elemSeed + 50, 'counter');
+      _radText(T.ts, m.x + m.w, m.y + m.h, micro, 'right', elemSeed + 51, 'counter');
+    }
+  }
+
+  // Kit side modules last, on a private PRNG: their animated text skips font
+  // rolls on hidden frames, which would otherwise reshuffle module content.
+  kitFillLayout(lay, s, new PRNG(laySeed));
+  kitWeight('primary');
   svgRec.endGroup();
 }
 
 // ---- Meter/Gauge Variants ----
+// Every variant takes one context object `c` built by composeMeterGauge:
+//   { cx, cy, R, s, F (pre-drawn floats), T (pre-drawn strings), sc (scale/unit),
+//     d (density), body, micro, num (numeral size), v (live value 0..1),
+//     animated, phase, pen, solid (fill style or null), macro, show{...}, area }
+// Variants draw no PRNG: everything random comes from c.F / c.T, so the cell
+// stream never depends on frame or branch. Each returns the readout value 0..1.
 
-function meterVariant_radarChart(cx, cy, radius, s, prng) {
-  let axes = prng.nextInt(4, 8);
-  let rings = s < 0.2 ? prng.nextInt(3, 5) : prng.nextInt(2, 3);
+// Measurement scales a gauge can carry: unit, range, majors, minors per major.
+const METER_SCALES = [
+  { unit: 'RPM', tag: 'x1000', min: 0, max: 8, majors: 8, minors: 4, dec: 1 },
+  { unit: 'PSI', tag: 'OIL', min: 0, max: 80, majors: 8, minors: 2, dec: 0 },
+  { unit: 'kPa', tag: 'MANIFOLD', min: 0, max: 300, majors: 6, minors: 5, dec: 0 },
+  { unit: '°C', tag: 'COOLANT', min: 0, max: 140, majors: 7, minors: 2, dec: 1 },
+  { unit: 'V', tag: 'BUS', min: 0, max: 30, majors: 6, minors: 5, dec: 2 },
+  { unit: 'MHz', tag: 'CARRIER', min: 0, max: 50, majors: 5, minors: 5, dec: 2 },
+  { unit: '%', tag: 'LOAD', min: 0, max: 100, majors: 10, minors: 2, dec: 1 },
+  { unit: 'A', tag: 'DRAW', min: 0, max: 20, majors: 4, minors: 5, dec: 2 },
+  { unit: 'G', tag: 'ACCEL', min: 0, max: 9, majors: 9, minors: 2, dec: 2 },
+  { unit: 'mSv', tag: 'DOSE', min: 0, max: 5, majors: 5, minors: 4, dec: 3 }
+];
 
-  // Polar grid background
-  svgSetStrokeWeight(state.geometry.strokeWeight * 0.5);
-  drawPolarGrid(cx, cy, radius, rings, axes);
+function _mtrFmt(sc, v) { return (sc.min + (sc.max - sc.min) * v).toFixed(sc.dec); }
 
-  // Data polygon
-  svgSetStrokeWeight(state.geometry.strokeWeight * 1.2);
-  svgBeginShape();
-  let values = [];
-  for (let i = 0; i < axes; i++) {
-    let val = 0.25 + prng.nextFloat() * 0.7;
-    values.push(val);
-    let a = (i / axes) * TWO_PI - HALF_PI;
-    svgVertex(cx + radius * val * cos(a), cy + radius * val * sin(a));
+// Live value: seamless wobble around the base value when animated.
+function _mtrLive(c, base, k) {
+  if (!c.animated || !animCtx) return base;
+  let p = _compBus ? _compBus.pulsePositive : _radOsc(true, 1, c.phase);
+  return Math.max(0, Math.min(1, base * (0.82 + 0.3 * ((p + k * 0.37) % 1))));
+}
+
+// Graduated arc: baseline, major / mid / minor ticks, numerals on majors,
+// optional hatched redline sector from `red` (0..1) to the end.
+// o: { len, inward, labels, size, red, minorsOn, every }
+function _mtrScale(cx, cy, r, a0, a1, sc, o) {
+  o = Object.assign({ len: r * 0.08, inward: true, labels: true, size: 8, red: null, minorsOn: true, base: true }, o);
+  let dir = o.inward ? -1 : 1;
+  let total = sc.majors * sc.minors;
+  if (o.base) { kitWeight('primary'); svgArc(cx, cy, r * 2, r * 2, a0, a1); }
+  if (o.red !== null && o.red < 1) {
+    let ra = a0 + (a1 - a0) * o.red;
+    let poly = _radSector(cx, cy, r + dir * o.len * 0.95, r, Math.min(ra, a1), Math.max(ra, a1));
+    _radHatch([poly], (ra * 180 / PI) + 60, Math.max(_radPen() * 1.4, o.len * 0.16), 'secondary');
+    kitWeight('heavy');
+    svgArc(cx, cy, (r - dir * o.len * 0.12) * 2, (r - dir * o.len * 0.12) * 2, Math.min(ra, a1), Math.max(ra, a1));
   }
-  svgEndShape(true);
-
-  // Data points at vertices
-  svgSetStrokeWeight(state.geometry.strokeWeight);
-  for (let i = 0; i < axes; i++) {
-    let a = (i / axes) * TWO_PI - HALF_PI;
-    let pr = radius * values[i];
-    svgPoint(cx + pr * cos(a), cy + pr * sin(a));
+  for (let i = 0; i <= total; i++) {
+    let isMajor = i % sc.minors === 0;
+    let isMid = !isMajor && sc.minors % 2 === 0 && i % (sc.minors / 2) === 0;
+    if (!isMajor && !o.minorsOn) continue;
+    let a = a0 + (a1 - a0) * i / total;
+    let len = o.len * (isMajor ? 1 : isMid ? 0.66 : 0.42);
+    kitWeight(isMajor ? 'primary' : 'fine');
+    svgLine(cx + Math.cos(a) * r, cy + Math.sin(a) * r, cx + Math.cos(a) * (r + dir * len), cy + Math.sin(a) * (r + dir * len));
   }
+  if (o.labels) {
+    // Thin numerals out until they no longer collide along the arc
+    let lw = measureFallbackText(String(sc.max), o.size);
+    let arcPer = Math.abs(a1 - a0) * (r + dir * o.len * 1.8) / sc.majors;
+    let every = o.every || (arcPer > lw * 1.35 ? 1 : arcPer * 2 > lw * 1.35 ? 2 : 0);
+    if (every) {
+      kitWeight('fine');
+      let full = Math.abs(a1 - a0) > TWO_PI * 0.99;
+      for (let j = 0; j <= sc.majors - (full ? 1 : 0); j += every) {
+        let a = a0 + (a1 - a0) * j / sc.majors;
+        let lr = r + dir * (o.len + o.size * 1.05);
+        let val = sc.min + (sc.max - sc.min) * j / sc.majors;
+        let lab = Number.isInteger(val) ? String(val) : val.toFixed(1);
+        _radText(lab, cx + Math.cos(a) * lr, cy + Math.sin(a) * lr + o.size * 0.38, o.size, 'center');
+      }
+    }
+  }
+}
 
-  // Axis labels at tips
-  if (detailActive('primaryLabels', s)) {
-    let fontSize = Math.max(4, radius * 0.08);
+// Tapered needle with counterweight tail and a two-ring hub.
+function _mtrNeedle(cx, cy, len, a, w, solid) {
+  let c = Math.cos(a), s = Math.sin(a), nx = -s, ny = c;
+  let tail = len * 0.2;
+  let pts = [[cx + c * len, cy + s * len], [cx + nx * w, cy + ny * w], [cx - c * tail + nx * w * 1.4, cy - s * tail + ny * w * 1.4],
+             [cx - c * tail - nx * w * 1.4, cy - s * tail - ny * w * 1.4], [cx - nx * w, cy - ny * w]];
+  kitWeight('heavy');
+  _radClosed(pts);
+  if (solid) _radHatch([pts], a * 180 / PI, Math.max(_radPen() * 1.3, w * 0.45));
+  else { kitWeight('fine'); svgLine(cx, cy, cx + c * len * 0.92, cy + s * len * 0.92); }
+  kitWeight('heavy');
+  svgCircle(cx, cy, w * 3.2);
+  kitWeight('secondary');
+  svgCircle(cx, cy, w * 1.6);
+}
+
+// Compact secondary dial: 270-degree scale, numerals if room, needle, label.
+function _mtrSubDial(cx, cy, r, sc, v, label, c) {
+  let a0 = PI * 0.75, a1 = PI * 2.25;
+  kitWeight('secondary');
+  svgCircle(cx, cy, r * 2);
+  let lab = c.show.labels && r > c.micro * 6;
+  _mtrScale(cx, cy, r * 0.86, a0, a1, sc, { len: r * 0.13, size: c.micro, labels: lab && c.show.ticks, red: 0.8, minorsOn: r > 30, base: false });
+  if (!c.show.ticks) { kitWeight('primary'); svgArc(cx, cy, r * 1.72, r * 1.72, a0, a1); }
+  let a = a0 + (a1 - a0) * v;
+  kitWeight('primary');
+  svgLine(cx - Math.cos(a) * r * 0.15, cy - Math.sin(a) * r * 0.15, cx + Math.cos(a) * r * 0.72, cy + Math.sin(a) * r * 0.72);
+  svgCircle(cx, cy, r * 0.16);
+  if (lab) _radText(label, cx, cy + r * 0.62, c.micro, 'center');
+}
+
+// Digital readout window: framed value with unit, drop shadow rule.
+function _mtrWindow(cx, wy, ww, wh, text, unit, c, seed) {
+  kitWeight('secondary');
+  svgRect(cx - ww / 2, wy, ww, wh);
+  kitWeight('fine');
+  svgLine(cx - ww / 2 + 2, wy + wh + 2, cx + ww / 2 + 2, wy + wh + 2);
+  svgLine(cx + ww / 2 + 2, wy + 2, cx + ww / 2 + 2, wy + wh + 2);
+  let ds = Math.min(wh * 0.62, c.body * 1.4);
+  kitWeight('primary');
+  _radText(text, cx + ww / 2 - c.body * 0.4, wy + wh / 2 + ds * 0.38, ds, 'right', seed, 'counter');
+  kitWeight('fine');
+  _radText(unit, cx - ww / 2 + c.body * 0.3, wy + wh / 2 + c.micro * 0.35, c.micro, 'left');
+}
+
+// Annular block (closed contour) hatched when lit.
+function _mtrBlock(cx, cy, r0, r1, a0, a1, lit, c, hatchAngle) {
+  let poly = _radSector(cx, cy, r0, r1, a0, a1);
+  kitWeight(lit ? 'primary' : 'fine');
+  _radClosed(poly);
+  let thin = Math.min(r1 - r0, Math.abs(a1 - a0) * (r0 + r1) / 2);
+  if (lit) _radHatch([poly], hatchAngle !== undefined ? hatchAngle : ((a0 + a1) / 2 * 180 / PI + 90), Math.max(c.pen * 1.4, thin * (c.macro ? 0.13 : 0.2)), 'primary');
+}
+
+// --- 1. Needle dial: the precision instrument ---
+function meterVariant_needleDial(c) {
+  let { cx, cy, R, F, sc } = c;
+  let span = F[1] < 0.45 ? 1.5 * PI : F[1] < 0.8 ? 4 / 3 * PI : PI;
+  let a0 = HALF_PI + (TWO_PI - span) / 2, a1 = a0 + span;
+  if (span === PI) { a0 = PI; a1 = TWO_PI; cy += R * 0.32; }
+  let v = _mtrLive(c, 0.15 + F[2] * 0.7, 0);
+  let red = 0.72 + F[3] * 0.15;
+  // Bezel: heavy rim + inner rim; offset contour band toward macro
+  kitWeight('heavy');
+  if (span === PI) { svgArc(cx, cy, R * 2, R * 2, PI, TWO_PI); svgLine(cx - R, cy, cx + R, cy); }
+  else svgCircle(cx, cy, R * 2);
+  kitWeight('fine');
+  if (span !== PI) svgCircle(cx, cy, R * 0.97 * 2);
+  if (c.macro && span !== PI) _radBand(cx, cy, R, R * 0.93, c.solid, 2);
+  let sr = R * 0.88;
+  if (c.show.ticks) {
+    _mtrScale(cx, cy, sr, a0, a1, sc, { len: R * 0.11, size: c.num, labels: c.show.labels, red, minorsOn: R > 45 });
+    // Inner secondary scale (alternate unit) on fine ticks
+    if (c.show.sec && R > 110) {
+      let alt = { min: 0, max: Math.round(sc.max * 1.45), majors: sc.majors, minors: 2, dec: 0 };
+      kitWeight('fine');
+      svgArc(cx, cy, sr * 0.66 * 2, sr * 0.66 * 2, a0, a1);
+      _mtrScale(cx, cy, sr * 0.66, a0, a1, alt, { len: R * 0.04, size: c.micro, labels: true, inward: false, base: false, every: 2 });
+    }
+  } else {
+    // Macro: bold track with hatched live sector and redline
+    let tr0 = sr - R * 0.14;
+    kitWeight('heavy');
+    svgArc(cx, cy, sr * 2, sr * 2, a0, a1);
+    svgArc(cx, cy, tr0 * 2, tr0 * 2, a0, a1);
+    _mtrBlock(cx, cy, tr0, sr, a0, a0 + (a1 - a0) * v, true, c, 0);
+    _mtrBlock(cx, cy, tr0, sr, a0 + (a1 - a0) * red, a1, true, c, 90);
+  }
+  // Set-point bug outside the arc
+  let bugA = a0 + (a1 - a0) * (0.3 + F[4] * 0.5);
+  kitWeight('primary');
+  drawTriangle(cx + Math.cos(bugA) * R * 0.92, cy + Math.sin(bugA) * R * 0.92, R * 0.03, bugA + PI);
+  // Sub-dials inside the face
+  if (c.show.inner && R > 95 && span !== PI) {
+    let sr2 = R * 0.2;
+    let sc2 = METER_SCALES[Math.floor(F[5] * METER_SCALES.length)];
+    _mtrSubDial(cx - R * 0.36, cy + R * 0.12, sr2, sc2, _mtrLive(c, F[6], 1), sc2.tag, c);
+    if (R > 140) _mtrSubDial(cx + R * 0.36, cy + R * 0.12, sr2, METER_SCALES[Math.floor(F[7] * METER_SCALES.length)], _mtrLive(c, F[8], 2), 'AUX', c);
+  }
+  // Digital window under the hub
+  if (c.show.labels && R > 70) {
+    let ww = R * 0.62, wh = Math.max(c.body * 1.7, R * 0.15), wy = span === PI ? cy - R * 0.55 : cy + R * 0.42;
+    _mtrWindow(cx, wy, ww, wh, _mtrFmt(sc, v), sc.unit, c, c.seed + 61);
+    if (c.show.sec) _radText(sc.tag, cx, (span === PI ? wy - c.micro * 0.8 : wy + wh + c.micro * 1.6), c.micro, 'center');
+  }
+  _mtrNeedle(cx, cy, sr * (c.show.ticks ? 0.94 : 0.98), a0 + (a1 - a0) * v, Math.max(1.6, R * (c.macro ? 0.04 : 0.028)), c.macro || !!c.solid);
+  return v;
+}
+
+// --- 2. Radar chart: multi-axis profile with scales and a ghost sample ---
+function meterVariant_radarChart(c) {
+  let { cx, cy, R, F } = c;
+  let axes = 5 + Math.floor(F[1] * 4);
+  let rings = c.s < 0.2 ? 4 : 3;
+  let ang = (i) => i / axes * TWO_PI - HALF_PI;
+  // Outer graduated ring
+  kitWeight('heavy');
+  svgCircle(cx, cy, R * 2);
+  if (c.show.ticks) { kitWeight('fine'); kitTickRing(cx, cy, R, { count: 72, major: 6, len: R * 0.04, inward: true }); }
+  // Polar grid: polygonal rings, axes with ticks
+  for (let k = 1; k <= rings; k++) {
+    let rr = R * 0.86 * k / rings;
+    kitWeight(k === rings ? 'secondary' : 'fine');
+    _radClosed(Array.from({ length: axes }, (_, i) => [cx + Math.cos(ang(i)) * rr, cy + Math.sin(ang(i)) * rr]));
+    if (c.show.sec && R > 80) _radText(String(Math.round(100 * k / rings)), cx + c.micro * 0.3, cy - rr - c.micro * 0.25, c.micro, 'left');
+  }
+  for (let i = 0; i < axes; i++) {
+    let a = ang(i);
+    kitWeight('fine');
+    svgLine(cx, cy, cx + Math.cos(a) * R * 0.86, cy + Math.sin(a) * R * 0.86);
+    if (c.show.ticks) for (let k = 1; k <= rings * 2; k++) {
+      let rr = R * 0.86 * k / (rings * 2), tl = R * (k % 2 ? 0.012 : 0.022);
+      svgLine(cx + Math.cos(a) * rr - Math.sin(a) * tl, cy + Math.sin(a) * rr + Math.cos(a) * tl, cx + Math.cos(a) * rr + Math.sin(a) * tl, cy + Math.sin(a) * rr - Math.cos(a) * tl);
+    }
+  }
+  // Ghost (previous sample) and live polygon
+  let vals = [], ghost = [];
+  for (let i = 0; i < axes; i++) { vals.push(_mtrLive(c, 0.3 + F[10 + i] * 0.65, i)); ghost.push(0.25 + F[20 + i] * 0.65); }
+  let poly = vals.map((v, i) => [cx + Math.cos(ang(i)) * R * 0.86 * v, cy + Math.sin(ang(i)) * R * 0.86 * v]);
+  let gpoly = ghost.map((v, i) => [cx + Math.cos(ang(i)) * R * 0.86 * v, cy + Math.sin(ang(i)) * R * 0.86 * v]);
+  if (c.show.inner) {
+    kitWeight('fine');
+    for (let i = 0; i < axes; i++) { let j = (i + 1) % axes; drawDashedLine(gpoly[i][0], gpoly[i][1], gpoly[j][0], gpoly[j][1], 3, 3); }
+  }
+  _radHatch([poly], 30 + F[2] * 60, Math.max(c.pen * 1.4, R * (c.macro || c.solid ? 0.025 : 0.06)), c.macro ? 'primary' : 'fine');
+  kitWeight('heavy');
+  _radClosed(poly);
+  kitWeight('primary');
+  let ms = Math.max(2, R * 0.022);
+  for (let p of poly) svgRect(p[0] - ms, p[1] - ms, ms * 2, ms * 2);
+  // Axis names with values at the tips
+  if (c.show.labels && R > 55) {
     for (let i = 0; i < axes; i++) {
-      let a = (i / axes) * TWO_PI - HALF_PI;
-      let lx = cx + (radius + fontSize * 1.5) * cos(a);
-      let ly = cy + (radius + fontSize * 1.5) * sin(a);
-      let label = textGen.statusLabel(prng).slice(0, 3);
-      drawFallbackText(label, lx - measureFallbackText(label, fontSize) / 2, ly + fontSize * 0.3, fontSize);
+      let a = ang(i), lr = R + c.num * 1.3;
+      let lx = cx + Math.cos(a) * lr, ly = cy + Math.sin(a) * lr;
+      let al = Math.abs(Math.cos(a)) < 0.3 ? 'center' : Math.cos(a) > 0 ? 'left' : 'right';
+      kitWeight('secondary');
+      _radText(c.T.axes[i], lx, ly + (Math.sin(a) > 0.3 ? c.num : 0), c.num, al);
+      if (c.show.sec) { kitWeight('fine'); _radText(String(Math.round(vals[i] * 100)), lx, ly + (Math.sin(a) > 0.3 ? c.num * 2.1 : c.num * 1.1), c.micro, al, c.seed + 70 + i, 'counter'); }
     }
   }
-
-  // Center marker
-  svgCircle(cx, cy, radius * 0.05);
+  kitWeight('primary');
+  svgCircle(cx, cy, R * 0.04);
+  return vals.reduce((a, b) => a + b, 0) / axes;
 }
 
-function meterVariant_radialBars(cx, cy, radius, s, prng) {
-  let barCount = prng.nextInt(8, 16);
-  if (s > 0.3) barCount = Math.max(6, Math.floor(barCount * 0.6));
-  let gapAngle = TWO_PI * 0.01;
-  let barAngle = (TWO_PI - gapAngle * barCount) / barCount;
-  let innerR = radius * 0.25;
-
-  // Inner hub
-  svgCircle(cx, cy, innerR * 2);
-
-  // Radial bar segments
-  for (let i = 0; i < barCount; i++) {
-    let startA = (i / barCount) * TWO_PI - HALF_PI + gapAngle / 2;
-    let endA = startA + barAngle;
-    let barLen = innerR + (radius - innerR) * (0.2 + prng.nextFloat() * 0.8);
-
-    // Draw bar as two arcs + two radial lines
-    svgArc(cx, cy, innerR * 2, innerR * 2, startA, endA);
-    svgArc(cx, cy, barLen * 2, barLen * 2, startA, endA);
-    svgLine(cx + innerR * cos(startA), cy + innerR * sin(startA),
-            cx + barLen * cos(startA), cy + barLen * sin(startA));
-    svgLine(cx + innerR * cos(endA), cy + innerR * sin(endA),
-            cx + barLen * cos(endA), cy + barLen * sin(endA));
-  }
-
-  // Cardinal tick marks
-  if (detailActive('tickMarks', s)) {
-    for (let i = 0; i < 4; i++) {
-      let a = (i / 4) * TWO_PI - HALF_PI;
-      svgLine(cx + (radius + 2) * cos(a), cy + (radius + 2) * sin(a),
-              cx + (radius + 6) * cos(a), cy + (radius + 6) * sin(a));
+// --- 3. Radial bars: polar histogram with threshold ring and peak caps ---
+function meterVariant_radialBars(c) {
+  let { cx, cy, R, F } = c;
+  let n = Math.max(12, Math.min(48, Math.round((16 + F[1] * 16) * Math.min(1.5, c.d) / (c.macro ? 2 : 1))));
+  let r0 = R * 0.3, r1 = R * 0.9, thr = 0.62 + F[2] * 0.2;
+  let gapA = TWO_PI / n * 0.22;
+  let sum = 0;
+  kitWeight('heavy');
+  svgCircle(cx, cy, r0 * 2);
+  for (let i = 0; i < n; i++) {
+    let a0 = i / n * TWO_PI - HALF_PI + gapA / 2, a1 = a0 + TWO_PI / n - gapA;
+    let base = 0.15 + F[(i * 7) % 40 + 1] * 0.85;
+    if (_compBus && _compBus.audioAmps && c.animated) base = 0.1 + _compBus.audioAmps[i % _compBus.audioBins] * 0.9;
+    let v = _mtrLive(c, base, i);
+    sum += v;
+    let re = r0 + (r1 - r0) * v;
+    _mtrBlock(cx, cy, r0 + R * 0.02, re, a0, a1, v > thr || c.macro, c);
+    // Peak-hold cap
+    if (c.show.inner) {
+      let pk = Math.min(1, base + 0.08 + F[(i * 3) % 40] * 0.1);
+      let rp = r0 + (r1 - r0) * pk;
+      kitWeight('secondary');
+      svgArc(cx, cy, rp * 2, rp * 2, a0, a1);
     }
   }
-}
-
-function meterVariant_concentricArcs(cx, cy, radius, s, prng) {
-  let trackCount = prng.nextInt(3, 6);
-  if (s > 0.3) trackCount = Math.max(2, Math.floor(trackCount * 0.7));
-  let trackGap = radius / (trackCount + 1);
-
-  for (let t = 0; t < trackCount; t++) {
-    let tr = trackGap * (t + 1);
-    let startAngle = prng.nextFloat() * TWO_PI;
-    let span = PI * (0.3 + prng.nextFloat() * 1.4);
-
-    // Track arc (the filled/active portion)
-    svgSetStrokeWeight(state.geometry.strokeWeight * 1.2);
-    svgArc(cx, cy, tr * 2, tr * 2, startAngle, startAngle + span);
-
-    // Track background (thin dashed remainder)
-    if (detailActive('secondaryRings', s)) {
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-      let remainStart = startAngle + span;
-      let remainEnd = startAngle + TWO_PI;
-      let dashSegs = Math.max(4, Math.round((remainEnd - remainStart) / 0.15));
-      for (let d = 0; d < dashSegs; d += 2) {
-        let ds = remainStart + (d / dashSegs) * (remainEnd - remainStart);
-        let de = remainStart + ((d + 1) / dashSegs) * (remainEnd - remainStart);
-        svgArc(cx, cy, tr * 2, tr * 2, ds, de);
+  // Threshold ring + outer graduated ring with bin numerals
+  let rt = r0 + (r1 - r0) * thr;
+  kitWeight('fine');
+  _radDashArc(cx, cy, rt, -HALF_PI, -HALF_PI + TWO_PI, Math.round(n * 1.5), 0.5);
+  if (c.show.sec && R > 70) _radText('THR ' + thr.toFixed(2), cx + rt * 0.72 + c.micro * 0.4, cy - rt * 0.72, c.micro, 'left');
+  kitWeight('primary');
+  svgCircle(cx, cy, R * 2);
+  if (c.show.ticks) {
+    kitWeight('fine');
+    kitTickRing(cx, cy, R, { count: n, major: Math.max(1, Math.round(n / 8)), len: R * 0.04, inward: false, a0: -HALF_PI, a1: -HALF_PI + TWO_PI });
+    if (c.show.labels && R > 60) {
+      let step = Math.max(1, Math.round(n / 8));
+      for (let i = 0; i < n; i += step) {
+        let a = (i + 0.5) / n * TWO_PI - HALF_PI, lr = R + R * 0.04 + c.micro * 1.2;
+        _radText(String(i).padStart(2, '0'), cx + Math.cos(a) * lr, cy + Math.sin(a) * lr + c.micro * 0.35, c.micro, 'center');
       }
     }
   }
-
-  svgSetStrokeWeight(state.geometry.strokeWeight);
-  // Center dot
-  svgCircle(cx, cy, radius * 0.06);
-
-  // Tick marks between tracks
-  if (detailActive('tickMarks', s)) {
-    let tickCount = 8;
-    for (let i = 0; i < tickCount; i++) {
-      let a = (i / tickCount) * TWO_PI;
-      svgLine(cx + trackGap * 0.5 * cos(a), cy + trackGap * 0.5 * sin(a),
-              cx + radius * cos(a), cy + radius * sin(a));
-    }
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-    for (let i = 0; i < tickCount; i++) {
-      let a = (i / tickCount) * TWO_PI;
-      svgLine(cx + trackGap * 0.5 * cos(a), cy + trackGap * 0.5 * sin(a),
-              cx + radius * cos(a), cy + radius * sin(a));
-    }
-    svgSetStrokeWeight(state.geometry.strokeWeight);
-  }
+  // Hub scale
+  if (c.show.ticks && r0 > 18) { kitWeight('fine'); kitTickRing(cx, cy, r0 * 0.88, { count: 24, major: 6, len: r0 * 0.12, inward: true }); }
+  return sum / n;
 }
 
-function meterVariant_ringOfBlocks(cx, cy, radius, s, prng) {
-  let blockCount = prng.nextInt(12, 24);
-  if (s > 0.3) blockCount = Math.max(8, Math.floor(blockCount * 0.6));
-  let gapAngle = TWO_PI * 0.008;
-  let blockAngle = (TWO_PI - gapAngle * blockCount) / blockCount;
-  let outerR = radius;
-  let innerR = radius * 0.7;
-  let fillLevel = prng.nextFloat(); // how many blocks are "active"
-
-  for (let i = 0; i < blockCount; i++) {
-    let startA = (i / blockCount) * TWO_PI - HALF_PI + gapAngle / 2;
-    let endA = startA + blockAngle;
-    let isFilled = (i / blockCount) < fillLevel;
-
-    // Block as quad: inner arc + outer arc + two radials
-    svgArc(cx, cy, innerR * 2, innerR * 2, startA, endA);
-    svgArc(cx, cy, outerR * 2, outerR * 2, startA, endA);
-    svgLine(cx + innerR * cos(startA), cy + innerR * sin(startA),
-            cx + outerR * cos(startA), cy + outerR * sin(startA));
-    svgLine(cx + innerR * cos(endA), cy + innerR * sin(endA),
-            cx + outerR * cos(endA), cy + outerR * sin(endA));
-
-    // Fill pattern for active blocks — crosshatch inside
-    if (isFilled && detailActive('internalDetail', s)) {
-      let midA = (startA + endA) / 2;
-      let midR = (innerR + outerR) / 2;
-      svgLine(cx + innerR * cos(midA), cy + innerR * sin(midA),
-              cx + outerR * cos(midA), cy + outerR * sin(midA));
+// --- 4. Concentric arcs: activity tracks on a common 0-100 scale ---
+function meterVariant_concentricArcs(c) {
+  let { cx, cy, R, F } = c;
+  let n = Math.max(2, Math.min(6, 3 + Math.floor(F[1] * 3) - (c.macro ? 1 : 0)));
+  let a0 = -HALF_PI, a1 = PI;           // 270 degrees, open in the upper-left quadrant
+  let rOut = R * 0.86, step = rOut * 0.62 / n, bw = step * (c.macro ? 0.72 : 0.55);
+  let first = 0;
+  // Outer scale 0..100
+  if (c.show.ticks) _mtrScale(cx, cy, R * 0.94, a0, a1, { min: 0, max: 100, majors: 10, minors: 2, dec: 0 }, { len: R * 0.05, size: c.micro, inward: false, labels: c.show.labels && R > 70 });
+  else { kitWeight('heavy'); svgArc(cx, cy, R * 1.88, R * 1.88, a0, a1); }
+  for (let k = 0; k < n; k++) {
+    let ro = rOut - k * step, ri = ro - bw;
+    let v = _mtrLive(c, 0.2 + F[10 + k] * 0.75, k);
+    if (k === 0) first = v;
+    kitWeight('fine');
+    _radDashArc(cx, cy, (ro + ri) / 2, a0, a1, Math.max(8, Math.round(ro * 0.25)), 0.35);
+    let e = a0 + (a1 - a0) * v;
+    _mtrBlock(cx, cy, ri, ro, a0, e, true, c, 0);
+    kitWeight('heavy');
+    svgLine(cx + Math.cos(e) * (ri - bw * 0.25), cy + Math.sin(e) * (ri - bw * 0.25), cx + Math.cos(e) * (ro + bw * 0.25), cy + Math.sin(e) * (ro + bw * 0.25));
+    // Track label at the open end (left of the 12 o'clock start)
+    if (c.show.labels && bw > c.micro * 0.9) {
+      kitWeight('fine');
+      let ly = cy - (ro + ri) / 2 + c.micro * 0.35;
+      _radText(c.T.axes[k] + ' ' + Math.round(v * 100), cx - c.micro * 0.6, ly, c.micro, 'right', c.seed + 80 + k, 'counter');
     }
   }
-
-  // Inner ring
-  svgCircle(cx, cy, innerR * 2 * 0.85);
+  kitWeight('primary');
+  svgLine(cx, cy - rOut - R * 0.03, cx, cy - rOut + n * step);
+  return first;
 }
 
-function meterVariant_polarHeatstrip(cx, cy, radius, s, prng) {
-  let ringCount = prng.nextInt(3, 5);
-  let sectorCount = prng.nextInt(8, 16);
-  if (s > 0.25) { ringCount = Math.max(2, ringCount - 1); sectorCount = Math.max(6, sectorCount - 4); }
-  let ringStep = radius / (ringCount + 0.5);
+// --- 5. Ring of blocks: segmented ring with index numerals and a fill caret ---
+function meterVariant_ringOfBlocks(c) {
+  let { cx, cy, R, F } = c;
+  let n = Math.round((16 + Math.floor(F[1] * 4) * 4) * (c.macro ? 0.5 : Math.min(1.5, Math.max(1, c.d * 0.8))));
+  n = Math.max(8, n - n % 4);
+  let v = _mtrLive(c, 0.2 + F[2] * 0.75, 0);
+  let lit = Math.round(n * v);
+  let gapA = TWO_PI / n * (c.macro ? 0.16 : 0.24);
+  let ri = R * (c.macro ? 0.6 : 0.68), ro = R * 0.9;
+  // Chasing head when animated
+  let head = c.animated && animCtx ? Math.floor(((animCtx.frameIndex / animCtx.frameCount) * 2 + c.phase) * n) % n : -1;
+  for (let i = 0; i < n; i++) {
+    let a0 = i / n * TWO_PI - HALF_PI + gapA / 2, a1 = a0 + TWO_PI / n - gapA;
+    _mtrBlock(cx, cy, ri, ro, a0, a1, i < lit, c);
+    if (i === head) { kitWeight('heavy'); svgArc(cx, cy, (ro + R * 0.03) * 2, (ro + R * 0.03) * 2, a0, a1); }
+  }
+  kitWeight('primary');
+  svgCircle(cx, cy, R * 2);
+  if (c.show.ticks) {
+    kitWeight('fine');
+    kitTickRing(cx, cy, ri * 0.94, { count: n, major: n / 4, len: R * 0.04, inward: true, a0: -HALF_PI, a1: -HALF_PI + TWO_PI });
+    if (c.show.labels && R > 70) for (let i = 0; i < n; i += n / 4 / (R > 140 ? 2 : 1)) {
+      let a = i / n * TWO_PI - HALF_PI, lr = ri * 0.94 - R * 0.04 - c.micro * 1.1;
+      _radText(String(Math.round(i / n * 100)), cx + Math.cos(a) * lr, cy + Math.sin(a) * lr + c.micro * 0.35, c.micro, 'center');
+    }
+  }
+  // Fill caret on the outer rim
+  let ca = lit / n * TWO_PI - HALF_PI;
+  kitWeight('heavy');
+  drawTriangle(cx + Math.cos(ca) * R * 1.0, cy + Math.sin(ca) * R * 1.0, R * 0.04, ca + PI);
+  if (c.show.inner) {
+    kitWeight('secondary');
+    svgCircle(cx, cy, ri * 0.62 * 2);
+    if (c.show.ticks) { kitWeight('fine'); kitTickRing(cx, cy, ri * 0.62, { count: 60, major: 5, len: ri * 0.05, inward: true }); }
+    kitWeight('primary');
+    let ia = v * TWO_PI - HALF_PI;
+    svgLine(cx + Math.cos(ia) * ri * 0.2, cy + Math.sin(ia) * ri * 0.2, cx + Math.cos(ia) * ri * 0.55, cy + Math.sin(ia) * ri * 0.55);
+    svgCircle(cx, cy, ri * 0.4);
+    if (c.show.labels && ri > 70) _mtrWindow(cx, cy + ri * 0.24, ri * 0.7, Math.max(c.body * 1.7, ri * 0.2), (v * 100).toFixed(1), '%', c, c.seed + 62);
+  }
+  return v;
+}
 
-  for (let r = 0; r < ringCount; r++) {
-    let ir = ringStep * (r + 0.5);
-    let or2 = ringStep * (r + 1.5);
-    let sectorAngle = TWO_PI / sectorCount;
-
-    for (let s2 = 0; s2 < sectorCount; s2++) {
-      let sa = s2 * sectorAngle - HALF_PI;
-      let ea = sa + sectorAngle * 0.9;
-      let intensity = prng.nextFloat();
-
-      // Sector boundary arcs
-      svgArc(cx, cy, ir * 2, ir * 2, sa, ea);
-      svgArc(cx, cy, or2 * 2, or2 * 2, sa, ea);
-      // Radial boundaries
-      svgLine(cx + ir * cos(sa), cy + ir * sin(sa), cx + or2 * cos(sa), cy + or2 * sin(sa));
-
-      // Fill based on intensity — more lines = higher value
-      if (intensity > 0.5 && detailActive('dotMatrixTextures', s)) {
-        let midA = (sa + ea) / 2;
-        let midR = (ir + or2) / 2;
-        svgPoint(cx + midR * cos(midA), cy + midR * sin(midA));
-        if (intensity > 0.75) {
-          svgLine(cx + ir * cos(midA), cy + ir * sin(midA), cx + or2 * cos(midA), cy + or2 * sin(midA));
-        }
+// --- 6. Polar heat strip: sector x ring intensity map rendered by hatch density ---
+function meterVariant_polarHeatstrip(c) {
+  let { cx, cy, R, F } = c;
+  let rings = c.macro ? 3 : 4 + (c.d > 1.5 ? 1 : 0);
+  let sectors = c.macro ? 12 : 24;
+  let r0 = R * 0.22, r1 = R * 0.88, rs = (r1 - r0) / rings;
+  let sum = 0;
+  for (let k = 0; k < rings; k++) {
+    for (let j = 0; j < sectors; j++) {
+      let a0 = j / sectors * TWO_PI - HALF_PI, a1 = a0 + TWO_PI / sectors;
+      // Smooth field: two lobes + per-cell grain, from pre-drawn floats
+      let f = 0.5 + 0.35 * Math.sin(j / sectors * TWO_PI * 2 + F[1] * 6) * Math.cos(k * 0.9 + F[2] * 3) + (F[(k * sectors + j) % 40] - 0.5) * 0.4;
+      f = _mtrLive(c, Math.max(0, Math.min(1, f)), j + k);
+      sum += f;
+      let poly = _radSector(cx, cy, r0 + k * rs, r0 + (k + 1) * rs, a0, a1);
+      kitWeight('fine');
+      _radClosed(poly);
+      if (f > 0.35) {
+        let sp = Math.max(c.pen * 1.4, rs * (f > 0.75 ? 0.12 : f > 0.55 ? 0.22 : 0.38));
+        let role = c.macro ? 'primary' : 'secondary';
+        _radHatch([poly], 45, sp, role);
+        if (f > 0.85) _radHatch([poly], 135, sp * 1.3, role);
       }
     }
   }
-
-  // Center dot
-  svgCircle(cx, cy, ringStep * 0.5);
+  kitWeight('heavy');
+  svgCircle(cx, cy, r1 * 2);
+  svgCircle(cx, cy, r0 * 2);
+  // Hour numerals around, ring numerals along 12 o'clock
+  if (c.show.ticks) {
+    kitWeight('fine');
+    kitTickRing(cx, cy, r1, { count: sectors, major: sectors / 4, len: R * 0.04, inward: false, a0: -HALF_PI, a1: -HALF_PI + TWO_PI });
+    if (c.show.labels && R > 60) for (let j = 0; j < sectors; j += sectors / 8) {
+      let a = j / sectors * TWO_PI - HALF_PI, lr = r1 + R * 0.04 + c.micro * 1.2;
+      _radText(String(Math.round(j / sectors * 24)).padStart(2, '0'), cx + Math.cos(a) * lr, cy + Math.sin(a) * lr + c.micro * 0.35, c.micro, 'center');
+    }
+  }
+  if (c.show.sec && rs > c.micro * 1.2) for (let k = 0; k <= rings; k++) _radText(String(k * 10), cx + c.micro * 0.3, cy - r0 - k * rs - c.micro * 0.15, c.micro, 'left');
+  // Legend: three density swatches
+  if (c.show.sec && R > 80) {
+    let lx = cx + R * 0.72, ly = cy + R * 0.86, sw = c.micro * 1.6;
+    for (let i = 0; i < 3; i++) {
+      let bx = lx + i * sw * 1.3;
+      let q = [[bx, ly], [bx + sw, ly], [bx + sw, ly + sw], [bx, ly + sw]];
+      kitWeight('fine');
+      _radClosed(q);
+      _radHatch([q], 45, Math.max(c.pen * 1.4, sw * [0.45, 0.25, 0.12][i]), 'fine');
+    }
+  }
+  return sum / (rings * sectors);
 }
 
-// ---- Meter/Gauge New Variants ----
-
-function meterVariant_chasingLightRing(cx, cy, radius, s, prng) {
-  let dotCount = prng.nextInt(12, 24);
-  if (s > 0.3) dotCount = Math.max(8, dotCount - 6);
-  let fillLevel = 0.3 + prng.nextFloat() * 0.6;
-  // Audio-reactive: modulate fill from shared audio waveform
-  if (_compBus && _compBus.audioWaveform) {
+// --- 7. Chasing light ring: LED bezel around a graduated needle dial ---
+function meterVariant_chasingLightRing(c) {
+  let { cx, cy, R, F } = c;
+  let n = Math.max(12, Math.min(40, Math.round((16 + F[1] * 12) * Math.min(1.4, c.d))));
+  if (c.macro) n = Math.max(12, Math.round(n * 0.6));
+  let fillLevel = 0.3 + F[2] * 0.6;
+  if (_compBus && _compBus.audioWaveform && c.animated) {
     let wIdx = Math.floor((_cellAnim ? _cellAnim.phaseOffset : 0) * _compBus.audioSlices) % _compBus.audioSlices;
     fillLevel = 0.15 + _compBus.audioWaveform[wIdx] * 0.8;
   }
-  let activeDots = Math.round(dotCount * fillLevel);
-  let numChasers = prng.nextInt(1, 3); // 1-3 chasing highlights
-  let trailLen = 3 + prng.nextInt(0, 2); // 3-5 dot trail
+  let active = Math.round(n * fillLevel);
+  let chasers = 1 + Math.floor(F[3] * 2), trail = 3 + Math.floor(F[4] * 3);
+  let ledR = Math.min(R * 0.07, Math.PI * R * 0.9 / n * 0.42);
+  kitWeight('heavy');
+  svgCircle(cx, cy, R * 2.08);
+  for (let i = 0; i < n; i++) {
+    let a = i / n * TWO_PI - HALF_PI;
+    let px = cx + Math.cos(a) * R * 0.9, py = cy + Math.sin(a) * R * 0.9;
+    let chase = -1;
+    if (c.animated && animCtx) for (let ch = 0; ch < chasers; ch++) {
+      let pos = Math.floor(((animCtx.frameIndex / animCtx.frameCount) * (ch + 1) + ch / chasers + c.phase) * n) % n;
+      let dist = (pos - i + n) % n;
+      if (dist < trail) chase = chase < 0 ? dist : Math.min(chase, dist);
+    }
+    kitWeight(chase >= 0 ? 'heavy' : i < active ? 'primary' : 'fine');
+    svgCircle(px, py, ledR * 2 * (chase === 0 ? 1.15 : 1));
+    if (i < active || chase >= 0) {
+      kitWeight('fine');
+      for (let rr = ledR * 0.7; rr > Math.max(0.6, c.pen); rr -= Math.max(c.pen * 1.3, ledR * (chase >= 0 ? 0.2 : 0.35))) svgCircle(px, py, rr * 2);
+    }
+  }
+  // Inner graduated dial and needle tracking the fill level
+  let ir = R * 0.9 - ledR * 2.2;
+  if (c.show.inner) {
+    if (c.show.ticks) _mtrScale(cx, cy, ir, -HALF_PI, -HALF_PI + TWO_PI, { min: 0, max: 100, majors: 10, minors: 5, dec: 0 }, { len: ir * 0.1, size: c.micro, labels: c.show.labels && ir > 50 });
+    else { kitWeight('secondary'); svgCircle(cx, cy, ir * 2); }
+    let na = fillLevel * TWO_PI - HALF_PI;
+    kitWeight('primary');
+    svgLine(cx - Math.cos(na) * ir * 0.12, cy - Math.sin(na) * ir * 0.12, cx + Math.cos(na) * ir * 0.8, cy + Math.sin(na) * ir * 0.8);
+    svgCircle(cx, cy, ir * 0.1);
+    if (c.show.labels && ir > 80) _mtrWindow(cx, cy + ir * 0.35, ir * 0.62, Math.max(c.body * 1.7, ir * 0.18), (fillLevel * 100).toFixed(1), '%', c, c.seed + 63);
+  }
+  return fillLevel;
+}
 
-  // Outer ring
-  svgSetStrokeWeight(state.geometry.strokeWeight * 0.3);
-  svgCircle(cx, cy, radius * 2.05);
+// --- 8. Stacked arcs: concentric 270-degree channels with a legend table ---
+function meterVariant_stackedArcs(c) {
+  let { cx, cy, R, F } = c;
+  let n = 2 + Math.floor(F[1] * 3);
+  let a0 = HALF_PI + PI / 4, a1 = a0 + PI * 1.5;
+  let width = R * 0.7 / n;
+  let main = 0;
+  for (let t = 0; t < n; t++) {
+    let ro = R * 0.92 - t * width, ri = ro - width * (c.macro ? 0.78 : 0.6);
+    let fr = 0.2 + F[10 + t] * 0.7;
+    if (_compBus && _compBus.audioAmps && c.animated) fr = 0.1 + _compBus.audioAmps[Math.floor(t / n * _compBus.audioBins) % _compBus.audioBins] * 0.85;
+    else fr = _mtrLive(c, fr, t);
+    if (t === 0) main = fr;
+    kitWeight('fine');
+    svgArc(cx, cy, ro * 2, ro * 2, a0, a1);
+    svgArc(cx, cy, ri * 2, ri * 2, a0, a1);
+    svgLine(cx + Math.cos(a1) * ri, cy + Math.sin(a1) * ri, cx + Math.cos(a1) * ro, cy + Math.sin(a1) * ro);
+    let e = a0 + (a1 - a0) * fr;
+    _mtrBlock(cx, cy, ri, ro, a0, e, true, c, (t % 2 ? 45 : 135));
+    if (c.show.ticks) {
+      kitWeight('fine');
+      for (let q = 0; q <= 10; q++) { let a = a0 + (a1 - a0) * q / 10; svgLine(cx + Math.cos(a) * ri, cy + Math.sin(a) * ri, cx + Math.cos(a) * (ri - width * (q % 5 ? 0.12 : 0.25)), cy + Math.sin(a) * (ri - width * (q % 5 ? 0.12 : 0.25))); }
+    }
+    // Channel tag at the open bottom
+    if (c.show.labels && width > c.micro * 1.3) {
+      kitWeight('fine');
+      _radText(c.T.axes[t], cx + Math.cos(a0) * (ri + ro) / 2 - c.micro * 0.5, cy + Math.sin(a0) * (ri + ro) / 2 + c.micro * 1.3, c.micro, 'right');
+      _radText(String(Math.round(fr * 100)) + '%', cx + Math.cos(a1) * (ri + ro) / 2 + c.micro * 0.5, cy + Math.sin(a1) * (ri + ro) / 2 + c.micro * 1.3, c.micro, 'left', c.seed + 90 + t, 'counter');
+    }
+  }
+  // 0 / 50 / 100 index marks on the outside
+  if (c.show.labels && R > 60) {
+    kitWeight('fine');
+    for (let q = 0; q <= 4; q++) {
+      let a = a0 + (a1 - a0) * q / 4, lr = R * 0.97 + c.micro;
+      svgLine(cx + Math.cos(a) * R * 0.93, cy + Math.sin(a) * R * 0.93, cx + Math.cos(a) * R * 0.99, cy + Math.sin(a) * R * 0.99);
+      _radText(String(q * 25), cx + Math.cos(a) * lr, cy + Math.sin(a) * lr + c.micro * 0.35, c.micro, 'center');
+    }
+  }
+  return main;
+}
 
-  // Dots around ring
-  svgSetStrokeWeight(state.geometry.strokeWeight * 0.5);
-  for (let i = 0; i < dotCount; i++) {
-    let a = (i / dotCount) * TWO_PI - HALF_PI;
-    let dx = cx + radius * Math.cos(a);
-    let dy = cy + radius * Math.sin(a);
-    let isActive = i < activeDots;
-    // Chaser highlight: animated position along ring
-    let isChaser = false;
-    if (animCtx && _compBus) {
-      for (let ch = 0; ch < numChasers; ch++) {
-        let chaserPos = anim.sweep(animCtx.frameIndex, animCtx.frameCount, animCtx.frameCount * (1 + ch * 0.5), animCtx.speedMul, ch * 0.33 + (_cellAnim ? _cellAnim.phaseOffset : 0));
-        let chaserDot = Math.floor(chaserPos * dotCount);
-        for (let t = 0; t < trailLen; t++) {
-          if (i === (chaserDot - t + dotCount) % dotCount) {
-            isChaser = true;
-            svgSetStrokeWeight(state.geometry.strokeWeight * (1.2 - t * 0.2));
-          }
-        }
+// --- 9. Segmented LED bar: multi-channel VU meter with a dB scale ---
+function meterVariant_segmentedLEDBar(c) {
+  let { cx, cy, R, F } = c;
+  let vertical = F[1] < 0.6;
+  let chans = c.macro ? 2 : 2 + Math.floor(F[2] * 3);
+  let segs = c.macro ? 10 : Math.max(12, Math.min(32, Math.round(16 * Math.min(1.8, c.d))));
+  let L = R * 1.8, chW = Math.min(chans <= 2 ? R * 0.36 : R * 0.28, R * 1.2 / chans);
+  let gap = chW * 0.35;
+  let blockW = chans * chW + (chans - 1) * gap;
+  let redFrom = Math.floor(segs * 0.8), ambFrom = Math.floor(segs * 0.62);
+  let dB = (k) => Math.round(-40 + 46 * k / segs);
+  let avg = 0;
+  if (_compBus && _compBus.audioWaveform && c.animated) { for (let i = 0; i < _compBus.audioSlices; i++) avg += _compBus.audioWaveform[i]; avg /= _compBus.audioSlices; }
+  let x0 = cx - blockW / 2, y0 = cy - L / 2; // vertical: bars bottom-up from y0+L
+  let segL = L / segs, sg = segL * 0.2;
+  let main = 0;
+  for (let ch = 0; ch < chans; ch++) {
+    let lvl = avg ? 0.1 + avg * 0.85 * (0.9 + 0.2 * F[10 + ch]) : _mtrLive(c, 0.35 + F[10 + ch] * 0.6, ch);
+    if (ch === 0) main = lvl;
+    let on = Math.round(segs * lvl), peak = Math.min(segs - 1, on + 1 + Math.floor(F[16 + ch] * 3));
+    for (let k = 0; k < segs; k++) {
+      let q;
+      if (vertical) { let bx = x0 + ch * (chW + gap), by = y0 + L - (k + 1) * segL; q = [[bx, by + sg / 2], [bx + chW, by + sg / 2], [bx + chW, by + segL - sg / 2], [bx, by + segL - sg / 2]]; }
+      else { let by = cy - blockW / 2 + ch * (chW + gap), bx = cx - L / 2 + k * segL; q = [[bx + sg / 2, by], [bx + segL - sg / 2, by], [bx + segL - sg / 2, by + chW], [bx + sg / 2, by + chW]]; }
+      let lit = k < on, isPeak = k === peak;
+      kitWeight(lit || isPeak ? (c.macro ? 'heavy' : 'primary') : c.macro ? 'secondary' : 'fine');
+      _radClosed(q);
+      if (lit) _radHatch([q], k >= redFrom ? 45 : vertical ? 0 : 90, Math.max(c.pen * 1.4, (k >= redFrom ? 0.12 : k >= ambFrom ? 0.18 : c.macro ? 0.14 : 0.26) * Math.min(chW, segL)), 'primary');
+      if (lit && k >= redFrom) _radHatch([q], 135, Math.max(c.pen * 1.4, 0.16 * Math.min(chW, segL)), 'primary');
+      if (isPeak) { kitWeight('heavy'); if (vertical) svgLine(q[0][0], q[0][1], q[1][0], q[1][1]); else svgLine(q[1][0], q[1][1], q[2][0], q[2][1]); }
+    }
+    if (c.show.sec && !vertical && c.micro * 5 < R * 0.3) {
+      kitWeight('fine');
+      _radText((-40 + 46 * lvl).toFixed(1), cx + L / 2 + c.micro * 0.6, cy - blockW / 2 + ch * (chW + gap) + chW / 2 + c.micro * 0.35, c.micro, 'left', c.seed + 95 + ch, 'counter');
+    }
+    if (c.show.labels) {
+      kitWeight('fine');
+      let lab = ['L', 'R', 'C', 'S', 'LFE'][ch];
+      if (vertical) _radText(lab, x0 + ch * (chW + gap) + chW / 2, y0 + L + c.micro * 1.4, c.micro, 'center');
+      else _radText(lab, cx - L / 2 - c.micro * 0.5, cy - blockW / 2 + ch * (chW + gap) + chW / 2 + c.micro * 0.35, c.micro, 'right');
+    }
+  }
+  // dB ruler beside the bank, red zone bracket
+  if (c.show.ticks) {
+    kitWeight('fine');
+    let nice = [-40, -30, -20, -10, -6, -3, 0, 3, 6];
+    let marks = [], labs = {};
+    for (let nv of nice) { let k = Math.round((nv + 40) / 46 * segs); if (!marks.includes(k) && (!marks.length || k - marks[marks.length - 1] >= 2)) { marks.push(k); labs[k] = nv; } }
+    if (vertical) {
+      let rx = x0 + blockW + chW * 0.35;
+      svgLine(rx, y0, rx, y0 + L);
+      for (let k = 0; k <= segs; k++) svgLine(rx, y0 + L - k * segL, rx + (marks.includes(k) ? chW * 0.35 : chW * 0.17), y0 + L - k * segL);
+      if (c.show.labels) for (let k of marks) _radText((labs[k] > 0 ? '+' : '') + labs[k], rx + chW * 0.5, y0 + L - k * segL + c.micro * 0.35, c.micro, 'left');
+      kitWeight('heavy');
+      svgLine(x0 - chW * 0.3, y0, x0 - chW * 0.3, y0 + L - redFrom * segL);
+    } else {
+      let ry = cy + blockW / 2 + chW * 0.35;
+      svgLine(cx - L / 2, ry, cx + L / 2, ry);
+      for (let k = 0; k <= segs; k++) svgLine(cx - L / 2 + k * segL, ry, cx - L / 2 + k * segL, ry + (marks.includes(k) ? chW * 0.35 : chW * 0.17));
+      if (c.show.labels) for (let k of marks) _radText((labs[k] > 0 ? '+' : '') + labs[k], cx - L / 2 + k * segL, ry + chW * 0.4 + c.micro, c.micro, 'center');
+      kitWeight('heavy');
+      svgLine(cx - L / 2 + redFrom * segL, cy - blockW / 2 - chW * 0.3, cx + L / 2, cy - blockW / 2 - chW * 0.3);
+    }
+    if (c.show.sec) _radText('dBFS', vertical ? x0 + blockW + chW * 0.5 : cx - L / 2, vertical ? y0 - c.micro * 0.8 : cy - blockW / 2 - chW * 0.3 - c.micro * 0.2, c.micro, 'left');
+  }
+  return main;
+}
+
+// --- 10. Thermometer: bulb, hatched column, dual graduated scale, limit callout ---
+function meterVariant_thermometerBar(c) {
+  let { cx, cy, R, F } = c;
+  let vertical = F[1] < 0.65;
+  let fr = 0.2 + F[2] * 0.7;
+  if (_compBus && _compBus.meterValue !== undefined && c.animated) fr = 0.1 + _compBus.meterValue * 0.85;
+  else fr = _mtrLive(c, fr, 0);
+  let lim = 0.65 + F[3] * 0.25;
+  let bw = R * (c.macro ? 0.22 : 0.16), br = bw * 1.25;
+  let L = R * 1.85 - br * 1.75 - bw * 0.5;
+  // Local frame: u along the column (0 at the bulb end), w across; the whole
+  // bulb-to-cap length is centred on (cx, cy).
+  let u0 = -(br * 1.75 + L + bw * 0.5) / 2 + br * 1.75;
+  let P = vertical ? (u, w) => [cx + w, cy - u0 - u] : (u, w) => [cx + u0 + u, cy + w];
+  let bulb = P(-br * 0.75, 0);
+  // Column outline (closed with the bulb) and fill
+  kitWeight('heavy');
+  svgPolyline([P(0, -bw / 2), P(L, -bw / 2)]);
+  svgPolyline([P(0, bw / 2), P(L, bw / 2)]);
+  let capA = vertical ? -HALF_PI : 0;
+  svgArc(P(L, 0)[0], P(L, 0)[1], bw, bw, capA - HALF_PI, capA + HALF_PI);
+  let joinA = Math.asin(Math.min(1, (bw / 2) / br));
+  let towards = vertical ? -HALF_PI : 0;
+  svgArc(bulb[0], bulb[1], br * 2, br * 2, towards + joinA, towards + TWO_PI - joinA);
+  // Fill: bulb as concentric contour, column hatched up to the level
+  kitWeight('secondary');
+  for (let rr = br * 0.78; rr > Math.max(1, c.pen); rr -= Math.max(c.pen * 1.4, br * 0.16)) svgCircle(bulb[0], bulb[1], rr * 2);
+  let fu = L * fr;
+  let col = [P(0, -bw * 0.32), P(fu, -bw * 0.32), P(fu, bw * 0.32), P(0, bw * 0.32)];
+  kitWeight('primary');
+  _radClosed(col);
+  _radHatch([col], vertical ? 0 : 90, Math.max(c.pen * 1.3, bw * (c.macro ? 0.1 : 0.14)), c.macro ? 'primary' : 'secondary');
+  // Dual scale: Celsius ticks on one side, Fahrenheit on the other, each on its own round numbers
+  if (c.show.ticks) {
+    let uOf = (cv) => L * 0.05 + L * 0.9 * (cv + 20) / 140;
+    let pxPerC = L * 0.9 / 140;
+    let stepC = pxPerC * 2 >= 3 ? 2 : 5, labC = pxPerC * 20 > c.micro * 1.5 ? 20 : 40;
+    kitWeight('fine');
+    for (let cv = -20; cv <= 120; cv += stepC) {
+      let u = uOf(cv), major = cv % 10 === 0;
+      let a = P(u, -bw * 0.7), b = P(u, -bw * 0.7 - bw * (cv % labC === 0 ? 0.62 : major ? 0.45 : 0.25));
+      svgLine(a[0], a[1], b[0], b[1]);
+      if (c.show.labels && cv % labC === 0) {
+        let lp = P(u, -bw * 1.45 - c.micro * (vertical ? 0.3 : 1));
+        _radText(String(cv), lp[0], lp[1] + (vertical ? c.micro * 0.35 : 0), c.micro, vertical ? 'right' : 'center');
       }
     }
-    let dotSize = isChaser ? radius * 0.12 : (isActive ? radius * 0.07 : radius * 0.035);
-    svgCircle(dx, dy, dotSize * 2);
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.5);
-  }
-  // Inner value indicator
-  if (detailActive('internalDetail', s)) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.3);
-    svgCircle(cx, cy, radius * 0.35);
-  }
-}
-
-function meterVariant_stackedArcs(cx, cy, radius, s, prng) {
-  let trackCount = prng.nextInt(2, 4);
-  svgSetStrokeWeight(state.geometry.strokeWeight * 0.8);
-  for (let t = 0; t < trackCount; t++) {
-    let trackR = radius * (0.5 + t * 0.5 / trackCount);
-    let fillRatio = 0.2 + prng.nextFloat() * 0.7;
-    let startAngle = -HALF_PI + prng.nextFloat() * 0.5;
-    // Audio-reactive: each arc tracks a different frequency bin
-    if (_compBus && _compBus.audioAmps) {
-      let binIdx = Math.floor((t / trackCount) * _compBus.audioBins) % _compBus.audioBins;
-      fillRatio = 0.1 + _compBus.audioAmps[binIdx] * 0.85;
-    }
-    let fillAngle = fillRatio * TWO_PI;
-    // Track background (thin)
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.2);
-    svgCircle(cx, cy, trackR * 2);
-    // Filled arc (bold)
-    svgSetStrokeWeight(state.geometry.strokeWeight * (0.6 + t * 0.15));
-    // Bus-connected: modulate fill by shared pulse
-    if (animCtx && _compBus) {
-      fillRatio = fillRatio * (0.7 + 0.3 * _compBus.pulsePositive);
-      fillAngle = fillRatio * TWO_PI;
-    }
-    svgArc(cx, cy, trackR * 2, trackR * 2, startAngle, startAngle + fillAngle);
-    // End cap dot
-    if (detailActive('tickMarks', s)) {
-      let endA = startAngle + fillAngle;
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-      svgPoint(cx + trackR * Math.cos(endA), cy + trackR * Math.sin(endA));
-    }
-  }
-}
-
-function meterVariant_segmentedLEDBar(cx, cy, radius, s, prng) {
-  let isVertical = prng.nextFloat() < 0.5;
-  let segCount = prng.nextInt(8, 16);
-  if (s > 0.3) segCount = Math.max(6, segCount - 4);
-  let fillRatio = 0.3 + prng.nextFloat() * 0.6;
-  // Audio-reactive fill level
-  if (_compBus && _compBus.audioWaveform) {
-    let avgEnergy = 0; for (let i = 0; i < _compBus.audioSlices; i++) avgEnergy += _compBus.audioWaveform[i]; avgEnergy /= _compBus.audioSlices;
-    fillRatio = 0.1 + avgEnergy * 0.85;
-  } else if (animCtx && _compBus) { fillRatio = fillRatio * (0.6 + 0.4 * _compBus.pulsePositive); }
-  let filledSegs = Math.round(segCount * fillRatio);
-  let peakSeg = filledSegs; // peak hold at current max
-
-  let barLen = radius * 1.6;
-  let barThick = radius * 0.35;
-  let segGap = barLen * 0.02;
-  let segSize = (barLen - segGap * (segCount - 1)) / segCount;
-
-  svgSetStrokeWeight(state.geometry.strokeWeight * 0.3);
-  for (let i = 0; i < segCount; i++) {
-    let isFilled = i < filledSegs;
-    let isPeak = i === peakSeg;
-    let sx, sy, sw, sh;
-    if (isVertical) {
-      sx = cx - barThick / 2;
-      sy = cy + barLen / 2 - (i + 1) * (segSize + segGap);
-      sw = barThick; sh = segSize;
-    } else {
-      sx = cx - barLen / 2 + i * (segSize + segGap);
-      sy = cy - barThick / 2;
-      sw = segSize; sh = barThick;
-    }
-    if (isFilled) {
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.6);
-      svgRect(sx, sy, sw, sh);
-    } else {
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.15);
-      svgRect(sx, sy, sw, sh);
-    }
-    if (isPeak) {
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.8);
-      if (isVertical) svgLine(sx, sy, sx + sw, sy);
-      else svgLine(sx + sw, sy, sx + sw, sy + sh);
-    }
-  }
-  // Scale ticks
-  if (detailActive('tickMarks', s)) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.2);
-    for (let i = 0; i <= segCount; i += Math.max(1, Math.round(segCount / 4))) {
-      if (isVertical) {
-        let ty = cy + barLen / 2 - i * (segSize + segGap);
-        svgLine(cx + barThick / 2 + 2, ty, cx + barThick / 2 + 5, ty);
-      } else {
-        let tx = cx - barLen / 2 + i * (segSize + segGap);
-        svgLine(tx, cy + barThick / 2 + 2, tx, cy + barThick / 2 + 5);
+    let labF = pxPerC / 1.8 * 50 > c.micro * 1.5 ? 50 : 100;
+    for (let fv = 0; fv <= 240; fv += 10) {
+      let u = uOf((fv - 32) / 1.8);
+      let a = P(u, bw * 0.7), b = P(u, bw * 0.7 + bw * (fv % labF === 0 ? 0.62 : 0.3));
+      svgLine(a[0], a[1], b[0], b[1]);
+      if (c.show.sec && c.show.labels && fv % labF === 0) {
+        let fp = P(u, bw * 1.45 + c.micro * (vertical ? 0.3 : 1));
+        _radText(String(fv), fp[0], fp[1] + (vertical ? c.micro * 0.35 : c.micro * 0.7), c.micro, vertical ? 'left' : 'center');
       }
     }
-  }
-}
-
-function meterVariant_thermometerBar(cx, cy, radius, s, prng) {
-  let isVertical = prng.nextFloat() < 0.6;
-  let barLen = radius * 1.7;
-  let barW = radius * 0.2;
-  let fillRatio = 0.2 + prng.nextFloat() * 0.7;
-  if (_compBus && _compBus.meterValue !== undefined) fillRatio = 0.1 + _compBus.meterValue * 0.85;
-  else if (animCtx && _compBus) fillRatio = fillRatio * (0.6 + 0.4 * _compBus.pulsePositive);
-  let thresholdRatio = 0.6 + prng.nextFloat() * 0.3;
-
-  svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-  if (isVertical) {
-    // Outer border
-    svgRect(cx - barW / 2, cy - barLen / 2, barW, barLen);
-    // Fill level
-    let fillH = barLen * fillRatio;
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.6);
-    svgRect(cx - barW / 2 + 1, cy + barLen / 2 - fillH, barW - 2, fillH - 1);
-    // Threshold marker
-    if (detailActive('tickMarks', s)) {
-      let threshY = cy + barLen / 2 - barLen * thresholdRatio;
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.2);
-      drawDashedLine(cx - barW, threshY, cx + barW, threshY, 2, 2);
-    }
-    // Tick marks along side
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.15);
-    for (let i = 0; i <= 4; i++) {
-      let ty = cy - barLen / 2 + (i / 4) * barLen;
-      svgLine(cx + barW / 2 + 1, ty, cx + barW / 2 + 4, ty);
-    }
-  } else {
-    svgRect(cx - barLen / 2, cy - barW / 2, barLen, barW);
-    let fillW = barLen * fillRatio;
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.6);
-    svgRect(cx - barLen / 2 + 1, cy - barW / 2 + 1, fillW - 1, barW - 2);
-    if (detailActive('tickMarks', s)) {
-      let threshX = cx - barLen / 2 + barLen * thresholdRatio;
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.2);
-      drawDashedLine(threshX, cy - barW, threshX, cy + barW, 2, 2);
-    }
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.15);
-    for (let i = 0; i <= 4; i++) {
-      let tx = cx - barLen / 2 + (i / 4) * barLen;
-      svgLine(tx, cy + barW / 2 + 1, tx, cy + barW / 2 + 4);
+    if (c.show.sec) {
+      let tc = P(L + bw * 1.2, -bw * 1.2), tf = P(L + bw * 1.2, bw * 1.2);
+      _radText('°C', tc[0], tc[1], c.micro, 'center');
+      _radText('°F', tf[0], tf[1], c.micro, 'center');
     }
   }
-  // Bulb at bottom (thermometer feel)
-  svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-  if (isVertical) svgCircle(cx, cy + barLen / 2 + barW * 0.6, barW * 1.2);
-  else svgCircle(cx - barLen / 2 - barW * 0.6, cy, barW * 1.2);
+  // Limit line with callout; min / max carets
+  let lu = L * 0.05 + L * 0.9 * lim;
+  let la = P(lu, -bw * 1.1), lb = P(lu, bw * 1.1);
+  kitWeight('primary');
+  drawDashedLine(la[0], la[1], lb[0], lb[1], 3, 2);
+  if (c.show.sec && R > 60) {
+    let csz = Math.max(getMinTextSizePx(), c.micro);
+    let clear = bw * 1.5 + csz * 3.2;
+    _radCallout(lb[0], lb[1], vertical ? clear : R * 0.12, vertical ? -R * 0.1 : -clear, 'LIMIT', Math.round(-20 + 140 * lim) + '°C', csz, c.area);
+  }
+  // Trend strip: recent readings on a small grid, beside or under the column
+  if (c.show.inner && c.show.sec) {
+    let tr = vertical ? { x: cx + bw * 1.6 + c.micro * 4, y: cy - L * 0.3, w: 0, h: L * 0.45 } : { x: cx + u0, y: cy + bw * 1.6 + c.micro * 3.2, w: L, h: 0 };
+    if (vertical) tr.w = c.area.x + c.area.w - tr.x - c.micro;
+    else tr.h = Math.min(R * 0.45, c.area.y + c.area.h - tr.y - c.micro);
+    if (tr.w > c.micro * 10 && tr.h > c.micro * 5) {
+      kitWeight('fine');
+      svgRect(tr.x, tr.y, tr.w, tr.h);
+      for (let g = 1; g < 4; g++) drawDashedLine(tr.x, tr.y + tr.h * g / 4, tr.x + tr.w, tr.y + tr.h * g / 4, 1, 3);
+      let np = 24, pts = [], hv = fr;
+      for (let i = 0; i < np; i++) {
+        hv = Math.max(0.05, Math.min(0.95, fr + (F[(i * 5) % 40] - 0.5) * 0.5 * (1 - i / np)));
+        pts.push([tr.x + tr.w * (np - 1 - i) / (np - 1), tr.y + tr.h * (1 - hv)]);
+      }
+      kitWeight('primary');
+      svgPolyline(pts);
+      let ly = tr.y + tr.h * (1 - lim);
+      kitWeight('fine');
+      drawDashedLine(tr.x, ly, tr.x + tr.w, ly, 3, 2);
+      _radText('24H TREND', tr.x + c.micro * 0.4, tr.y - c.micro * 0.5, c.micro, 'left');
+    }
+  }
+  for (let [k, sgn] of [[0.15 + F[4] * 0.2, -1], [Math.min(0.98, fr + 0.05 + F[5] * 0.15), 1]]) {
+    let mu = L * 0.05 + L * 0.9 * k, mp = P(mu, sgn * bw * 0.5);
+    kitWeight('secondary');
+    drawTriangle(mp[0], mp[1], bw * 0.18, vertical ? (sgn > 0 ? 0 : PI) : (sgn > 0 ? HALF_PI : -HALF_PI));
+  }
+  return fr;
 }
 
 // ---- Meter/Gauge Composer (variant dispatcher) ----
+const METER_AXES = ['PWR', 'THR', 'SIG', 'TMP', 'FLW', 'PRS', 'RAD', 'VOL', 'GAN', 'LAT'];
 
 function composeMeterGauge(rect, s, prng) {
-  let { x, y, w, h } = rect;
-  let cx = x + w / 2, cy = y + h / 2;
-  let r = Math.min(w, h) * 0.38;
-
   svgRec.beginGroup('meter-gauge');
 
-  // Animation setup
+  // ---- All PRNG draws first ----
   let elemSeed = prng.nextInt(0, 0xFFFFFF);
-  let animated = shouldAnimate(elemSeed);
-
-  // Select variant (weighted by scale and randomness)
   let variants = [
-    { fn: meterVariant_radarChart,       weight: s < 0.25 ? 1.5 : 0.8 },
-    { fn: meterVariant_radialBars,       weight: 1.2 },
+    { fn: meterVariant_needleDial,       weight: s < 0.35 ? 1.6 : 1.2 },
+    { fn: meterVariant_radarChart,       weight: s < 0.25 ? 1.3 : 0.7 },
+    { fn: meterVariant_radialBars,       weight: 1.1 },
     { fn: meterVariant_concentricArcs,   weight: 1.0 },
     { fn: meterVariant_ringOfBlocks,     weight: s < 0.3 ? 0.8 : 1.2 },
-    { fn: meterVariant_polarHeatstrip,   weight: s < 0.2 ? 1.5 : 0.6 },
-    { fn: meterVariant_chasingLightRing, weight: 1.1 },
-    { fn: meterVariant_stackedArcs,      weight: s < 0.3 ? 1.0 : 0.7 },
-    { fn: meterVariant_segmentedLEDBar,  weight: s < 0.35 ? 1.3 : 0.8 },
+    { fn: meterVariant_polarHeatstrip,   weight: s < 0.2 ? 1.3 : 0.6 },
+    { fn: meterVariant_chasingLightRing, weight: 0.9 },
+    { fn: meterVariant_stackedArcs,      weight: s < 0.3 ? 1.0 : 0.8 },
+    { fn: meterVariant_segmentedLEDBar,  weight: s < 0.35 ? 1.1 : 0.8 },
     { fn: meterVariant_thermometerBar,   weight: s < 0.3 ? 0.9 : 0.6 }
   ];
-  let fns = variants.map(v => v.fn);
-  let weights = variants.map(v => v.weight);
-  let selectedFn = prng.weightedPick(fns, weights);
+  let selectedFn = prng.weightedPick(variants.map(v => v.fn), variants.map(v => v.weight));
   if (_cellOverrideVariant) {
-    let match = variants.find(v => v.fn.name.replace('meterVariant_','') === _cellOverrideVariant);
+    let match = variants.find(v => v.fn.name.replace('meterVariant_', '') === _cellOverrideVariant);
     if (match) selectedFn = match.fn;
   }
-  _cellVariantInfo = selectedFn.name.replace('meterVariant_','');
-  selectedFn(cx, cy, r, s, prng);
+  let vname = selectedFn.name.replace('meterVariant_', '');
+  _cellVariantInfo = vname;
+  let fill = kitFillStyle(s, prng);
+  let F = [];
+  for (let i = 0; i < 48; i++) F.push(prng.nextFloat());
+  let sc = METER_SCALES[prng.nextInt(0, METER_SCALES.length - 1)];
+  let T = {
+    label: textGen.statusLabel(prng), id: textGen.identifier(prng), ver: textGen.versionString(prng),
+    ts: textGen.timestamp(prng), coord: textGen.coordinate(prng), axes: prng.shuffle(METER_AXES)
+  };
+  let laySeed = prng.nextInt(1, 0x7FFFFFFF); // private stream for the kit side modules
+  let lay = kitLayout(rect, s, prng);
 
-  // Common elements: value readout + identifier below (animated counter)
-  if (detailActive('primaryLabels', s)) {
-    svgSetStrokeWeight(state.geometry.strokeWeight);
-    let val = textGen.valueReadout(prng);
-    let displayVal = animated ? animatedText(val, 'counter', elemSeed) : val;
-    let fontSize = Math.max(5, r * 0.14);
-    let tw = measureFallbackText(displayVal, fontSize);
-    drawFallbackText(displayVal, cx - tw / 2, cy + r + fontSize * 2, fontSize);
+  let m = lay.main;
+  let body = kitType(m, 'body'), micro = kitType(m, 'micro'), valSz = kitType(m, 'value');
+  let show = {
+    labels: detailActive('primaryLabels', s), sec: detailActive('secondaryText', s),
+    ticks: detailActive('tickMarks', s) && state.detail.tickMarkDensity > 0, inner: detailActive('internalDetail', s),
+    ver: detailActive('versionStrings', s), annot: detailActive('annotationTexture', s)
+  };
+  let macro = s > 0.36;
+  let linear = vname === 'segmentedLEDBar' || vname === 'thermometerBar';
+
+  // ---- Layout: header line, instrument field, value footer, optional side table ----
+  let topH = show.labels && m.h > body * 9 ? body * 1.9 : 0;
+  let botH = show.labels && m.h > body * 8 ? valSz * 1.5 + (show.ver && m.h > body * 16 ? micro * 1.6 : 0) : 0;
+  let arr = _radArrange(m, topH, botH, body, show.sec && Math.max(m.w, m.h) > 180);
+  m = arr.m;
+  let field = arr.field, side = arr.panel;
+  let half = Math.min(field.w, field.h) / 2;
+  let num = Math.max(getMinTextSizePx(), Math.min(body, half * 0.075));
+  let pad = show.labels && half > num * 8 ? num * 2.6 : half * 0.05;
+  let R = half - pad;
+  let cx = field.x + field.w / 2, cy = field.y + field.h / 2;
+
+  if (detailActive('cornerBrackets', s)) {
+    kitWeight('fine');
+    drawCornerBrackets(m.x, m.y, m.w, m.h, Math.min(m.w, m.h) * 0.08);
   }
 
-  if (detailActive('secondaryText', s)) {
-    let id = textGen.identifier(prng);
-    let fontSize = Math.max(4, r * 0.09);
-    let tw = measureFallbackText(id, fontSize);
-    drawFallbackText(id, cx - tw / 2, cy + r + fontSize * 4, fontSize);
+  let c = {
+    cx, cy, R, s, F, T, sc, d: kitDensity(field), body, micro, num, show, macro,
+    animated: shouldAnimate(elemSeed), phase: (elemSeed % 1000) / 1000, seed: elemSeed,
+    pen: _radPen(), solid: fill, area: field
+  };
+  let v = selectedFn(c);
+
+  // ---- Header: title + identifier ----
+  if (topH > 0) _radHeader({ x: m.x + body * 0.4, y: m.y, w: m.w - body * 0.8, h: m.h }, T.label, sc.tag + ' / ' + sc.unit, T.id, body, micro, elemSeed + 1);
+
+  // ---- Footer: primary value + unit, version / timestamp ----
+  if (botH > 0) {
+    let vy = m.y + m.h - (botH - valSz * 1.15);
+    let val = vname === 'needleDial' || linear ? _mtrFmt(sc, v) : String(Math.round(v * 1000) / 10);
+    let unit = vname === 'needleDial' || linear ? sc.unit : '%';
+    if (vname === 'segmentedLEDBar') { val = String(Math.round(-40 + 46 * v)); unit = 'dBFS'; }
+    if (vname === 'thermometerBar') { val = (-20 + 140 * (0.05 + 0.9 * v)).toFixed(1); unit = '°C'; }
+    let vsz = valSz, room = m.w - body * 0.8;
+    let vw = measureFallbackText(val, vsz), uw = measureFallbackText(unit, body);
+    if (vw + uw + body * 0.4 > room) { vsz = Math.max(getMinTextSizePx(), vsz * room / (vw + uw + body * 0.4) * 0.95); vw = measureFallbackText(val, vsz); }
+    kitWeight('heavy');
+    _radText(val, m.x + body * 0.4, vy, vsz, 'left', elemSeed + 2, 'bus:counter');
+    kitWeight('secondary');
+    _radText(unit, m.x + body * 0.8 + vw, vy, body, 'left');
+    if (show.sec && vw + uw + measureFallbackText('CRITICAL', micro) + body * 2 <= room) {
+      kitWeight('fine');
+      let status = v > 0.8 ? 'CRITICAL' : v > 0.6 ? 'ELEVATED' : 'NOMINAL';
+      _radText(status, m.x + m.w - body * 0.4, vy, micro, 'right', elemSeed + 3, 'bus:status');
+      if (show.annot && m.w > body * 24) _radText(T.coord, m.x + m.w - body * 0.4, vy - valSz * 0.8, micro, 'right');
+    }
+    if (show.ver && m.h > body * 16) {
+      kitWeight('fine');
+      let fy = m.y + m.h - micro * 0.3;
+      _radText(T.ver, m.x + body * 0.4, fy, micro, 'left', elemSeed + 4, 'counter');
+      if (measureFallbackText(T.ver, micro) + measureFallbackText(T.ts, micro) + body * 2 <= room) _radText(T.ts, m.x + m.w - body * 0.4, fy, micro, 'right', elemSeed + 5, 'counter');
+    }
   }
 
+  // ---- Data panel: secondary dial + statistics table (right of or under the gauge) ----
+  if (side) {
+    let rows = [['MIN', _mtrFmt(sc, v * (0.3 + F[42] * 0.3))], ['MAX', _mtrFmt(sc, Math.min(1, v + 0.1 + F[43] * 0.15))],
+                ['AVG', _mtrFmt(sc, v * (0.75 + F[44] * 0.2))], ['PEAK', _mtrFmt(sc, Math.min(1, v + 0.2))],
+                ['SET', _mtrFmt(sc, 0.3 + F[4] * 0.5)], ['DELTA', (F[45] * 9.9).toFixed(2)], ['RATE', (F[46] * 99).toFixed(1) + '/S'],
+                ['SMPL', String(Math.floor(F[47] * 9000 + 1000))]];
+    let sc2 = METER_SCALES[Math.floor(F[40] * METER_SCALES.length)];
+    let tbl = side;
+    if (arr.side) {
+      let dialR = Math.min(side.w * 0.36, side.h * 0.2);
+      if (dialR > micro * 4 && side.h > dialR * 2 + body * 8) {
+        _mtrSubDial(side.x + side.w / 2, side.y + dialR * 1.1, dialR, sc2, _mtrLive(c, F[41], 3), sc2.tag, c);
+        tbl = { x: side.x, y: side.y + dialR * 2.4, w: side.w, h: side.h - dialR * 2.4 };
+      }
+    } else {
+      let dialR = Math.min(side.h * 0.42, side.w * 0.18);
+      if (dialR > micro * 4) {
+        _mtrSubDial(side.x + dialR * 1.15, side.y + side.h / 2, dialR, sc2, _mtrLive(c, F[41], 3), sc2.tag, c);
+        tbl = { x: side.x + dialR * 2.5, y: side.y, w: side.w - dialR * 2.5, h: side.h };
+      }
+    }
+    if (tbl.w > body * 6 && tbl.h > body * 4) _radTable(tbl, 'STATISTICS', rows, body, micro, elemSeed + 100);
+  }
+
+  // Kit side modules last, on a private PRNG: their animated text skips font
+  // rolls on hidden frames, which would otherwise reshuffle module content.
+  kitFillLayout(lay, s, new PRNG(laySeed));
+  kitWeight('primary');
   svgRec.endGroup();
 }
 
@@ -10992,108 +11779,534 @@ function composeNodeNetwork(rect, s, prng) {
 }
 
 // ---- New Archetype: Globe/Sphere Panel ----
-function composeGlobeSpherePanel(rect, s, prng) {
-  let { x, y, w, h } = rect;
-  let cx = x + w / 2, cy = y + h / 2;
-  let globeR = Math.min(w, h) * 0.35;
-  let pad = Math.min(w, h) * 0.05;
+// Orthographic globe with a tilted graticule clipped to the limb, a hatched
+// night side behind the terminator, orbits that pass behind the planet, ground
+// tracks, coverage footprints and lat/long annotation. Looks:
+//   orbital        primary orbit + satellite, ground track, footprint, SSP callout
+//   groundStation  station network, coverage circles, geodesic link, uplink
+//   scanBands      banded sphere (dense-parallel stripes) with a sweeping scan meridian
+//   polar          pole-on view, auroral oval band, sun-synchronous orbit
+const GLOBE_VARIANTS = ['orbital', 'groundStation', 'scanBands', 'polar'];
 
+// View setup. Globe frame: X toward lon 0 on the equator, Z north. View frame:
+// x right, y up, z toward the viewer. tilt = view latitude, roll = axis lean.
+function _glbMake(cx, cy, R, lon0, tilt, roll) {
+  return { cx, cy, R, lon0, cl0: Math.cos(lon0), sl0: Math.sin(lon0), ct: Math.cos(tilt), st: Math.sin(tilt), cr: Math.cos(roll), sr: Math.sin(roll) };
+}
+// Inertial (non-rotating) globe-frame vector -> view vector
+function _glbInertial(g, X, Y, Z) {
+  let x = Y, y = Z * g.ct - X * g.st, z = Z * g.st + X * g.ct;
+  return { x: x * g.cr - y * g.sr, y: x * g.sr + y * g.cr, z };
+}
+// Geographic lat/lon (radians, rotating with the planet) -> view vector
+function _glbGeo(g, lat, lon) {
+  let cl = Math.cos(lat), l = lon - g.lon0;
+  return _glbInertial(g, cl * Math.cos(l), cl * Math.sin(l), Math.sin(lat));
+}
+function _glbScr(g, p) { return [g.cx + p.x * g.R, g.cy - p.y * g.R]; }
+
+// Draw a sampled 3D curve: visible runs solid, hidden runs dashed or skipped.
+// Surface curves (k = 1) are cut exactly at the limb; off-surface curves
+// (orbits) are hidden only where the planet is in front of them.
+function _glbCurve(g, pts, hidden, dash) {
+  let vis = (p) => p.z >= 0 || (p.x * p.x + p.y * p.y) > 1;
+  let runs = [], cur = null;
+  for (let i = 0; i < pts.length; i++) {
+    let p = pts[i], v = vis(p);
+    if (i > 0 && v !== vis(pts[i - 1])) {
+      // Crossing point: interpolate to z = 0 (surface) and pin it to the limb
+      let q = pts[i - 1], surf = Math.abs(Math.hypot(p.x, p.y, p.z) - 1) < 0.02, t;
+      if (surf) t = q.z / (q.z - p.z);
+      else { let rq = Math.hypot(q.x, q.y), rp = Math.hypot(p.x, p.y); t = Math.abs(rp - rq) > 1e-9 ? (1 - rq) / (rp - rq) : 0.5; }
+      if (!isFinite(t) || t < 0 || t > 1) t = 0.5;
+      let m = { x: q.x + (p.x - q.x) * t, y: q.y + (p.y - q.y) * t, z: q.z + (p.z - q.z) * t };
+      let r = Math.hypot(m.x, m.y);
+      if (surf && r > 0) { m.x /= r; m.y /= r; m.z = 0; }
+      if (cur) cur.pts.push(m);
+      cur = { v, pts: [m] };
+      runs.push(cur);
+    }
+    if (!cur) { cur = { v, pts: [] }; runs.push(cur); }
+    cur.pts.push(p);
+  }
+  for (let run of runs) {
+    if (run.pts.length < 2) continue;
+    let sp = run.pts.map(p => _glbScr(g, p));
+    if (run.v) svgPolyline(sp);
+    else if (hidden === 'dash') _glbDashed(sp, dash || 3, (dash || 3) * 1.4);
+  }
+}
+// Dashed screen polyline (dash pattern carried across vertices).
+function _glbDashed(sp, on, off) {
+  let draw = true, left = on, seg = [sp[0]];
+  for (let i = 1; i < sp.length; i++) {
+    let [x0, y0] = sp[i - 1], [x1, y1] = sp[i];
+    let L = Math.hypot(x1 - x0, y1 - y0), pos = 0;
+    while (L - pos > left) {
+      pos += left;
+      let px = x0 + (x1 - x0) * pos / L, py = y0 + (y1 - y0) * pos / L;
+      if (draw) { seg.push([px, py]); if (seg.length > 1) svgPolyline(seg); }
+      seg = [[px, py]];
+      draw = !draw; left = draw ? on : off;
+    }
+    left -= L - pos;
+    if (draw) seg.push([x1, y1]);
+  }
+  if (draw && seg.length > 1) svgPolyline(seg);
+}
+function _glbParallel(g, lat, n) {
+  let pts = [];
+  for (let i = 0; i <= n; i++) pts.push(_glbGeo(g, lat, i / n * TWO_PI));
+  return pts;
+}
+function _glbMeridian(g, lon, n) {
+  let pts = [];
+  for (let i = 0; i <= n; i++) pts.push(_glbGeo(g, -HALF_PI + i / n * PI, lon));
+  return pts;
+}
+// Small circle of angular radius rho around geographic (lat, lon).
+function _glbSmallCircle(g, lat, lon, rho, n) {
+  let C = [Math.cos(lat) * Math.cos(lon), Math.cos(lat) * Math.sin(lon), Math.sin(lat)];
+  let E = [-Math.sin(lon), Math.cos(lon), 0];
+  let N = [-Math.sin(lat) * Math.cos(lon), -Math.sin(lat) * Math.sin(lon), Math.cos(lat)];
+  let pts = [];
+  for (let i = 0; i <= n; i++) {
+    let t = i / n * TWO_PI, cr = Math.cos(rho), sr = Math.sin(rho);
+    let P = [0, 1, 2].map(k => C[k] * cr + (E[k] * Math.cos(t) + N[k] * Math.sin(t)) * sr);
+    let la = Math.asin(Math.max(-1, Math.min(1, P[2]))), lo = Math.atan2(P[1], P[0]);
+    pts.push(_glbGeo(g, la, lo));
+  }
+  return pts;
+}
+// Orbit (inertial circle of radius k, inclination inc, node raan) at anomaly u.
+function _glbOrbitPt(g, k, inc, raan, u) {
+  let X = Math.cos(raan) * Math.cos(u) - Math.sin(raan) * Math.cos(inc) * Math.sin(u);
+  let Y = Math.sin(raan) * Math.cos(u) + Math.cos(raan) * Math.cos(inc) * Math.sin(u);
+  let Z = Math.sin(inc) * Math.sin(u);
+  return { X, Y, Z, v: _glbInertial(g, X * k, Y * k, Z * k) };
+}
+function _glbLatStr(a) { let d = a * 180 / PI; return Math.abs(d).toFixed(1) + (d >= 0 ? 'N' : 'S'); }
+function _glbLonStr(a) { let d = ((a * 180 / PI) % 360 + 540) % 360 - 180; return Math.abs(d).toFixed(1) + (d >= 0 ? 'E' : 'W'); }
+
+// Night side: visible terminator arc closed along the limb through the dark side.
+function _glbNightPoly(g, S) {
+  let U = [S[1], -S[0], 0], un = Math.hypot(U[0], U[1]) || 1;
+  U = [U[0] / un, U[1] / un, 0];
+  let V = [S[1] * U[2] - S[2] * U[1], S[2] * U[0] - S[0] * U[2], S[0] * U[1] - S[1] * U[0]];
+  let t0 = V[2] >= 0 ? 0 : PI;
+  let pts = [];
+  for (let i = 0; i <= 48; i++) {
+    let t = t0 + i / 48 * PI;
+    let x = Math.cos(t) * U[0] + Math.sin(t) * V[0], y = Math.cos(t) * U[1] + Math.sin(t) * V[1];
+    pts.push([g.cx + x * g.R, g.cy - y * g.R]);
+  }
+  let term = pts.slice();
+  let thEnd = Math.atan2(-(pts[48][1] - g.cy), pts[48][0] - g.cx);
+  let mid = thEnd + HALF_PI;
+  let dir = (Math.cos(mid) * S[0] + Math.sin(mid) * S[1]) < 0 ? 1 : -1;
+  for (let i = 1; i < 48; i++) {
+    let th = thEnd + dir * i / 48 * PI;
+    pts.push([g.cx + Math.cos(th) * g.R, g.cy - Math.sin(th) * g.R]);
+  }
+  return { poly: pts, term };
+}
+
+function composeGlobeSpherePanel(rect, s, prng) {
   svgRec.beginGroup('globe-sphere-panel');
 
-  // Animation setup
+  // ---- All PRNG draws first ----
   let elemSeed = prng.nextInt(0, 0xFFFFFF);
+  let zone = getAnimZoneParams(s);
+  prng.nextInt(zone.minCycle, zone.maxCycle); // legacy cycle draw (stream length kept stable)
+  let variant = prng.weightedPick(GLOBE_VARIANTS, [1.3, 1, 0.9, 0.8]);
+  if (_cellOverrideVariant && GLOBE_VARIANTS.includes(_cellOverrideVariant)) variant = _cellOverrideVariant;
+  _cellVariantInfo = variant;
+  let fill = kitFillStyle(s, prng);
+  let F = [];
+  for (let i = 0; i < 64; i++) F.push(prng.nextFloat());
+  let modSeed = prng.nextInt(1, 0x7FFFFFFF);
+  let T = {
+    status: textGen.statusLabel(prng), id: textGen.identifier(prng), sat: textGen.identifier(prng),
+    ver: textGen.versionString(prng), ts: textGen.timestamp(prng),
+    stations: [0, 1, 2, 3, 4].map((i) => prng.pick(textGen._idPrefixes).slice(0, 3) + '-' + i + prng.nextInt(0, 9))
+  };
+  let laySeed = prng.nextInt(1, 0x7FFFFFFF); // private stream for the kit side modules
+  let lay = kitLayout(rect, s, prng);
+
+  let m = lay.main;
+  let d = kitDensity(m);
+  let body = kitType(m, 'body'), micro = kitType(m, 'micro');
+  let pen = _radPen();
   let animated = shouldAnimate(elemSeed);
-  let zone = animated ? getAnimZoneParams(s) : null;
-  let globeCycle = animated ? prng.nextInt(zone.minCycle, zone.maxCycle) : 0;
-  let globePhase = animated ? (elemSeed % 1000) / 1000 : 0;
+  let show = {
+    labels: detailActive('primaryLabels', s), sec: detailActive('secondaryText', s),
+    ticks: detailActive('tickMarks', s) && state.detail.tickMarkDensity > 0, rings: detailActive('secondaryRings', s),
+    inner: detailActive('internalDetail', s), ver: detailActive('versionStrings', s), annot: detailActive('annotationTexture', s),
+    brackets: detailActive('cornerBrackets', s), cross: detailActive('crosshairs', s)
+  };
+  let macro = s > 0.5;
+  let isOrb = variant === 'orbital', isGS = variant === 'groundStation', isBand = variant === 'scanBands', isPol = variant === 'polar';
+  let DEG = PI / 180;
 
-  // Corner brackets framing (static)
-  if (detailActive('cornerBrackets', s)) {
-    drawCornerBrackets(x + pad, y + pad, w - pad * 2, h - pad * 2, Math.min(w, h) * 0.1);
+  // ---- Layout: header, globe field (+ lat ruler), lon ruler, readout row ----
+  let topH = show.labels && m.h > body * 10 ? body * 1.9 : 0;
+  let rulers = show.ticks && show.sec && m.w > 230 && m.h > 230;
+  let lonH = rulers ? body * 3.0 : 0, latW = rulers ? body * 4.2 : 0;
+  let botH = show.sec && m.h > body * 14 ? body * 2.5 + (show.ver ? micro * 1.5 : 0) : 0;
+  let arr = _radArrange(m, topH, botH, body, show.sec && Math.max(m.w, m.h) > 200, latW, lonH);
+  m = arr.m;
+  let field = arr.field, side = arr.panel;
+  let half = Math.min(field.w, field.h) / 2;
+  let orbK = isOrb || isPol ? 1.3 : isGS ? 1.18 : 1.06;
+  let R = (half - (show.labels ? micro * 1.5 : half * 0.04)) / orbK;
+  let cx = field.x + field.w / 2, cy = field.y + field.h / 2;
+
+  // ---- Geometry: view, sun, orbit ----
+  let spinE = _radSpin(animated, F[1] < 0.5 ? 1 : -1);
+  let lon0 = F[2] * TWO_PI + spinE;
+  let tilt = isPol ? (60 + F[3] * 22) * DEG : (12 + F[3] * 22) * DEG;
+  let roll = (F[4] - 0.5) * 40 * DEG;
+  let g = _glbMake(cx, cy, R, lon0, tilt, roll);
+  let sunA = F[5] * TWO_PI, sunZ = -0.35 + F[6] * 0.6;
+  let S = [Math.cos(sunA) * Math.sqrt(1 - sunZ * sunZ), Math.sin(sunA) * Math.sqrt(1 - sunZ * sunZ), sunZ];
+  let inc = (isPol ? 97 + F[7] * 3 : 25 + F[7] * 60) * DEG, raan = F[8] * TWO_PI;
+  let orbR = isPol ? 1.2 : 1.12 + F[9] * 0.14;
+  // Base anomaly: the front-most point of the orbit, nudged, so the still frame shows the satellite
+  let uFront = 0, zBest = -9;
+  for (let i = 0; i < 36; i++) { let z = _glbOrbitPt(g, orbR, inc, raan, i / 36 * TWO_PI).v.z; if (z > zBest) { zBest = z; uFront = i / 36 * TWO_PI; } }
+  let uSat = uFront + (F[10] - 0.5) * 1.4 + _radSpin(animated, F[11] < 0.5 ? 1 : 2);
+  let alt = Math.round((orbR - 1) * 6371);
+  let sat = _glbOrbitPt(g, orbR, inc, raan, uSat);
+  let sspLat = Math.asin(sat.Z), sspLon = Math.atan2(sat.Y, sat.X) + lon0;
+
+  // Label placement with a simple overlap check (globe labels crowd near the limb)
+  let placed = [];
+  let label = (str, x, y, size, align, seed, hint) => {
+    let w = measureFallbackText(str, size);
+    let x0 = align === 'center' ? x - w / 2 : align === 'right' ? x - w : x;
+    let box = [x0 - 1, y - size - 1, x0 + w + 1, y + size * 0.3 + 1];
+    if (placed.some(b => box[0] < b[2] && box[2] > b[0] && box[1] < b[3] && box[3] > b[1])) return false;
+    if (box[0] < m.x || box[2] > m.x + m.w) return false;
+    placed.push(box);
+    _radText(str, x, y, size, align, seed, hint);
+    return true;
+  };
+
+  // ---- Limb: heavy outline, offset contour toward macro ----
+  kitWeight('heavy');
+  svgCircle(cx, cy, R * 2);
+  if (macro || fill) {
+    kitWeight('primary');
+    svgCircle(cx, cy, (R + Math.max(pen * 2.5, R * 0.025)) * 2);
   }
+  if (show.rings && !macro) { kitWeight('fine'); svgCircle(cx, cy, R * 1.04 * 2); }
 
-  // Accent corner dots (static)
-  if (detailActive('dotMatrixTextures', s) && prng.nextFloat() < 0.5) {
-    svgPoint(x + pad * 2, y + pad * 2);
-    svgPoint(x + w - pad * 2, y + pad * 2);
+  // ---- Night side hatch and terminator ----
+  let night = _glbNightPoly(g, S);
+  let nSp = Math.max(pen * 1.4, R * (macro ? 0.022 : 0.035));
+  _radHatch([night.poly], 90 - sunA / DEG + 45, nSp, macro ? 'primary' : 'secondary');
+  if (macro) _radHatch([night.poly], 90 - sunA / DEG - 15, nSp * 1.7, 'secondary');
+  kitWeight('secondary');
+  svgPolyline(night.term);
+
+  // ---- Graticule ----
+  let latStep = macro ? 30 : d > 1.6 ? 15 : 30, lonStep = macro ? 45 : d > 1.6 ? 15 : 30;
+  let nSmp = Math.max(48, Math.round(R * 0.5));
+  if (show.inner || !macro) {
+    for (let la = -90 + latStep; la < 90; la += latStep) {
+      kitWeight(la === 0 ? 'primary' : 'fine');
+      _glbCurve(g, _glbParallel(g, la * DEG, nSmp), (show.ticks && la === 0) ? 'dash' : null, Math.max(2, R * 0.02));
+    }
+    for (let lo = 0; lo < 360; lo += lonStep) {
+      kitWeight(lo === 0 ? 'secondary' : 'fine');
+      _glbCurve(g, _glbMeridian(g, lo * DEG, Math.round(nSmp / 2)), null);
+    }
+  } else {
+    kitWeight('primary');
+    _glbCurve(g, _glbParallel(g, 0, nSmp), null);
   }
-
-  // Globe — animated rotation around vertical axis
-  let globeAngle = animated ? anim.rotate(animCtx.frameIndex, animCtx.frameCount, globeCycle * 5, animCtx.speedMul * 0.35, globePhase) * animEnvelope(animCtx.t, 'swell', ease.inOutQuad) * animCtx.motionAmount * (_compBus ? _compBus.dramaCurve : 1) : 0;
-  if (globeAngle !== 0) {
-    let deg = globeAngle * 180 / PI;
-    svgRec.beginGroupWithTransform('anim-globe-rot', `rotate(${svgRec._r(deg)}, ${svgRec._r(cx)}, ${svgRec._r(cy)})`);
-    push(); translate(cx, cy); rotate(globeAngle); translate(-cx, -cy);
-  }
-  generateGlobeElement(cx, cy, globeR * 2, s, prng);
-  if (globeAngle !== 0) { pop(); svgRec.endGroup(); }
-
-  // Orbit ring around globe (satellite scan)
-  if (detailActive('secondaryRings', s) && prng.nextFloat() < 0.5) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.3);
-    drawDashedRing(cx, cy, globeR * 1.2, prng.nextInt(8, 14));
-    // Satellite dot on orbit
-    let satA = prng.nextFloat() * TWO_PI;
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.6);
-    svgCircle(cx + globeR * 1.2 * cos(satA), cy + globeR * 1.2 * sin(satA), 4);
-    svgSetStrokeWeight(state.geometry.strokeWeight);
-  }
-
-  // Crosshair overlay on globe
-  if (detailActive('crosshairs', s) && prng.nextFloat() < 0.4) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.3);
-    drawCrosshair(cx, cy, globeR * 1.5, globeR * 0.15);
-    svgSetStrokeWeight(state.geometry.strokeWeight);
-  }
-
-  // Status label (top-left) — bus-connected status
-  if (detailActive('primaryLabels', s)) {
-    let fontSize = Math.max(5, globeR * 0.12);
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.8);
-    let label = textGen.statusLabel(prng);
-    drawAnimText(label, x + pad * 2, y + pad * 2 + fontSize, fontSize, elemSeed + 10, 'bus:status');
-    // Divider line under label
-    if (detailActive('connectorLines', s)) {
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.3);
-      svgLine(x + pad * 2, y + pad * 2 + fontSize * 1.3, x + pad * 2 + measureFallbackText(label, fontSize), y + pad * 2 + fontSize * 1.3);
+  // Pole marks
+  for (let pz of [1, -1]) {
+    let p = _glbGeo(g, pz * HALF_PI, 0);
+    if (p.z > 0.05) {
+      let [px, py] = _glbScr(g, p);
+      kitWeight('primary');
+      svgLine(px - R * 0.03, py, px + R * 0.03, py);
+      svgLine(px, py - R * 0.03, px, py + R * 0.03);
+      if (show.sec && R > 70) label(pz > 0 ? 'NP' : 'SP', px + R * 0.035, py - R * 0.035, micro, 'left');
     }
   }
 
-  // Value readout (top-right) — bus-connected counter
-  if (detailActive('secondaryText', s) && prng.nextFloat() < 0.6) {
-    let fontSize = Math.max(4, globeR * 0.09);
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.6);
-    let val = textGen.valueReadout(prng);
-    drawAnimText(val, x + w - pad * 2 - measureFallbackText(val, fontSize), y + pad * 2 + fontSize, fontSize, elemSeed + 20, 'bus:counter');
+  // ---- Variant layers ----
+  if (isBand && (show.inner || macro)) {
+    // Stripe bands: dense parallels read as solid bands with true curvature
+    let nb = macro ? 2 : 3 + Math.floor(F[12] * 2);
+    for (let b = 0; b < nb; b++) {
+      let c0 = -60 + (b + 0.5) * 120 / nb + (F[13 + b] - 0.5) * 12, bw = (macro ? 9 : 6) + F[18 + b] * 5;
+      let lines = Math.max(3, Math.min(14, Math.round(bw * R / 90 / Math.max(1, pen))));
+      kitWeight(macro ? 'primary' : 'secondary');
+      for (let q = 0; q <= lines; q++) _glbCurve(g, _glbParallel(g, (c0 - bw / 2 + bw * q / lines) * DEG, nSmp), null);
+      if (show.sec && R > 80) {
+        // Band tag outside the limb on the band's left edge
+        let lp = _glbGeo(g, c0 * DEG, lon0 - 88 * DEG);
+        let [lx, ly] = _glbScr(g, lp);
+        let ox = lx - cx, oy = ly - cy, ol = Math.hypot(ox, oy) || 1;
+        label('B' + (b + 1), cx + ox / ol * (R + micro * 0.8), cy + oy / ol * (R + micro * 0.8) + micro * 0.35, micro, ox < 0 ? 'right' : 'left');
+      }
+    }
+    // Sweeping scan meridian
+    let scanLon = lon0 - 70 * DEG + _radOsc(animated, 1, 0) * 140 * DEG + F[24] * 0.3;
+    kitWeight('heavy');
+    _glbCurve(g, _glbMeridian(g, scanLon, Math.round(nSmp / 2)), null);
+    if (show.sec && R > 80) {
+      let tp = _glbGeo(g, 20 * DEG, scanLon);
+      if (tp.z > 0.1) {
+        let [sx2, sy2] = _glbScr(g, tp);
+        let outside = (x0, y0, x1, y1) => [[x0, y0], [x1, y0], [x0, y1], [x1, y1]].every(([qx, qy]) => Math.hypot(qx - cx, qy - cy) > R * 1.03);
+        let dx = (sx2 >= cx ? 1 : -1) * (R - Math.abs(sx2 - cx) + R * 0.12);
+        _radCallout(sx2, sy2, dx, -R * 0.12, 'SCAN', _glbLonStr(scanLon), Math.max(getMinTextSizePx(), micro * 1.1), field, outside);
+      }
+    }
   }
-
-  // Coordinate readout (bottom-left) — animated counter
-  if (detailActive('secondaryText', s)) {
-    let fontSize = Math.max(4, globeR * 0.08);
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.6);
-    let coord = textGen.coordinate(prng);
-    drawAnimText(coord, x + pad * 2, y + h - pad * 2, fontSize, elemSeed + 30, 'counter');
+  if (isPol && (show.inner || macro)) {
+    // Auroral oval: a band of dense small circles around the visible pole
+    let pole = _glbGeo(g, HALF_PI, 0).z > 0 ? 1 : -1;
+    kitWeight(macro ? 'primary' : 'secondary');
+    for (let q = 0; q <= 5; q++) _glbCurve(g, _glbSmallCircle(g, pole * (88 - F[25] * 4) * DEG, F[26] * TWO_PI, (19 + q * 1.4) * DEG, nSmp), null);
   }
-
-  // Version string + timestamp (bottom-right) — animated
-  if (detailActive('versionStrings', s)) {
-    let fontSize = Math.max(4, globeR * 0.07);
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.5);
-    let ver = textGen.versionString(prng);
-    drawAnimText(ver, x + w - pad * 2 - measureFallbackText(ver, fontSize), y + h - pad * 2, fontSize, elemSeed + 40, 'counter');
-    if (detailActive('annotationTexture', s)) {
-      let ts = textGen.timestamp(prng);
-      drawAnimText(ts, x + w - pad * 2 - measureFallbackText(ts, fontSize), y + h - pad * 2 - fontSize * 1.3, fontSize, elemSeed + 41, 'counter');
+  if (isGS && (show.inner || macro)) {
+    // Stations with coverage circles, a geodesic link and labels
+    let st = [];
+    for (let i = 0; i < 5; i++) st.push({ lat: (F[30 + i] - 0.5) * 120 * DEG, lon: lon0 + (F[35 + i] - 0.5) * 160 * DEG, rho: (8 + F[40 + i] * 10) * DEG });
+    for (let i = 0; i < st.length; i++) {
+      let p = _glbGeo(g, st[i].lat, st[i].lon);
+      let cov = _glbSmallCircle(g, st[i].lat, st[i].lon, st[i].rho, 64);
+      kitWeight(macro ? 'primary' : 'fine');
+      _glbCurve(g, cov, show.ticks ? 'dash' : null, 2);
+      // Macro: fully visible coverage discs become hatched solids
+      if (macro && cov.every(q => q.z > 0)) _radHatch([cov.map(q => _glbScr(g, q))], 45 + i * 30, Math.max(pen * 1.4, R * 0.02), 'primary');
+      if (p.z > 0) {
+        let [px, py] = _glbScr(g, p);
+        kitWeight('primary');
+        drawTriangle(px, py, Math.max(3, R * 0.03), -HALF_PI);
+        if (show.sec && R > 80 && p.z > 0.25) label(T.stations[i], px + R * 0.04, py + micro * 1.2, micro, 'left');
+      }
+    }
+    // Great-circle link between the first two stations, with its length
+    let a = st[0], b = st[1];
+    let A = [Math.cos(a.lat) * Math.cos(a.lon), Math.cos(a.lat) * Math.sin(a.lon), Math.sin(a.lat)];
+    let B = [Math.cos(b.lat) * Math.cos(b.lon), Math.cos(b.lat) * Math.sin(b.lon), Math.sin(b.lat)];
+    let om = Math.acos(Math.max(-1, Math.min(1, A[0] * B[0] + A[1] * B[1] + A[2] * B[2])));
+    let gc = [];
+    for (let i = 0; i <= 40; i++) {
+      let t = i / 40, k0 = Math.sin((1 - t) * om) / Math.sin(om || 1), k1 = Math.sin(t * om) / Math.sin(om || 1);
+      let P = [0, 1, 2].map(k => A[k] * k0 + B[k] * k1);
+      gc.push(_glbGeo(g, Math.asin(Math.max(-1, Math.min(1, P[2]))), Math.atan2(P[1], P[0])));
+    }
+    kitWeight('secondary');
+    _glbCurve(g, gc, 'dash', 2);
+    let mid = gc[20];
+    if (show.sec && mid.z > 0 && R > 90) {
+      let [mx, my] = _glbScr(g, mid);
+      label(Math.round(om * 6371) + ' KM', mx + micro * 0.5, my - micro * 0.5, micro, 'left');
     }
   }
 
-  // Rotated side label
-  if (detailActive('annotationTexture', s) && prng.nextFloat() < 0.35 && w > globeR * 3) {
-    let fontSize = Math.max(4, globeR * 0.06);
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-    drawFallbackTextRotated(textGen.identifier(prng), x + w - pad, y + h * 0.3, fontSize, 90);
+  // ---- Orbits (all variants but bands get one), ground track, footprint ----
+  let nOrb = isOrb ? Math.min(3, 1 + Math.floor(F[44] * 2.5) + (d > 1.5 ? 1 : 0)) : isBand ? 0 : 1;
+  if (macro) nOrb = isGS ? 0 : Math.min(nOrb, 1);
+  for (let o = 0; o < nOrb; o++) {
+    let oi = o === 0 ? inc : (20 + F[45 + o] * 75) * DEG, orr = o === 0 ? raan : F[48 + o] * TWO_PI;
+    let ok = o === 0 ? orbR : 1.08 + F[50 + o] * 0.2;
+    let pts = [];
+    for (let i = 0; i <= 128; i++) pts.push(_glbOrbitPt(g, ok, oi, orr, i / 128 * TWO_PI).v);
+    kitWeight(o === 0 ? (macro ? 'heavy' : 'primary') : 'fine');
+    _glbCurve(g, pts, show.rings ? 'dash' : null, Math.max(2, R * 0.02));
+    if (o > 0 && show.inner) {
+      let q = _glbOrbitPt(g, ok, oi, orr, F[52 + o] * TWO_PI + uSat * 0.7).v;
+      if (q.z >= 0 || q.x * q.x + q.y * q.y > 1) { let [qx, qy] = _glbScr(g, q); kitWeight('secondary'); svgRect(qx - 2.5, qy - 2.5, 5, 5); }
+    }
+    // Ascending node marker on the primary orbit
+    if (o === 0 && show.ticks) {
+      let an = _glbOrbitPt(g, ok, oi, orr, 0).v;
+      if (an.z >= 0 || an.x * an.x + an.y * an.y > 1) {
+        let [ax, ay] = _glbScr(g, an);
+        kitWeight('secondary');
+        drawTriangle(ax, ay, Math.max(3, R * 0.025), -HALF_PI);
+        if (show.sec && R > 80) label('AN', ax + R * 0.035, ay + micro * 0.35, micro, 'left');
+      }
+    }
+  }
+  if (nOrb > 0 && (show.inner || macro)) {
+    // Ground track: past 1.5 revs and next half rev, drifting west with the planet
+    let drift = 0.12 + F[55] * 0.1;
+    if (!macro) {
+      let gt = [];
+      for (let i = 0; i <= 160; i++) {
+        let du = (-1.5 + 2 * i / 160) * TWO_PI;
+        let q = _glbOrbitPt(g, 1, inc, raan, uSat + du);
+        gt.push(_glbGeo(g, Math.asin(q.Z), Math.atan2(q.Y, q.X) + lon0 - du * drift));
+      }
+      kitWeight('secondary');
+      _glbCurve(g, gt.slice(0, 121), null);
+      kitWeight('fine');
+      let fut = gt.slice(120).map(p => p);
+      let vis = fut.filter(p => p.z >= 0).map(p => _glbScr(g, p));
+      if (vis.length > 1) _glbDashed(vis, 2, 3);
+    }
+    // Coverage footprint: horizon circle seen from the satellite's altitude
+    let rho = Math.acos(1 / orbR);
+    kitWeight(macro ? 'primary' : 'secondary');
+    _glbCurve(g, _glbSmallCircle(g, sspLat, sspLon, rho, 72), null);
+    let ssp = _glbGeo(g, sspLat, sspLon);
+    let satVis = sat.v.z >= 0 || sat.v.x * sat.v.x + sat.v.y * sat.v.y > 1;
+    let [sx, sy] = _glbScr(g, sat.v);
+    if (satVis) {
+      // Satellite: body + panels along the orbit tangent
+      let nx = _glbOrbitPt(g, orbR, inc, raan, uSat + 0.05).v;
+      let [nx2, ny2] = _glbScr(g, nx);
+      let ta = Math.atan2(ny2 - sy, nx2 - sx), bs = Math.max(3, R * 0.03);
+      let c = Math.cos(ta + HALF_PI), sn = Math.sin(ta + HALF_PI);
+      kitWeight('primary');
+      svgRect(sx - bs * 0.6, sy - bs * 0.6, bs * 1.2, bs * 1.2);
+      for (let side of [-1, 1]) {
+        let p0 = [sx + c * side * bs * 0.8, sy + sn * side * bs * 0.8], p1 = [sx + c * side * bs * 2.6, sy + sn * side * bs * 2.6];
+        let w2 = bs * 0.45, ox = Math.cos(ta) * w2, oy = Math.sin(ta) * w2;
+        let panel = [[p0[0] + ox, p0[1] + oy], [p1[0] + ox, p1[1] + oy], [p1[0] - ox, p1[1] - oy], [p0[0] - ox, p0[1] - oy]];
+        kitWeight('secondary');
+        _radClosed(panel);
+        _radHatch([panel], ta * 180 / PI + 90, Math.max(pen * 1.3, bs * 0.3), 'secondary');
+      }
+    }
+    if (ssp.z > 0) {
+      let [ux, uy] = _glbScr(g, ssp);
+      kitWeight('primary');
+      svgCircle(ux, uy, Math.max(4, R * 0.04));
+      svgPoint(ux, uy);
+      if (satVis && show.cross) { kitWeight('fine'); drawDashedLine(sx, sy, ux, uy, 2, 2); }
+      if (show.sec && R > 70) {
+        let csz = Math.max(getMinTextSizePx(), Math.min(body, R * 0.055));
+        let out = Math.atan2(uy - cy, ux - cx);
+        let bounds = { x: field.x - latW * 0.3, y: field.y, w: field.w + latW * 0.3, h: field.h };
+        _radCallout(ux, uy, (Math.cos(out) >= 0 ? 1 : -1) * R * 0.32, (Math.sin(out) >= 0 ? 1 : -1) * R * 0.22,
+          T.sat, 'SSP ' + _glbLatStr(sspLat) + ' ' + _glbLonStr(sspLon), csz, bounds);
+      }
+    }
   }
 
+  // ---- Lat / long labels ----
+  if (show.labels && show.sec && R > 75) {
+    kitWeight('fine');
+    for (let la = -60; la <= 60; la += 30) {
+      if (la === 0) continue;
+      let p = _glbGeo(g, la * DEG, lon0 - 62 * DEG);
+      if (p.z > 0.2) { let [lx, ly] = _glbScr(g, p); label(Math.abs(la) + (la > 0 ? 'N' : 'S'), lx, ly - micro * 0.3, micro, 'center'); }
+    }
+    for (let lo = 0; lo < 360; lo += Math.max(30, lonStep) * (R > 160 ? 1 : 2)) {
+      let p = _glbGeo(g, 0, lo * DEG);
+      if (p.z > 0.35) {
+        let [lx, ly] = _glbScr(g, p);
+        let dl = ((lo + 540) % 360) - 180;
+        label(Math.abs(dl) + (dl > 0 ? 'E' : dl < 0 ? 'W' : ''), lx + micro * 0.3, ly + micro * 1.2, micro, 'left');
+      }
+    }
+  }
+
+  // ---- Sun bearing glyph outside the limb ----
+  if (show.rings) {
+    let sl = Math.hypot(S[0], S[1]) || 1;
+    let sr = Math.min(half * 0.97, R * orbK + micro * 1.2);
+    let gx = cx + S[0] / sl * sr, gy = cy - S[1] / sl * sr, gr = Math.max(3, R * 0.035);
+    kitWeight('secondary');
+    svgCircle(gx, gy, gr * 2);
+    kitWeight('fine');
+    for (let k = 0; k < 8; k++) { let a = k * PI / 4; svgLine(gx + Math.cos(a) * gr * 1.4, gy + Math.sin(a) * gr * 1.4, gx + Math.cos(a) * gr * 2, gy + Math.sin(a) * gr * 2); }
+  }
+
+  // ---- Framing: corner brackets + registration crosses ----
+  if (show.brackets) {
+    kitWeight('fine');
+    let bx = cx - half, by = cy - half;
+    drawCornerBrackets(bx, by, half * 2, half * 2, half * 0.12);
+    if (show.cross) for (let [sx2, sy2] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+      let px = cx + sx2 * half * 0.985, py = cy + sy2 * half * 0.985, len = half * 0.035;
+      svgLine(px - sy2 * 0 - sx2 * len, py - sy2 * len, px, py);
+    }
+  }
+
+  // ---- Lat ruler (left) and lon ruler (below) with SSP pointers ----
+  if (rulers) {
+    let rx = field.x - latW * 0.38, ry0 = cy - R, rh = R * 2;
+    kitWeight('fine');
+    kitRuler(rx, ry0, rh, { vertical: true, divisions: 12, major: 2, len: -body * 0.6, labels: false });
+    for (let k = 0; k <= 6; k++) {
+      let la = 90 - k * 30;
+      _radText(Math.abs(la) + (la > 0 ? 'N' : la < 0 ? 'S' : ''), rx - body * 0.8, ry0 + rh * k / 6 + micro * 0.35, micro, 'right');
+    }
+    let py = ry0 + rh * (0.5 - sspLat / PI);
+    kitWeight('primary');
+    drawTriangle(rx + body * 0.45, py, body * 0.4, PI);
+    let ly0 = field.y + field.h + lonH * 0.25, lx0 = cx - R * 1.15, lw = R * 2.3;
+    kitWeight('fine');
+    kitRuler(lx0, ly0, lw, { divisions: 24, major: 4, len: body * 0.6, labels: false });
+    for (let k = 0; k <= 6; k++) {
+      let lo = -180 + k * 60;
+      _radText(Math.abs(lo) + (lo > 0 ? 'E' : lo < 0 ? 'W' : ''), lx0 + lw * k / 6, ly0 + body * 0.6 + micro * 1.3, micro, 'center');
+    }
+    let sl = ((sspLon / DEG) % 360 + 540) % 360 - 180;
+    kitWeight('primary');
+    drawTriangle(lx0 + lw * (sl + 180) / 360, ly0 - body * 0.45, body * 0.4, HALF_PI);
+  }
+
+  // ---- Header ----
+  if (topH > 0) _radHeader(m, T.status, { orbital: 'ORBIT TRACK', groundStation: 'GND NETWORK', scanBands: 'BAND SCAN', polar: 'POLAR VIEW' }[variant], T.id, body, micro, elemSeed + 10, 'bus:counter');
+
+  // ---- Side table: orbital elements (or station roster) ----
+  if (side) {
+    let rows = isGS
+      ? T.stations.map((n, i) => [n, (F[40 + i] * 10 + 8).toFixed(1) + 'DEG'])
+      : [['EPOCH', T.ts], ['SMA', Math.round(orbR * 6371) + 'KM'], ['ECC', (F[56] * 0.02).toFixed(4)], ['INC', (inc / DEG).toFixed(2)],
+         ['RAAN', (raan / DEG).toFixed(2)], ['ARGP', (F[57] * 360).toFixed(2)], ['M.ANOM', ((uSat / DEG) % 360).toFixed(2)],
+         ['BSTAR', (F[58] * 9).toFixed(3) + 'E-4'], ['REV', String(Math.floor(F[59] * 90000))]];
+    let tw = arr.side ? side.w : Math.min(side.w, Math.max(side.w * 0.55, body * 18));
+    let endY = _radTable({ x: side.x, y: side.y, w: tw, h: arr.side ? Math.min(side.h, body * 1.3 * (rows.length + 2.2)) : side.h },
+      isGS ? 'STATION ROSTER' : 'ORBITAL ELEMENTS', rows, body, micro, elemSeed + 60);
+    let rest = arr.side ? { x: side.x, y: endY + body * 1.2, w: side.w, h: side.y + side.h - endY - body * 1.2 }
+                        : { x: side.x + tw + body, y: side.y, w: side.w - tw - body, h: side.h };
+    if (rest.w > body * 8 && rest.h > body * 6) kitModule(rest, s, new PRNG(modSeed), rest.w / rest.h > 2.2 ? 'spark' : 'bars');
+  }
+
+  // ---- Readout row ----
+  if (botH > 0) {
+    let ry = m.y + m.h - botH + body * 1.85;
+    let per = (2 * PI * Math.sqrt(Math.pow(orbR * 6371, 3) / 398600) / 60).toFixed(1);
+    let fields = [['LAT', _glbLatStr(sspLat)], ['LON', _glbLonStr(sspLon)], ['ALT', alt + 'KM'], ['INC', (inc / DEG).toFixed(1)], ['PER', per + 'M']];
+    kitWeight('fine');
+    svgLine(m.x, ry - body * 1.5, m.x + m.w, ry - body * 1.5);
+    let colW = m.w / fields.length, fx = m.x;
+    for (let i = 0; i < fields.length; i++) {
+      let [k, v] = fields[i];
+      let kw = measureFallbackText(k, micro), vw = measureFallbackText(v, body);
+      if (kw + vw + body * 0.8 <= colW) {
+        kitWeight('fine');
+        _radText(k, fx, ry, micro, 'left');
+        kitWeight('secondary');
+        _radText(v, fx + kw + body * 0.4, ry, body, 'left', (elemSeed + 40 + i) >>> 0, 'counter');
+        if (i > 0) { kitWeight('fine'); svgLine(fx - body * 0.4, ry - body * 1.1, fx - body * 0.4, ry + body * 0.2); }
+      }
+      fx += colW;
+    }
+    if (show.ver) {
+      kitWeight('fine');
+      _radText(T.ver, m.x, m.y + m.h, micro, 'left', elemSeed + 50, 'counter');
+      _radText(T.ts, m.x + m.w, m.y + m.h, micro, 'right', elemSeed + 51, 'counter');
+    }
+  }
+
+  // Kit side modules last, on a private PRNG: their animated text skips font
+  // rolls on hidden frames, which would otherwise reshuffle module content.
+  kitFillLayout(lay, s, new PRNG(laySeed));
+  kitWeight('primary');
   svgRec.endGroup();
 }
 
