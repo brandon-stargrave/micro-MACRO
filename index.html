@@ -2249,7 +2249,15 @@ function drawAnimText(str, x, y, fontSize, elemSeed, hintBehavior) {
 
   // Presence check — don't return early (preserves PRNG stability in callers)
   let pres = applyPresence(prof, animCtx.frameIndex, animCtx.frameCount, animCtx.t);
-  if (!pres.visible) { /* skip drawing but don't return */ return; }
+  if (!pres.visible) {
+    // Hidden this frame: still run the font pick (it draws from the cell PRNG)
+    // so the stream stays identical to frames where the text is drawn
+    let was = _drawingSuppressed;
+    _drawingSuppressed = true;
+    drawFallbackText(str, x, y, fontSize);
+    _drawingSuppressed = was;
+    return;
+  }
 
   // Text content animation
   let display = str;
@@ -3307,7 +3315,12 @@ function drawSVGFontText(str, x, y, fontSize, fontObj) {
   for (let i = 0; i < str.length; i++) {
     let ch = str[i];
     let glyph = fontObj.glyphs.get(ch) || fontObj.glyphs.get(ch.toUpperCase());
-    if (!glyph || !glyph.d) {
+    if (glyph && !glyph.d) {
+      // Pathless glyph (space): advance by the font's own width, matching measureSVGFontText
+      curX += glyph.advance * scale;
+      continue;
+    }
+    if (!glyph) {
       // Fallback to built-in glyph
       _drawBuiltinText(ch, curX, y, fontSize);
       curX += fontSize * 0.7;
