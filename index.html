@@ -4613,6 +4613,97 @@ function drawTextClamped(str, x, y, fontSize, bounds) {
 }
 
 // ========================================================
+// ARCHETYPE DISPATCH (aspect-aware)
+// ========================================================
+
+const ARCHETYPE_COMPOSERS = {
+  statusPanel: composeStatusPanel, targetingReticle: composeTargetingReticle,
+  meterGauge: composeMeterGauge, dataReadout: composeDataReadout,
+  standaloneGlyph: composeStandaloneGlyph, heroText: composeHeroText,
+  starChart: composeStarChart, asciiArt: composeAsciiArt, sigil: composeSigil,
+  sealBadge: composeSealBadge, errorMessage: composeErrorMessage,
+  terminalBlock: composeTerminalBlock, nodeNetwork: composeNodeNetwork,
+  globeSphere: composeGlobeSpherePanel, encodedData: composeEncodedDataBlock,
+  datavizFragment: composeDatavizFragment, spectrogram: composeSpectrogram,
+  miniGame: composeMiniGame
+};
+
+// Centred radial forms leave most of a long strip empty (measured: 16-25% ink
+// coverage in 4:1 cells). In strips they are laid out as a frieze of tiles,
+// like a sign table, a run of star plates or a bank of game monitors, with an
+// index rail.
+const FRIEZE_ARCHETYPES = new Set(['standaloneGlyph', 'sigil', 'sealBadge', 'globeSphere', 'starChart', 'miniGame']);
+// Words and time axes read along a strip's long side: in a tall strip these
+// are composed in a frame rotated 90 degrees so they run bottom-to-top.
+const ROTATE_TALL_ARCHETYPES = new Set(['heroText', 'spectrogram', 'datavizFragment', 'encodedData']);
+
+function composeArchetypeCell(archetype, rect, s, prng) {
+  let fn = ARCHETYPE_COMPOSERS[archetype] || composeStandaloneGlyph;
+  let aspect = rect.w / rect.h;
+  let long = Math.max(aspect, 1 / aspect);
+
+  if (FRIEZE_ARCHETYPES.has(archetype) && long >= 1.7) {
+    composeFrieze(fn, rect, s, prng, aspect >= 1);
+    return;
+  }
+  if (ROTATE_TALL_ARCHETYPES.has(archetype) && aspect <= 1 / 1.6) {
+    let cx = rect.x + rect.w / 2, cy = rect.y + rect.h / 2;
+    let rot = { x: cx - rect.h / 2, y: cy - rect.w / 2, w: rect.h, h: rect.w };
+    svgRec.beginGroupWithTransform('rotated-cell', `rotate(-90, ${svgRec._r(cx)}, ${svgRec._r(cy)})`);
+    push(); translate(cx, cy); rotate(-HALF_PI); translate(-cx, -cy);
+    fn(rot, s, prng);
+    pop();
+    svgRec.endGroup();
+    return;
+  }
+  fn(rect, s, prng);
+}
+
+// Lay a radial composer out as 2-5 square-ish tiles along the strip's long axis.
+// Each tile gets its own pass of the cell PRNG, so the tiles form a related
+// set rather than copies. Always consumes the same draws for a given rect.
+function composeFrieze(fn, rect, s, prng, horizontal) {
+  let along = horizontal ? rect.w : rect.h, across = horizontal ? rect.h : rect.w;
+  let n = Math.max(2, Math.min(5, Math.round(along / across)));
+  let gap = across * 0.1;
+  let railH = detailActive('connectorLines', s) ? Math.max(getMinTextSizePx() * 1.8, across * 0.08) : 0;
+  let tileAcross = across - railH;
+  let tile = Math.min(tileAcross, (along - gap * (n - 1)) / n);
+  let used = tile * n + gap * (n - 1);
+  let start = (along - used) / 2;
+  let centers = [];
+  for (let i = 0; i < n; i++) {
+    let o = start + i * (tile + gap);
+    let r = horizontal
+      ? { x: rect.x + o, y: rect.y + (tileAcross - tile) / 2, w: tile, h: tile }
+      : { x: rect.x + (tileAcross - tile) / 2, y: rect.y + o, w: tile, h: tile };
+    centers.push(horizontal ? r.x + tile / 2 : r.y + tile / 2);
+    fn(r, s, prng);
+  }
+  if (!railH) return;
+  // Index rail along the free edge: baseline, a tick under each tile, labels
+  let size = getMinTextSizePx();
+  let prefix = textGen.identifier(prng).split(/[-._:]/)[0];
+  kitWeight('fine');
+  if (horizontal) {
+    let ry = rect.y + rect.h - railH * 0.55;
+    svgLine(rect.x + start, ry, rect.x + start + used, ry);
+    centers.forEach((c, i) => {
+      svgLine(c, ry - size * 0.4, c, ry + size * 0.4);
+      kitText(`${prefix}.${String(i + 1).padStart(2, '0')}`, c, ry + size * 1.3, size, 'center');
+    });
+  } else {
+    let rx = rect.x + rect.w - railH * 0.55;
+    svgLine(rx, rect.y + start, rx, rect.y + start + used);
+    centers.forEach((c, i) => {
+      svgLine(rx - size * 0.4, c, rx + size * 0.4, c);
+      drawFallbackTextRotated(`${prefix}.${String(i + 1).padStart(2, '0')}`, rx + size * 0.5, c + size * 1.6, size, -90);
+    });
+  }
+  kitWeight('primary');
+}
+
+// ========================================================
 // COMPOSITION KIT
 // ========================================================
 // Shared building blocks for the archetype composers: cell-relative type and
@@ -10937,9 +11028,13 @@ function composeAsciiArt(rect, s, prng) {
         break;
       }
       case 8: { // Torus, z-buffered and Lambert-lit (after donut.c)
-        let A = P[0] * TWO_PI + mt * TWO_PI, Bq = P[1] * TWO_PI + mt * TWO_PI;
+        // At macro the tilt is pinned to a three-quarter view (hole visible) and
+        // the torus only spins about its own axis: a free tumble can land
+        // edge-on, which posterises to a thin band.
+        let A = s > 0.6 ? 0.9 + (P[0] - 0.5) * 0.5 : P[0] * TWO_PI + mt * TWO_PI;
+        let Bq = P[1] * TWO_PI + mt * TWO_PI;
         let cA = Math.cos(A), sA = Math.sin(A), cB = Math.cos(Bq), sB = Math.sin(Bq);
-        let K2 = 5, K1 = Math.min(ax, ay) * 0.95 * (K2 - 2.3) / 3;
+        let K2 = 5, K1 = Math.min(ax, ay) * (s > 0.6 ? 1.1 : 0.95) * (K2 - 2.3) / 3;
         let zb = [], lum = [];
         for (let r = 0; r < rows; r++) { zb.push(new Float32Array(cols)); lum.push(new Float32Array(cols).fill(-2)); }
         let nT = Math.min(220, Math.max(90, Math.round(fc * 1.2))), nP = Math.min(700, Math.max(300, Math.round(fc * 4)));
@@ -11225,13 +11320,24 @@ function composeAsciiArt(rect, s, prng) {
     for (let r = f0r; r <= f1r; r++) for (let c = f0c; c <= f1c; c++) {
       let v = built.tone(toX(c), toY(r), c, r);
       G[r][c] = typeof v === 'number' ? Math.max(0, Math.min(9, Math.round(v * 9))) : v;
-      // Macro: posterise to bold silhouette levels
-      if (typeof G[r][c] === 'number' && s > 0.6) {
-        let q = G[r][c];
-        G[r][c] = s > 0.8 ? (q < 4 ? 0 : 9) : (q < 2 ? 0 : q < 6 ? 4 : 9);
-      }
     }
   });
+  // Macro: posterise to bold silhouette levels by percentile, not a fixed cut,
+  // so each subject keeps its shape: ~45% of the field is ink at deep macro
+  // (two levels), with a mid level between 0.6 and 0.8.
+  if (s > 0.6) {
+    let tones = [];
+    for (let r = F0r; r <= F1r; r++) for (let c = F0c; c <= F1c; c++) if (typeof G[r][c] === 'number') tones.push(G[r][c]);
+    tones.sort((a, b) => a - b);
+    let pct = q => tones.length ? tones[Math.min(tones.length - 1, Math.floor(q * tones.length))] : 5;
+    let cut = (q, lo) => Math.max(lo, Math.min(9, pct(q)));
+    let tFull = cut(s > 0.8 ? 0.55 : 0.7, 1), tMid = s > 0.8 ? 99 : cut(0.4, 1);
+    if (tMid >= tFull) tMid = 99;
+    for (let r = F0r; r <= F1r; r++) for (let c = F0c; c <= F1c; c++) {
+      let q = G[r][c];
+      if (typeof q === 'number') G[r][c] = q >= tFull && q > 0 ? 9 : q >= tMid && q > 0 ? 4 : 0;
+    }
+  }
   setBounds([F0c, F1c, F0r, F1r]);
   for (let sp of seps) {
     if (horiz) for (let r = f0r; r <= f1r; r++) G[r][sp] = '│';
@@ -11334,6 +11440,23 @@ function composeAsciiArt(rect, s, prng) {
   _ascFlush(B);
   kitWeight('fine');
   _ascFlush(BF);
+
+  // Macro block silhouettes get a bold contour along the ink/paper boundary,
+  // merged into long strokes, so the figure reads crisp instead of blotchy.
+  if (s > 0.6 && style === 'block' && !hasWaveDisp) {
+    let ink = (r, c) => r >= f0r && r <= f1r && c >= f0c && c <= f1c && typeof G[r][c] === 'number' && G[r][c] >= 9;
+    let BO = _ascBatch();
+    for (let r = f0r; r <= f1r; r++) for (let c = f0c; c <= f1c; c++) {
+      if (!ink(r, c)) continue;
+      let X0 = x + c * cw, Y0 = y + r * ch, X1 = X0 + cw, Y1 = Y0 + ch;
+      if (!ink(r - 1, c)) _ascSeg(BO, X0, Y0, X1, Y0);
+      if (!ink(r + 1, c)) _ascSeg(BO, X0, Y1, X1, Y1);
+      if (!ink(r, c - 1)) _ascSeg(BO, X0, Y0, X0, Y1);
+      if (!ink(r, c + 1)) _ascSeg(BO, X1, Y0, X1, Y1);
+    }
+    kitWeight('heavy');
+    _ascFlush(BO);
+  }
 
   kitWeight('primary');
   svgSetStrokeWeight(state.geometry.strokeWeight);
@@ -18698,28 +18821,8 @@ function generate(frameIndex) {
       }
     }
 
-    // Compose archetype
-    switch (archetype) {
-      case 'statusPanel':      composeStatusPanel(padded, cellScale, cellPrng); break;
-      case 'targetingReticle': composeTargetingReticle(padded, cellScale, cellPrng); break;
-      case 'meterGauge':       composeMeterGauge(padded, cellScale, cellPrng); break;
-      case 'dataReadout':      composeDataReadout(padded, cellScale, cellPrng); break;
-      case 'standaloneGlyph':  composeStandaloneGlyph(padded, cellScale, cellPrng); break;
-      case 'heroText':         composeHeroText(padded, cellScale, cellPrng); break;
-      case 'starChart':        composeStarChart(padded, cellScale, cellPrng); break;
-      case 'asciiArt':         composeAsciiArt(padded, cellScale, cellPrng); break;
-      case 'sigil':            composeSigil(padded, cellScale, cellPrng); break;
-      case 'sealBadge':        composeSealBadge(padded, cellScale, cellPrng); break;
-      case 'errorMessage':     composeErrorMessage(padded, cellScale, cellPrng); break;
-      case 'terminalBlock':    composeTerminalBlock(padded, cellScale, cellPrng); break;
-      case 'nodeNetwork':      composeNodeNetwork(padded, cellScale, cellPrng); break;
-      case 'globeSphere':      composeGlobeSpherePanel(padded, cellScale, cellPrng); break;
-      case 'encodedData':      composeEncodedDataBlock(padded, cellScale, cellPrng); break;
-      case 'datavizFragment':  composeDatavizFragment(padded, cellScale, cellPrng); break;
-      case 'spectrogram':      composeSpectrogram(padded, cellScale, cellPrng); break;
-      case 'miniGame':         composeMiniGame(padded, cellScale, cellPrng); break;
-      default:                 composeStandaloneGlyph(padded, cellScale, cellPrng); break;
-    }
+    // Compose archetype (aspect-aware: see composeArchetypeCell)
+    composeArchetypeCell(archetype, padded, cellScale, cellPrng);
 
     // Store debug metadata for tooltip (after composer runs, so variant info is populated)
     _cellMeta.push({
