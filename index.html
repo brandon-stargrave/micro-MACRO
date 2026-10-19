@@ -1274,12 +1274,12 @@ const VARIANT_DEFS = {
   terminalBlock: ['shell','boot','monitor','split'],
   targetingReticle: ['fireControl','radarScope','periscope','lockOn'],
   globeSphere: ['orbital','groundStation','scanBands','polar'],
+  standaloneGlyph: ['radial','rune','enclosed','sector','orbital','chevron','frames','star','hourglass'],
+  sigil: ['petal','blade','flame','hook','arrow','scurve','thorn','lozenge','glyph'],
   statusPanel: null,
   nodeNetwork: null,
-  standaloneGlyph: null,
   heroText: null,
   starChart: null,
-  sigil: null,
   encodedData: null
 };
 
@@ -8400,20 +8400,520 @@ function composeDataReadout(rect, s, prng) {
   svgRec.endGroup();
 }
 
+// ---- Symbols group: shared construction kit (standaloneGlyph, sigil, sealBadge) ----
+// Every sign is a list of closed "masses" built from ONE stroke thickness with
+// stencil gaps, so glyphs, sigil arms and seal emblems read as one invented
+// script. Masses render as an outline plus an engraved inset band, or as a
+// plotter-safe fill (hatch / cross-hatch / inset contours) when a fill style
+// asks for one. Nothing here is ever filled with ink.
+
+function symArea(pts) {
+  let a = 0;
+  for (let i = 0, n = pts.length; i < n; i++) {
+    let p = pts[i], q = pts[(i + 1) % n];
+    a += p[0] * q[1] - q[0] * p[1];
+  }
+  return a / 2;
+}
+
+// Offset a closed polygon by d toward its own interior (negative d grows it).
+// Mitred corners, clamped so sharp tips cannot shoot off.
+function symInset(pts, d) {
+  let n = pts.length, sg = symArea(pts) > 0 ? 1 : -1, out = [];
+  for (let i = 0; i < n; i++) {
+    let p0 = pts[(i - 1 + n) % n], p1 = pts[i], p2 = pts[(i + 1) % n];
+    let e1x = p1[0] - p0[0], e1y = p1[1] - p0[1], e2x = p2[0] - p1[0], e2y = p2[1] - p1[1];
+    let l1 = Math.hypot(e1x, e1y) || 1, l2 = Math.hypot(e2x, e2y) || 1;
+    let n1x = -e1y / l1 * sg, n1y = e1x / l1 * sg, n2x = -e2y / l2 * sg, n2y = e2x / l2 * sg;
+    let mx = n1x + n2x, my = n1y + n2y, ml = Math.hypot(mx, my);
+    if (ml < 1e-6) { mx = n1x; my = n1y; ml = Math.hypot(mx, my) || 1; }
+    mx /= ml; my /= ml;
+    let k = Math.min(2.6, 1 / Math.max(0.38, mx * n1x + my * n1y));
+    out.push([p1[0] + mx * d * k, p1[1] + my * d * k]);
+  }
+  return out;
+}
+
+function symCircle(cx, cy, r, n) {
+  n = n || Math.max(28, Math.min(180, Math.round(r * 0.9)));
+  let pts = [];
+  for (let i = 0; i < n; i++) { let a = i / n * TWO_PI; pts.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r]); }
+  return pts;
+}
+
+function symNgon(cx, cy, r, n, rot) {
+  let pts = [];
+  for (let i = 0; i < n; i++) { let a = rot + i / n * TWO_PI; pts.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r]); }
+  return pts;
+}
+
+function symShape(pts) {
+  if (!pts || pts.length < 2) return;
+  svgBeginShape();
+  for (let p of pts) svgVertex(p[0], p[1]);
+  svgEndShape(true);
+}
+
+// Radius factor of a regular polygon (shape = side count; < 3 = circle) with a
+// vertex at angle rot, in direction a. 1 at the vertices.
+function symRhoAt(shape, rot, a) {
+  if (shape < 3) return 1;
+  let k = PI / shape, t = ((((a - rot) % (2 * k)) + 2 * k) % (2 * k)) - k;
+  return Math.cos(k) / Math.cos(t);
+}
+
+// Band of a circle or regular polygon from angle a0 to a1: outer radius r,
+// constant thickness T (T >= r gives a wedge to the centre). The building block
+// for broken shells, sectors and bezels. Polygon corners are always sampled.
+function symShellArc(cx, cy, r, T, shape, rot, a0, a1) {
+  let k = shape >= 3 ? PI / shape : 0;
+  let steps = Math.max(6, Math.ceil(Math.abs(a1 - a0) / 0.035));
+  let angs = [];
+  for (let i = 0; i <= steps; i++) angs.push(a0 + (a1 - a0) * i / steps);
+  if (k) {
+    let lo = Math.min(a0, a1), hi = Math.max(a0, a1);
+    for (let j = Math.ceil((lo - rot) / (2 * k)); rot + j * 2 * k < hi; j++) angs.push(rot + j * 2 * k);
+    angs.sort((p, q) => (a1 > a0 ? p - q : q - p));
+    angs = angs.filter((a, i) => i === 0 || Math.abs(a - angs[i - 1]) > 1e-4);
+  }
+  let outer = [], inner = [];
+  for (let a of angs) {
+    let f = symRhoAt(shape, rot, a), c = Math.cos(a), s = Math.sin(a);
+    let ro = r * f, ri = k ? Math.max(0, r * Math.cos(k) - T) / Math.cos(k) * f : Math.max(0, r - T);
+    outer.push([cx + c * ro, cy + s * ro]);
+    if (ri > 0.01) inner.push([cx + c * ri, cy + s * ri]);
+  }
+  return inner.length ? outer.concat(inner.reverse()) : outer.concat([[cx, cy]]);
+}
+
+// Bar of thickness t from (x1,y1) to (x2,y2). Caps: 'square' | 'chamfer' | 'point'.
+function symBar(x1, y1, x2, y2, t, cap1, cap0) {
+  let dx = x2 - x1, dy = y2 - y1, L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L;
+  let nx = -uy * t / 2, ny = ux * t / 2;
+  let cap = (px, py, ox, oy, nx, ny, style) => {
+    if (style === 'point') return [[px + nx, py + ny], [px + ox * t * 0.55, py + oy * t * 0.55], [px - nx, py - ny]];
+    if (style === 'chamfer') {
+      let c = t * 0.3;
+      return [[px + nx - ox * c, py + ny - oy * c], [px + nx * 0.4, py + ny * 0.4], [px - nx * 0.4, py - ny * 0.4], [px - nx - ox * c, py - ny - oy * c]];
+    }
+    return [[px + nx, py + ny], [px - nx, py - ny]];
+  };
+  return cap(x2, y2, ux, uy, nx, ny, cap1).concat(cap(x1, y1, -ux, -uy, -nx, -ny, cap0));
+}
+
+// Chevron band pointing up: apex at (0, y0), arms reaching (+-w, y0 + h), vertical
+// thickness tv. With split, the apex is cut by a stencil gap and two halves return.
+function symChevron(y0, w, h, tv, split, gap) {
+  let full = [[-w, y0 + h - tv], [0, y0], [w, y0 + h - tv], [w, y0 + h], [0, y0 + tv], [-w, y0 + h]];
+  if (!split) return [full];
+  let f = gap / w, yt = y0 + (h - tv) * f, yb = y0 + tv + (h - tv) * f;
+  return [[[-w, y0 + h - tv], [-gap, yt], [-gap, yb], [-w, y0 + h]],
+          [[w, y0 + h - tv], [w, y0 + h], [gap, yb], [gap, yt]]];
+}
+
+const SYM_GLYPH_FAMILIES = ['radial', 'rune', 'enclosed', 'sector', 'orbital', 'chevron', 'frames', 'star', 'hourglass'];
+
+// Build one sign in local coordinates (centre 0,0, radius R, stroke thickness T).
+// Returns { M: [{ c: [outer, ...holes], d: max inset depth, tag }], L: thin
+// polylines, acc: [x, y] of the one asymmetric accent }. Stays within ~R + T.
+function symGlyphForm(fam, R, T, prng, depth) {
+  let M = [], L = [], acc = [R * 0.7, -R * 0.7];
+  let add = (c, d, tag) => { M.push({ c: Array.isArray(c[0][0]) ? c : [c], d: Math.max(0.5, d), tag: tag || '' }); };
+  let g = T * 0.42;                          // stencil gap, shared by every family
+  let cap = prng.pick(['square', 'chamfer', 'point', 'chamfer']);
+  switch (fam) {
+    case 'radial': {
+      let N = prng.pick([3, 4, 5, 6, 8]);
+      let el = prng.pick(['bar', 'wedge', 'sector', 'fork', 'kite']);
+      let coreK = prng.nextInt(0, 2), innerK = prng.nextInt(0, 2), outerRing = prng.nextFloat() < 0.5;
+      if (N <= 4 && !outerRing) innerK = 2;   // sparse arm counts read cleaner without satellites
+      let accI = prng.nextInt(0, N - 1);
+      let rot = -HALF_PI + (prng.nextFloat() < 0.5 ? 0 : PI / N);
+      let r0 = R * (0.36 + prng.nextFloat() * 0.06);
+      let r1 = outerRing ? R * 0.74 : R;
+      let t = Math.min(T, r0 * TWO_PI / N * 0.45);
+      if (coreK === 0) add([symCircle(0, 0, R * 0.1 + t * 0.9), symCircle(0, 0, R * 0.1)], t * 0.45, 'core');
+      else if (coreK === 1) add(symNgon(0, 0, R * 0.22, N, rot), R * 0.16, 'core');
+      else add(symCircle(0, 0, R * 0.18), R * 0.18, 'core');
+      for (let i = 0; i < N; i++) {
+        let a = rot + i * TWO_PI / N, c = Math.cos(a), s = Math.sin(a);
+        if (el === 'bar') add(symBar(c * r0, s * r0, c * r1, s * r1, t, cap, 'square'), t / 2);
+        else if (el === 'wedge') {
+          let hw = Math.min(t * 1.3, r0 * Math.sin(PI / N) * 0.8);
+          add([[c * r0 - s * hw, s * r0 + c * hw], [c * r1, s * r1], [c * r0 + s * hw, s * r0 - c * hw]], hw * 0.55);
+        } else if (el === 'sector') {
+          let sp = TWO_PI / N * 0.24;
+          add(symShellArc(0, 0, r1, r1 - r0, 0, 0, a - sp, a + sp), Math.min(r1 - r0, r0 * sp * 2) * 0.5);
+        } else if (el === 'fork') {
+          let rf = r0 + (r1 - r0) * 0.55, rc = rf + g + t / 2;
+          let hl = Math.min(t * 1.7, rc * Math.sin(PI / N) * 0.8);
+          add(symBar(c * r0, s * r0, c * rf, s * rf, t, 'square', 'square'), t / 2);
+          add(symBar(c * rc - s * hl, s * rc + c * hl, c * rc + s * hl, s * rc - c * hl, t, cap, cap), t / 2);
+        } else {
+          let rm = r0 + (r1 - r0) * 0.38, hw = Math.min(t * 1.35, rm * Math.sin(PI / N) * 0.72);
+          add([[c * r0, s * r0], [c * rm - s * hw, s * rm + c * hw], [c * r1, s * r1], [c * rm + s * hw, s * rm - c * hw]], hw * 0.5);
+        }
+        // Secondary marks between the arms: scale contrast
+        let am = a + PI / N, cm = Math.cos(am), sm = Math.sin(am);
+        if (innerK === 0) { let rr = r0 + (r1 - r0) * 0.62; add(symCircle(cm * rr, sm * rr, t * 0.3, 16), t * 0.3); }
+        else if (innerK === 1) { let ra = r0 + (r1 - r0) * 0.3, rb = r0 + (r1 - r0) * 0.62; add(symBar(cm * ra, sm * ra, cm * rb, sm * rb, t * 0.42, 'square', 'square'), t * 0.21); }
+      }
+      if (outerRing) {
+        let tr = t * 0.5, dl = (t * 0.6 + g) / R;
+        for (let i = 0; i < N; i++) {
+          let a = rot + i * TWO_PI / N;
+          add(symShellArc(0, 0, R, tr, 0, 0, a + dl, a + TWO_PI / N - dl), tr / 2);
+        }
+      }
+      let aa = rot + accI * TWO_PI / N;
+      let ra = outerRing ? R + g + t * 0.4 : r1 + g + t * (cap === 'point' ? 0.95 : 0.4);
+      acc = [Math.cos(aa) * ra, Math.sin(aa) * ra];
+      add(symCircle(acc[0], acc[1], t * 0.36, 16), t * 0.36, 'acc');
+      break;
+    }
+    case 'rune': {
+      let W = R * 0.68, H = R * 0.94, t = T;
+      let top = prng.pick(['cross', 'vee', 'bowl', 'vee', 'cross']);
+      let mid = prng.pick(['cross', 'bowl', 'none', 'gap', 'cross']);
+      let bot = prng.pick(['cross', 'hook', 'vee', 'none']);
+      if (mid === 'bowl' && top === 'bowl') mid = 'cross';
+      let accSide = prng.nextFloat() < 0.5 ? -1 : 1, accBand = prng.nextInt(0, 2);
+      if ([top, mid, bot].filter(b => b === 'none' || b === 'gap').length >= 2) mid = 'cross';
+      let sx = t / 2 + g, sxd = t * 0.9 + g;
+      if (mid === 'gap') {
+        add(symBar(0, -t * 0.9, 0, -H, t, cap, 'square'), t / 2, 'core');
+        add(symBar(0, t * 0.9, 0, H, t, cap, 'square'), t / 2, 'core');
+      } else add(symBar(0, H, 0, -H, t, cap, cap), t / 2, 'core');
+      let band = (kind, yc, yEdge, half) => {
+        for (let sd = -1; sd <= 1; sd += 2) {
+          if (kind === 'cross') add(symBar(sd * sx, yc, sd * W, yc, t, cap, 'square'), t / 2);
+          else if (kind === 'vee') add(symBar(sd * sxd, yc, sd * W, yEdge, t, cap, 'square'), t / 2);
+          else if (kind === 'dots') add(symNgon(sd * W * 0.78, yc, t * 0.62, 4, PI / 4), t * 0.4);
+          else if (kind === 'hook') {
+            add(symBar(sd * sx, yEdge, sd * W, yEdge, t, 'square', 'square'), t / 2);
+            add(symBar(sd * W, yEdge - Math.sign(yEdge) * (t / 2 + g), sd * W, yc, t, cap, 'square'), t / 2);
+          } else if (kind === 'bowl') {
+            let rb = Math.min(W * 0.85, half);
+            if (rb - t > sx + t * 0.15) {
+              let dl = Math.asin(Math.min(0.95, (sx + t * 0.1) / (rb - t)));
+              let a0 = sd > 0 ? -HALF_PI + dl : HALF_PI + dl, a1 = sd > 0 ? HALF_PI - dl : PI + HALF_PI - dl;
+              add(symShellArc(0, yc, rb, t, 0, 0, a0, a1), t / 2);
+            } else add(symBar(sd * sx, yc, sd * W, yc, t, cap, 'square'), t / 2);
+          }
+        }
+      };
+      band(top, top === 'cross' ? -H + t / 2 : top === 'vee' ? -H * 0.28 : -H * 0.64, -H + t / 2, H * 0.34);
+      band(mid === 'gap' ? 'none' : mid, 0, 0, H * 0.3);
+      band(bot, bot === 'cross' ? H - t / 2 : bot === 'vee' ? H * 0.28 : H * 0.42, H - t / 2, H * 0.34);
+      let ay = [-H * 0.64, 0, H * 0.64][accBand];
+      acc = [accSide * (W + g + t * 0.45), ay];
+      add(symNgon(acc[0], acc[1], t * 0.42, 4, PI / 4), t * 0.3, 'acc');
+      break;
+    }
+    case 'enclosed': {
+      let shape = prng.pick([0, 0, 4, 6, 8]);
+      let rot = shape === 4 ? prng.pick([0, PI / 4]) : -HALF_PI;
+      let nGaps = prng.pick([2, 4, shape >= 3 ? shape : 3]);
+      let gapRot = (prng.nextFloat() < 0.5 ? -HALF_PI : -HALF_PI + PI / nGaps);
+      let innerFam = prng.pick(['radial', 'rune', 'star', 'sector', 'radial']);
+      let pa = -HALF_PI + PI / 4 + prng.nextInt(0, 3) * HALF_PI + PI / 8;
+      let ts = T * 0.85, ga = g * 2.2 / R;
+      for (let i = 0; i < nGaps; i++) {
+        let a0 = gapRot + i * TWO_PI / nGaps + ga / 2, a1 = gapRot + (i + 1) * TWO_PI / nGaps - ga / 2;
+        add(symShellArc(0, 0, R, ts, shape, rot, a0, a1), ts / 2, 'shell');
+      }
+      let apo = (shape >= 3 ? R * Math.cos(PI / shape) : R) - ts - g * 1.6;
+      let sub = symGlyphForm(innerFam, apo / 1.22, T * 0.72, prng, (depth || 0) + 1);
+      for (let m of sub.M) if (m.tag !== 'acc') M.push(m);
+      for (let l of sub.L) L.push(l);
+      // Pointer notch outside the shell: the asymmetric accent
+      let ro = R * symRhoAt(shape, rot, pa) + g, c = Math.cos(pa), s = Math.sin(pa), hw = T * 0.55;
+      add([[c * ro, s * ro], [c * (ro + T) - s * hw, s * (ro + T) + c * hw], [c * (ro + T) + s * hw, s * (ro + T) - c * hw]], hw * 0.5, 'acc');
+      acc = [c * (ro + T * 0.6), s * (ro + T * 0.6)];
+      break;
+    }
+    case 'sector': {
+      let K = prng.pick([2, 3, 3, 4, 6]);
+      let rot = -HALF_PI + (prng.nextFloat() < 0.5 ? 0 : PI / K);
+      let span = TWO_PI / K * (0.42 + prng.nextFloat() * 0.16);
+      let alt = K >= 4 && prng.nextFloat() < 0.6, ring = prng.nextFloat() < 0.55;
+      let r0 = R * 0.3, r1 = ring ? R * 0.78 : R;
+      add(symCircle(0, 0, R * 0.17), R * 0.17, 'core');
+      for (let i = 0; i < K; i++) {
+        let a = rot + i * TWO_PI / K, rr = alt && i % 2 ? r0 + (r1 - r0) * 0.62 : r1;
+        add(symShellArc(0, 0, rr, rr - r0, 0, 0, a - span / 2, a + span / 2), Math.min(rr - r0, r0 * span) * 0.5);
+      }
+      if (ring) {
+        let tr = T * 0.45, dl = (g * 1.2) / R;
+        for (let i = 0; i < K; i++) {
+          let a = rot + i * TWO_PI / K;
+          add(symShellArc(0, 0, R, tr, 0, 0, a + dl, a + TWO_PI / K - dl), tr / 2);
+        }
+      }
+      let am = rot + PI / K, rm = (r0 + r1) * 0.55;
+      acc = [Math.cos(am) * rm, Math.sin(am) * rm];
+      add(symCircle(acc[0], acc[1], T * 0.34, 16), T * 0.34, 'acc');
+      break;
+    }
+    case 'orbital': {
+      let rc = R * (0.26 + prng.nextFloat() * 0.06);
+      let nOrb = prng.nextInt(1, 2), tilt0 = prng.nextFloat() * PI;
+      let orbs = [];
+      for (let o = 0; o < nOrb; o++) orbs.push({ rx: R * (0.98 - o * 0.1), ry: R * (0.24 + prng.nextFloat() * 0.18), tilt: tilt0 + o * PI / 2.6, n: prng.nextInt(1, 2), ph: prng.nextFloat() * TWO_PI });
+      add(symCircle(0, 0, rc), rc, 'core');
+      let rh = rc + g + T * 0.4;
+      add(symShellArc(0, 0, rh, T * 0.4, 0, 0, -HALF_PI + 0.25, HALF_PI - 0.25), T * 0.2);
+      add(symShellArc(0, 0, rh, T * 0.4, 0, 0, HALF_PI + 0.25, PI + HALF_PI - 0.25), T * 0.2);
+      let sats = [];
+      orbs.forEach((ob, o) => {
+        for (let k = 0; k < ob.n; k++) {
+          let th = k * PI + (ob.ph / TWO_PI - 0.5) * 0.9, ex = Math.cos(th) * ob.rx, ey = Math.sin(th) * ob.ry;
+          let c = Math.cos(ob.tilt), s = Math.sin(ob.tilt);
+          let big = o === 0 && k === 0;
+          sats.push([ex * c - ey * s, ex * s + ey * c, T * (big ? 0.62 : 0.34)]);
+        }
+      });
+      for (let st of sats) add(symCircle(st[0], st[1], st[2], 20), st[2], st[2] > T * 0.5 ? 'acc' : '');
+      acc = [sats[0][0], sats[0][1]];
+      // Orbit tracks: parallel ellipse pairs, broken behind the core and around satellites
+      orbs.forEach(ob => {
+        let c = Math.cos(ob.tilt), s = Math.sin(ob.tilt);
+        for (let p = 0; p < 2; p++) {
+          let rx = ob.rx - p * T * 0.2, ry = ob.ry - p * T * 0.2, run = [];
+          let n = 160;
+          for (let i = 0; i <= n; i++) {
+            let th = i / n * TWO_PI, ex = Math.cos(th) * rx, ey = Math.sin(th) * ry;
+            let px = ex * c - ey * s, py = ex * s + ey * c;
+            let hidden = (Math.hypot(px, py) < rh + g && ey < 0) || sats.some(st => Math.hypot(px - st[0], py - st[1]) < st[2] + g);
+            if (hidden) { if (run.length > 1) L.push(run); run = []; } else run.push([px, py]);
+          }
+          if (run.length > 1) L.push(run);
+        }
+      });
+      break;
+    }
+    case 'chevron': {
+      let n = prng.nextInt(2, 3), split = prng.nextFloat() < 0.5, base = prng.pick(['bar', 'dot', 'bar', 'none']);
+      let accSide = prng.nextFloat() < 0.5 ? -1 : 1;
+      let w = R * 0.84, h = R * 0.6, tv = T * 1.1, step = tv + g * 1.7;
+      let total = h + (n - 1) * step + (base === 'bar' ? g * 1.6 + T : 0) + (base === 'dot' ? g * 1.6 + T : 0);
+      let y = -total / 2 + (base === 'dot' ? g * 1.6 + T : 0);
+      if (base === 'dot') add(symNgon(0, y - g * 1.6 - T * 0.5, T * 0.62, 4, PI / 4), T * 0.4);
+      for (let i = 0; i < n; i++) for (let c of symChevron(y + i * step, w, h, tv, split, g)) add(c, tv * 0.4, i === 0 ? 'core' : '');
+      let yb = y + (n - 1) * step + h + g * 1.6 + T / 2;
+      if (base === 'bar') {
+        add(symBar(-g, yb, -w * 0.62, yb, T, cap, 'square'), T / 2);
+        add(symBar(g, yb, w * 0.62, yb, T, cap, 'square'), T / 2);
+      }
+      acc = [accSide * w * 0.86, base === 'bar' ? yb : y + (n - 1) * step + h + T * 0.6];
+      add(symNgon(acc[0], acc[1], T * 0.4, 4, PI / 4), T * 0.28, 'acc');
+      break;
+    }
+    case 'frames': {
+      let t = T * 0.8, cornerGaps = prng.nextFloat() < 0.5, centre = prng.pick(['square', 'circle', 'cross']);
+      let accC = prng.nextInt(0, 3);
+      let gr = cornerGaps ? PI / 4 : 0, ga = g * 2.4 / R;
+      for (let i = 0; i < 4; i++) {
+        let a0 = gr + i * HALF_PI + ga / 2, a1 = gr + (i + 1) * HALF_PI - ga / 2;
+        add(symShellArc(0, 0, R, t, 4, PI / 4, a0, a1), t / 2, 'shell');
+      }
+      let Ri = R * Math.SQRT1_2 - t - g * 1.4, t2 = t * 0.8, gr2 = cornerGaps ? PI / 4 : 0, ga2 = g * 2.4 / Ri;
+      for (let i = 0; i < 4; i++) {
+        let a0 = gr2 + i * HALF_PI + ga2 / 2, a1 = gr2 + (i + 1) * HALF_PI - ga2 / 2;
+        add(symShellArc(0, 0, Ri, t2, 4, 0, a0, a1), t2 / 2);
+      }
+      let rc = (Ri * Math.SQRT1_2 - t2 - g * 1.2);
+      if (centre === 'square') add(symNgon(0, 0, rc, 4, PI / 4), rc * 0.6, 'core');
+      else if (centre === 'circle') add(symCircle(0, 0, rc * 0.78), rc * 0.78, 'core');
+      else { add(symBar(0, -rc * 0.9, 0, rc * 0.9, t2, cap, cap), t2 / 2, 'core'); add(symBar(-t2 / 2 - g, 0, -rc * 0.9, 0, t2, cap, 'square'), t2 / 2); add(symBar(t2 / 2 + g, 0, rc * 0.9, 0, t2, cap, 'square'), t2 / 2); }
+      let ca = PI / 4 + accC * HALF_PI, cr = R + g + T * 0.45;
+      acc = [Math.cos(ca) * cr, Math.sin(ca) * cr];
+      add(symNgon(acc[0], acc[1], T * 0.45, 4, PI / 4), T * 0.3, 'acc');
+      break;
+    }
+    case 'star': {
+      let N = prng.pick([4, 4, 5, 6, 8]);
+      let ri = N === 4 ? 0.28 + prng.nextFloat() * 0.1 : N === 8 ? 0.55 : 0.44;
+      let rot = -HALF_PI + (N === 4 && prng.nextFloat() < 0.4 ? PI / 4 : 0);
+      let longI = prng.nextInt(0, N - 1), hole = prng.nextFloat() < 0.6, notchMarks = prng.nextFloat() < 0.7;
+      let Ro = R * 0.84, pts = [];
+      for (let i = 0; i < N * 2; i++) {
+        let a = rot + i * PI / N, r = i % 2 === 0 ? (i / 2 === longI ? R * 1.04 : Ro) : Ro * ri;
+        pts.push([Math.cos(a) * r, Math.sin(a) * r]);
+      }
+      let rin = Ro * ri;
+      let c = [pts];
+      if (hole) c.push(symCircle(0, 0, rin * 0.42));
+      add(c, rin * Math.sin(PI / N) * 0.75, 'core');
+      if (notchMarks) for (let i = 0; i < N; i++) {
+        let a = rot + (i + 0.5) * TWO_PI / N, rr = rin + g * 1.5 + T * 0.4;
+        add(symNgon(Math.cos(a) * rr, Math.sin(a) * rr, T * 0.32, 4, a), T * 0.2);
+      }
+      let la = rot + longI * TWO_PI / N;
+      acc = [Math.cos(la) * R * 1.04, Math.sin(la) * R * 1.04];
+      break;
+    }
+    case 'hourglass': {
+      let W = R * 0.8, H = R * 0.84, t = T * 0.9, ty = t / 2 + g;
+      let caps = prng.nextFloat() < 0.6, accSide = prng.nextFloat() < 0.5 ? -1 : 1;
+      let xt = W * ty / H;
+      add([[-W, -H], [W, -H], [xt, -ty], [-xt, -ty]], Math.min(H - ty, W) * 0.3, 'core');
+      add([[-W, H], [-xt, ty], [xt, ty], [W, H]], Math.min(H - ty, W) * 0.3);
+      add(symBar(-g * 0.6, 0, -W, 0, t, cap, 'square'), t / 2);
+      add(symBar(g * 0.6, 0, W, 0, t, cap, 'square'), t / 2);
+      if (caps) {
+        let yc = H + g + t * 0.25;
+        add(symBar(-W * 0.7, -yc, W * 0.7, -yc, t * 0.5, 'square', 'square'), t * 0.25);
+        add(symBar(-W * 0.7, yc, W * 0.7, yc, t * 0.5, 'square', 'square'), t * 0.25);
+      }
+      acc = [accSide * W * 0.92, H * 0.42];
+      add(symCircle(acc[0], acc[1], T * 0.34, 16), T * 0.34, 'acc');
+      break;
+    }
+  }
+  return { M, L, acc };
+}
+
+// Inset-contour ("engraved") fill of one mass, holes growing as the outer shrinks.
+function symContourFill(m, sp) {
+  kitWeight('fine');
+  for (let dd = sp; dd < m.d - sp * 0.35; dd += sp) {
+    symShape(symInset(m.c[0], dd));
+    for (let h = 1; h < m.c.length; h++) symShape(symInset(m.c[h], -dd));
+  }
+}
+
+// Render a form at (cx, cy). o: { fill: full fill style | null, accentFill: style
+// for 'core' / 'acc' masses | null, band: inset outline count, bandGap, outline: weight role }
+function symRenderForm(form, cx, cy, o) {
+  let M = form.M.map(m => ({ c: m.c.map(c => c.map(p => [p[0] + cx, p[1] + cy])), d: m.d, tag: m.tag }));
+  for (let m of M) {
+    let st = o.fill || ((m.tag === 'core' || m.tag === 'acc') ? o.accentFill : null);
+    if (!st) continue;
+    if (st.kind === 'contour' && m.c.length === 1) symContourFill(m, st.spacing);
+    else kitFillContours(m.c, st.kind === 'contour' ? { kind: 'hatch', angle: 45, spacing: st.spacing } : st);
+  }
+  if (o.band > 0) {
+    kitWeight('secondary');
+    for (let m of M) {
+      if (o.fill || ((m.tag === 'core' || m.tag === 'acc') && o.accentFill)) continue;
+      for (let i = 1; i <= o.band; i++) {
+        let dd = i * o.bandGap;
+        if (dd > m.d * (o.band > 9 ? 0.92 : 0.72)) break;
+        symShape(symInset(m.c[0], dd));
+        for (let h = 1; h < m.c.length; h++) symShape(symInset(m.c[h], -dd));
+      }
+    }
+  }
+  kitWeight(o.outline || 'primary');
+  for (let m of M) for (let c of m.c) symShape(c);
+  if (form.L.length) {
+    kitWeight('secondary');
+    for (let l of form.L) svgPolyline(l.map(p => [p[0] + cx, p[1] + cy]));
+  }
+}
+
+// kitText with an animation seed, but PRNG-stable across frames: drawAnimText
+// skips its font roll on frames where the text is hidden, so consume it here.
+function symAnimText(str, x, y, size, align, seed, hint) {
+  kitText(str, x, y, size, align, seed, hint);
+  if (animCtx && seed) {
+    let prof = getAnimProfile(seed, _cellScale);
+    if (prof.active && !applyPresence(prof, animCtx.frameIndex, animCtx.frameCount, animCtx.t).visible) measureFallbackText(str, size);
+  }
+}
+
+// Registration mark: small circle with a cross through it.
+function symRegMark(x, y, r) {
+  svgCircle(x, y, r * 1.2);
+  svgLine(x - r * 1.4, y, x + r * 1.4, y);
+  svgLine(x, y - r * 1.4, x, y + r * 1.4);
+}
+
+// Construction field around a radial sign: bearing ring with graduations,
+// axis ticks, registration marks, spec block, accent callout and designation
+// plate. Everything sheds along DETAIL_SHEDDING; nothing here animates except
+// the plate's status word. rc = radius of the bearing ring, acc = accent
+// offset from the centre. info: { designation, status, labelSeed, spec: [lines] }
+function symField(rect, s, cx, cy, rc, acc, info) {
+  let { x, y, w, h } = rect;
+  let m = Math.min(w, h);
+  let body = kitType(rect, 'body'), micro = kitType(rect, 'micro');
+  let labelsOn = detailActive('primaryLabels', s) && m > 150;
+  if (detailActive('secondaryRings', s) && m > 90) {
+    kitWeight('fine');
+    if (detailActive('primaryLabels', s) && rc * 1.12 < m / 2) {
+      // Bearing ring: graduated scale, numerals at the micro end of the range
+      let n = Math.round(18 * Math.min(3, kitDensity(rect))) * 4;
+      let numerals = s < 0.45 && rc > micro * 14;
+      kitTickRing(cx, cy, rc, { count: n, major: n / 8, len: Math.max(3, rc * 0.045), inward: false, baseline: true,
+                                labels: numerals, labelSize: micro, labelFn: (i) => String((Math.round(i * 360 / n) + 90) % 360).padStart(3, '0') });
+      kitWeight('fine');
+      drawDashedRing(cx, cy, rc * 0.955, Math.max(24, Math.round(rc / 4)));
+    } else {
+      drawDashedRing(cx, cy, rc, Math.max(24, Math.round(rc / 5)));
+    }
+  }
+  let rOut = rc * (s < 0.45 ? 1.13 : 1.06);
+  if (detailActive('crosshairs', s) && m > 110) {
+    kitWeight('fine');
+    let r2 = Math.min(m / 2 - 2, rOut + rc * 0.16);
+    for (let i = 0; i < 4; i++) {
+      if (i === 1 && labelsOn) continue; // the designation plate sits there
+      let a = i * HALF_PI, c = Math.cos(a), sn = Math.sin(a);
+      if (r2 > rOut) svgLine(cx + c * rOut, cy + sn * rOut, cx + c * r2, cy + sn * r2);
+    }
+  }
+  let q = Math.min(m / 2 - micro, rc * 1.25), rr = Math.max(2.5, m * 0.012);
+  if (detailActive('cornerBrackets', s) && m > 140) {
+    kitWeight('fine');
+    for (let i = 0; i < 4; i++) symRegMark(cx + (i % 2 ? q : -q), cy + (i < 2 ? -q : q), rr);
+    // Specification block tucked into the lower-left corner
+    let lines = info.spec;
+    let bw = Math.max(...lines.map(l => measureFallbackText(l, micro)));
+    let bx = cx - q + rr * 2.6, by = cy + q - micro * 0.3;
+    let cornerGap = Math.hypot(bx + bw - cx, by - micro * 3.6 - cy);
+    if (m > 260 && cornerGap > rc * 1.08) {
+      kitWeight('fine');
+      for (let i = 0; i < lines.length; i++) kitText(lines[i], bx, by - (lines.length - 1 - i) * micro * 1.35, micro);
+    }
+  }
+  if (labelsOn) {
+    // Callout from the accent out to a free corner
+    let ax = cx + acc[0], ay = cy + acc[1];
+    let qx = acc[0] >= 0 ? 1 : -1, qy = acc[1] >= 0 ? 1 : -1;
+    let lx = cx + qx * rc * 0.98, ly = cy + qy * rc * 0.86;
+    let lw = measureFallbackText(info.designation, micro) + micro;
+    if ((qx > 0 ? x + w - lx : lx - x) > lw + micro && ly - micro > y && ly + micro * 2 < y + h) {
+      kitCallout(ax, ay, lx, ly, info.designation, null, micro);
+    }
+    // Designation plate under the glyph
+    let py = cy + rOut + body * 1.5;
+    let tw = measureFallbackText(info.status, body);
+    if (py + body * 0.4 < y + h && tw < m * 0.8) {
+      kitWeight('fine');
+      svgLine(cx - tw / 2 - body, py - body * 1.25, cx + tw / 2 + body, py - body * 1.25);
+      kitWeight('secondary');
+      symAnimText(info.status, cx, py, body, 'center', info.labelSeed, 'bus:status');
+    }
+  }
+
+}
+
 function composeStandaloneGlyph(rect, s, prng) {
   let { x, y, w, h } = rect;
   let cx = x + w / 2, cy = y + h / 2;
-  let size = Math.min(w, h) * (0.5 + s * 0.25);
-  let r = size / 2;
+  let m = Math.min(w, h);
+  let u = Math.max(0, Math.min(1, (s - 0.35) / 0.65));   // 0 at the micro end of the range, 1 at deep macro
 
   svgRec.beginGroup('standalone-glyph');
 
-  // Animation setup — breathing scale and slow rotation
+  // Animation setup — breathing scale and slow rotation (PRNG consumed unconditionally)
   let elemSeed = prng.nextInt(0, 0xFFFFFF);
+  let zone = getAnimZoneParams(s);
+  let glyphCycle = prng.nextInt(zone.minCycle, zone.maxCycle);
   let animated = shouldAnimate(elemSeed);
-  let zone = animated ? getAnimZoneParams(s) : null;
-  let glyphCycle = animated ? prng.nextInt(zone.minCycle, zone.maxCycle) : 0;
-  let glyphPhase = animated ? (elemSeed % 1000) / 1000 : 0;
+  let glyphPhase = (elemSeed % 1000) / 1000;
   let breathScale = animated ? 1 + anim.oscillate(animCtx.frameIndex, animCtx.frameCount, glyphCycle, animCtx.speedMul, animCtx.motionAmount * 0.03, glyphPhase) : 1;
   // Audio-reactive breathing: modulate by waveform energy
   if (breathScale !== 1 && _compBus && _compBus.audioWaveform) {
@@ -8421,702 +8921,361 @@ function composeStandaloneGlyph(rect, s, prng) {
     breathScale = 1 + (breathScale - 1) * (0.5 + _compBus.audioWaveform[wIdx] * 1.5);
   }
   let slowRot = animated ? anim.rotate(animCtx.frameIndex, animCtx.frameCount, glyphCycle * 6, animCtx.speedMul * 0.3, glyphPhase) * animEnvelope(animCtx.t, 'swell', ease.inOutCubic) * animCtx.motionAmount * (_compBus ? _compBus.dramaCurve : 1) : 0;
+
+  // Form selection
+  let fam = SYM_GLYPH_FAMILIES[prng.nextInt(0, SYM_GLYPH_FAMILIES.length - 1)];
+  if (_cellOverrideVariant && SYM_GLYPH_FAMILIES.includes(_cellOverrideVariant)) fam = _cellOverrideVariant;
+  _cellVariantInfo = fam;
+  let fill = kitFillStyle(s, prng);
+  let accentKind = prng.nextFloat(), hatchAng = prng.pick([45, 135, 30, 60, 0, 90]);
+  let tRatio = 0.14 + prng.nextFloat() * 0.04;
+  let designation = textGen.identifier(prng), code = textGen.coordinate(prng), status = textGen.statusLabel(prng);
+  let labelSeed = prng.nextInt(1, 0xFFFFFF);
+  let calloutQuad = prng.nextInt(0, 3);
+
+  // Big glyph at macro, smaller with a construction field around it toward micro
+  let R = m * (0.27 + 0.13 * u);
+  let T = R * (tRatio + 0.05 * u);
+  let form = symGlyphForm(fam, R, T, prng, 0);
+  let ext = R + T * 1.1;   // reach of the form including its accent
+
+  let pen = unitToPx(state.plotter.hatch.penDiameter, 'mm', state.plotter.dpi);
+  let accentFill = (!fill && s >= 0.42) ? { kind: accentKind < 0.55 ? 'hatch' : 'contour', angle: hatchAng, spacing: Math.max(pen * 1.6, 2.2) } : null;
+  // Without a fill style the silhouette gets its weight from engraved inset
+  // contours: one inner line at the micro end, full engraving toward macro.
+  let engrave = !fill && s >= 0.72;
+  let band = fill ? 0 : engrave ? 99 : s < 0.5 ? 1 : 2 + Math.floor((s - 0.5) / 0.08);
+  let bandGap = engrave ? Math.max(T * 0.075, pen * 1.7) : Math.max(T * 0.12, pen * 1.6);
+
+  // Glyph (animated group); everything around it stays still (rule 14)
   let hasGlyphAnim = breathScale !== 1 || slowRot !== 0;
   if (hasGlyphAnim) {
     let deg = slowRot * 180 / PI;
     svgRec.beginGroupWithTransform('anim-glyph', `translate(${svgRec._r(cx)}, ${svgRec._r(cy)}) rotate(${svgRec._r(deg)}) scale(${breathScale.toFixed(4)}) translate(${svgRec._r(-cx)}, ${svgRec._r(-cy)})`);
     push(); translate(cx, cy); rotate(slowRot); scale(breathScale); translate(-cx, -cy);
   }
-
-  // Determine clone intensity based on scale
-  // Mid-to-macro (0.35-0.85): busier clones; deep macro (>0.85): fade out
-  let cloneChance = 0;
-  let maxClones = 2;
-  if (s >= 0.35 && s < 0.55) { cloneChance = 0.35; maxClones = 3; }
-  else if (s >= 0.55 && s < 0.75) { cloneChance = 0.55; maxClones = 4; }
-  else if (s >= 0.75 && s < 0.85) { cloneChance = 0.40; maxClones = 3; }
-  else if (s >= 0.85) { cloneChance = 0.12; maxClones = 2; }
-
-  let useClones = prng.nextFloat() < cloneChance;
-  let cloneCount = useClones ? prng.nextInt(2, maxClones) : 0;
-  let baseRotation = prng.nextFloat() * TWO_PI;
-
-  // Choose a bold shape — expanded variant pool with triangles + orbital
-  let choice = prng.nextFloat();
-  if (choice < 0.08) {
-    // Star
-    generateStarElement(cx, cy, size, s, prng);
-    if (cloneCount > 0) {
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.5);
-      let auxR = r * (0.55 + prng.nextFloat() * 0.2);
-      drawRotationalClones(cx, cy, cloneCount, baseRotation, (i) => {
-        drawStar(cx, cy - r * 0.5, auxR * 0.3, auxR * 0.12, prng.nextInt(3, 5));
-      });
-      svgSetStrokeWeight(state.geometry.strokeWeight);
-    }
-  } else if (choice < 0.14) {
-    // Gear
-    generateGearElement(cx, cy, size, s, prng);
-  } else if (choice < 0.19) {
-    // Radiation trefoil
-    for (let i = 0; i < 3; i++) {
-      let a = (i / 3) * TWO_PI - HALF_PI;
-      svgArc(cx, cy, r * 1.4, r * 1.4, a - 0.4, a + 0.4);
-    }
-    svgCircle(cx, cy, r * 0.3);
-  } else if (choice < 0.25) {
-    // Hourglass / bowtie
-    svgBeginShape();
-    svgVertex(cx - r, cy - r); svgVertex(cx + r, cy + r);
-    svgVertex(cx + r, cy - r); svgVertex(cx - r, cy + r);
-    svgEndShape(true);
-    if (cloneCount > 0) {
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.45);
-      let sr = r * 0.55;
-      drawRotationalClones(cx, cy, cloneCount, baseRotation, () => {
-        svgBeginShape();
-        svgVertex(cx - sr, cy - sr); svgVertex(cx + sr, cy + sr);
-        svgVertex(cx + sr, cy - sr); svgVertex(cx - sr, cy + sr);
-        svgEndShape(true);
-      });
-      svgSetStrokeWeight(state.geometry.strokeWeight);
-    }
-  } else if (choice < 0.30) {
-    // Hexagonal frame with styled rotational clones
-    drawHexagon(cx, cy, r);
-    if (cloneCount > 0) {
-      for (let c = 1; c <= cloneCount; c++) {
-        let sr = r * (1 - c * 0.2);
-        if (sr > r * 0.15) {
-          svgSetStrokeWeight(state.geometry.strokeWeight * (1 - c * 0.15));
-          let style = pickShapeStyle(prng, c, 0.7);
-          let params = getProgressiveParams(c, sr, cloneCount + 1);
-          drawRegularPolygon(cx, cy, sr, 6, -HALF_PI + (c * TWO_PI) / (cloneCount * 6), style, params);
-        }
-      }
-      svgSetStrokeWeight(state.geometry.strokeWeight);
-    } else if (detailActive('internalDetail', s)) {
-      let innerStyle = pickShapeStyle(prng, 1, 0.5);
-      drawRegularPolygon(cx, cy, r * 0.5, 6, -HALF_PI, innerStyle, getProgressiveParams(1, r * 0.5, 2));
-    }
-  } else if (choice < 0.35) {
-    // Concentric squares (rotated 45°) with styled clone layers
-    svgRect(cx - r * 0.7, cy - r * 0.7, r * 1.4, r * 1.4);
-    drawDiamond(cx, cy, r * 0.85);
-    if (cloneCount > 0) {
-      for (let c = 1; c <= cloneCount; c++) {
-        svgSetStrokeWeight(state.geometry.strokeWeight * (0.7 - c * 0.1));
-        let sr = r * (0.4 + c * 0.15);
-        let rot = (c / (cloneCount + 1)) * (PI / 4);
-        let style = pickShapeStyle(prng, c, 0.7);
-        let params = getProgressiveParams(c, sr, cloneCount + 1);
-        drawRegularPolygon(cx, cy, sr, 4, rot, style, params);
-      }
-      svgSetStrokeWeight(state.geometry.strokeWeight);
-    } else if (detailActive('internalDetail', s)) {
-      svgRect(cx - r * 0.25, cy - r * 0.25, r * 0.5, r * 0.5);
-    }
-  } else if (choice < 0.39) {
-    // Bullseye with styled rings
-    let primaryStyle = pickShapeStyle(prng, 0, 0.5);
-    drawStyledCircle(cx, cy, size, primaryStyle);
-    let midStyle = pickShapeStyle(prng, 1, 0.6);
-    drawStyledCircle(cx, cy, size * 0.65, midStyle, getProgressiveParams(1, size * 0.65, 3));
-    let innerStyle = pickShapeStyle(prng, 2, 0.7);
-    drawStyledCircle(cx, cy, size * 0.35, innerStyle, getProgressiveParams(2, size * 0.35, 3));
-    svgPoint(cx, cy);
-  } else if (choice < 0.44) {
-    // Double chevron with cloned chevrons
-    let chW = r * 1.2, chH = r * 0.8;
-    drawChevron(cx, cy - chH * 0.3, chW, chH, 'up');
-    drawChevron(cx, cy + chH * 0.3, chW, chH, 'up');
-    if (cloneCount > 0) {
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-      drawRotationalClones(cx, cy, cloneCount + 1, baseRotation, () => {
-        drawChevron(cx, cy - r * 0.7, chW * 0.4, chH * 0.4, 'up');
-      });
-      svgSetStrokeWeight(state.geometry.strokeWeight);
-    }
-  } else if (choice < 0.49) {
-    // Diamond lattice with styled rotational echoes
-    drawDiamond(cx, cy, r);
-    svgLine(cx - r * 0.5, cy, cx + r * 0.5, cy);
-    svgLine(cx, cy - r * 0.5, cx, cy + r * 0.5);
-    if (cloneCount > 0) {
-      for (let c = 1; c <= cloneCount; c++) {
-        svgSetStrokeWeight(state.geometry.strokeWeight * (0.55 - c * 0.08));
-        let style = pickShapeStyle(prng, c, 0.7);
-        let sr = r * (0.35 + c * 0.12);
-        let params = getProgressiveParams(c, sr, cloneCount + 1);
-        drawRegularPolygon(cx, cy, sr, 4, 0, style, params); // diamond = 4-gon at rot=0
-      }
-      svgSetStrokeWeight(state.geometry.strokeWeight);
-    } else if (detailActive('internalDetail', s)) {
-      let style = pickShapeStyle(prng, 1, 0.5);
-      drawRegularPolygon(cx, cy, r * 0.45, 4, 0, style, getProgressiveParams(1, r * 0.45, 2));
-    }
-  } else if (choice < 0.54) {
-    // *** TRIANGLE: Equilateral with styled clones ***
-    drawTriangle(cx, cy, r);
-    if (cloneCount > 0) {
-      for (let c = 1; c <= cloneCount; c++) {
-        let sr = r * (1 - c * 0.22);
-        if (sr > r * 0.1) {
-          svgSetStrokeWeight(state.geometry.strokeWeight * (1 - c * 0.18));
-          let style = pickShapeStyle(prng, c, 0.7);
-          let params = getProgressiveParams(c, sr, cloneCount + 1);
-          drawTriangle(cx, cy, sr, -HALF_PI + (c * PI / (cloneCount * 3)), style, params);
-        }
-      }
-      svgSetStrokeWeight(state.geometry.strokeWeight);
-    }
-  } else if (choice < 0.59) {
-    // *** TRIANGLE: Inverted with styled inner ***
-    drawTriangle(cx, cy, r, HALF_PI);
-    if (detailActive('internalDetail', s)) {
-      let innerStyle = pickShapeStyle(prng, 1, 0.6);
-      drawTriangle(cx, cy, r * 0.45, HALF_PI, innerStyle, getProgressiveParams(1, r * 0.45, 2));
-    }
-    if (cloneCount > 0) {
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.45);
-      drawRotationalClones(cx, cy, cloneCount, baseRotation, (i) => {
-        let style = pickShapeStyle(prng, i + 1, 0.6);
-        drawTriangle(cx, cy - r * 0.4, r * 0.2, HALF_PI, style, getProgressiveParams(i + 1, r * 0.2, cloneCount + 1));
-      });
-      svgSetStrokeWeight(state.geometry.strokeWeight);
-    }
-  } else if (choice < 0.71) {
-    // *** GENERATIVE ORBITAL: rings of shapes orbiting a core at quantized angles ***
-    // Highly variable: core shape, satellite shape, orbit count, radius, density all PRNG-driven
-    let coreChoice = prng.nextFloat();
-    let coreR = r * (0.15 + prng.nextFloat() * 0.2);
-    // Draw core
-    if (coreChoice < 0.25) { svgCircle(cx, cy, coreR * 2); }
-    else if (coreChoice < 0.5) { drawTriangle(cx, cy, coreR); }
-    else if (coreChoice < 0.75) { drawDiamond(cx, cy, coreR); }
-    else { drawHexagon(cx, cy, coreR); }
-
-    // 1-3 orbital rings
-    let orbitCount = prng.nextInt(1, 3);
-    if (cloneCount > 0) orbitCount = Math.min(orbitCount + 1, 4);
-    for (let orb = 0; orb < orbitCount; orb++) {
-      let orbitR = r * (0.35 + orb * 0.25 + prng.nextFloat() * 0.1);
-      let satCount = prng.nextInt(3, 8);
-      let satSize = coreR * (0.4 + prng.nextFloat() * 0.5) / (1 + orb * 0.3);
-      let orbitRot = prng.nextFloat() * TWO_PI;
-      let satShape = prng.nextInt(0, 4); // 0=circle, 1=triangle, 2=diamond, 3=dot, 4=square
-      let connectToCore = prng.nextFloat() < 0.35;
-
-      svgSetStrokeWeight(state.geometry.strokeWeight * (0.8 - orb * 0.12));
-
-      // Optional orbit track ring (dashed or solid)
-      if (prng.nextFloat() < 0.5) {
-        svgSetStrokeWeight(state.geometry.strokeWeight * 0.25);
-        if (prng.nextFloat() < 0.5) {
-          drawDashedRing(cx, cy, orbitR, satCount * 2);
-        } else {
-          svgCircle(cx, cy, orbitR * 2);
-        }
-        svgSetStrokeWeight(state.geometry.strokeWeight * (0.8 - orb * 0.12));
-      }
-
-      // Draw satellites
-      for (let si = 0; si < satCount; si++) {
-        let sa = orbitRot + (si / satCount) * TWO_PI;
-        let sx = cx + orbitR * cos(sa);
-        let sy = cy + orbitR * sin(sa);
-
-        if (satShape === 0) svgCircle(sx, sy, satSize * 2);
-        else if (satShape === 1) drawTriangle(sx, sy, satSize, sa - HALF_PI);
-        else if (satShape === 2) drawDiamond(sx, sy, satSize);
-        else if (satShape === 3) svgPoint(sx, sy);
-        else svgRect(sx - satSize * 0.7, sy - satSize * 0.7, satSize * 1.4, satSize * 1.4);
-
-        // Connector line from satellite to core
-        if (connectToCore) {
-          svgSetStrokeWeight(state.geometry.strokeWeight * 0.2);
-          svgLine(cx + coreR * cos(sa), cy + coreR * sin(sa), sx - satSize * cos(sa), sy - satSize * sin(sa));
-          svgSetStrokeWeight(state.geometry.strokeWeight * (0.8 - orb * 0.12));
-        }
-      }
-    }
-    svgSetStrokeWeight(state.geometry.strokeWeight);
-  } else if (choice < 0.77) {
-    // *** TRIANGLE: with inscribed circle ***
-    drawTriangle(cx, cy, r);
-    // Inscribed circle radius for equilateral = r/2
-    svgCircle(cx, cy + r * 0.15, r * 0.48);
-    if (cloneCount > 0) {
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-      let n = cloneCount + 2;
-      drawRotationalClones(cx, cy, n, 0, () => {
-        svgCircle(cx, cy - r * 0.55, r * 0.12);
-      });
-      svgSetStrokeWeight(state.geometry.strokeWeight);
-    }
-  } else if (choice < 0.83) {
-    // *** TRIANGLE: Concentric nested, progressively styled ***
-    let layers = Math.max(2, cloneCount > 0 ? cloneCount + 1 : prng.nextInt(2, 4));
-    for (let c = 0; c < layers; c++) {
-      let sr = r * (1 - c * (0.7 / layers));
-      let rot = -HALF_PI + c * (PI / (layers * 2));
-      svgSetStrokeWeight(state.geometry.strokeWeight * (1 - c * 0.12));
-      let style = pickShapeStyle(prng, c, 0.7);
-      let params = getProgressiveParams(c, sr, layers);
-      drawTriangle(cx, cy, sr, rot, style, params);
-    }
-    svgSetStrokeWeight(state.geometry.strokeWeight);
-  } else if (choice < 0.89) {
-    // *** MACRO ARROW ICON — bold directional arrows with grid/radial cloning ***
-    // Arrow shape: angular bracket-style arrow head + optional shaft
-    let arrowCount = s < 0.5 ? prng.nextInt(2, 4) : prng.nextInt(1, 2);
-    if (s > 0.85) arrowCount = 1; // deep macro: single bold arrow
-    let arrowSize = r * (0.9 + s * 0.15) / Math.sqrt(arrowCount);
-    let layoutStyle = prng.nextFloat(); // grid vs radial vs single
-
-    // Helper: draw one bold arrow icon (➔ style — wide chevron head, no shaft)
-    function drawBoldArrow(ax, ay, aSize, angle) {
-      let c = Math.cos(angle), sn = Math.sin(angle);
-      // Wide triangular arrowhead: a fat chevron pointing in direction
-      // Like ➔ U+2794 — simple, bold, iconic
-      let len = aSize * 0.7;   // length from tail to tip
-      let w = aSize * 0.55;    // half-width of the tail spread
-      let notch = len * 0.35;  // depth of the tail notch (makes it arrow-shaped, not triangle)
-      let pts = [
-        [0, -len],              // tip
-        [w, notch],             // right tail
-        [0, -notch * 0.3],     // center notch (indent)
-        [-w, notch]             // left tail
-      ];
-      svgBeginShape();
-      for (let p of pts) {
-        svgVertex(ax + p[0] * c - p[1] * sn, ay + p[0] * sn + p[1] * c);
-      }
-      svgEndShape(true);
-    }
-
-    if (arrowCount === 1) {
-      // Single bold arrow, random direction
-      let dir = prng.nextFloat() * TWO_PI;
-      drawBoldArrow(cx, cy, arrowSize, dir);
-      // Optional inner detail — smaller concentric arrow or crosshair
-      if (detailActive('internalDetail', s) && prng.nextFloat() < 0.4) {
-        svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-        drawBoldArrow(cx, cy, arrowSize * 0.4, dir);
-        svgSetStrokeWeight(state.geometry.strokeWeight);
-      }
-    } else if (layoutStyle < 0.5) {
-      // Radial arrangement — arrows pointing outward from center
-      let baseDir = prng.nextFloat() * TWO_PI;
-      for (let i = 0; i < arrowCount; i++) {
-        let a = baseDir + (i / arrowCount) * TWO_PI;
-        let dist = r * 0.3;
-        let ax = cx + dist * cos(a), ay = cy + dist * sin(a);
-        let aSize2 = arrowSize * (0.6 + prng.nextFloat() * 0.2);
-        svgSetStrokeWeight(state.geometry.strokeWeight * (1 - i * 0.08));
-        drawBoldArrow(ax, ay, aSize2, a - HALF_PI);
-      }
-    } else {
-      // Grid arrangement — arrows in 2x2 or offset pattern, converging/diverging
-      let converge = prng.nextFloat() < 0.5;
-      let spacing = r * 0.55;
-      let positions = arrowCount <= 2
-        ? [[-0.5, 0], [0.5, 0]]
-        : [[-0.5, -0.5], [0.5, -0.5], [-0.5, 0.5], [0.5, 0.5]];
-      for (let i = 0; i < Math.min(arrowCount, positions.length); i++) {
-        let px = cx + positions[i][0] * spacing;
-        let py = cy + positions[i][1] * spacing;
-        let dir;
-        if (converge) {
-          dir = Math.atan2(cy - py, cx - px) + HALF_PI;
-        } else {
-          dir = Math.atan2(py - cy, px - cx) + HALF_PI;
-        }
-        let aSize2 = arrowSize * (0.55 + prng.nextFloat() * 0.15);
-        svgSetStrokeWeight(state.geometry.strokeWeight * (1 - i * 0.06));
-        drawBoldArrow(px, py, aSize2, dir);
-      }
-    }
-    svgSetStrokeWeight(state.geometry.strokeWeight);
-
-    // Clone layer — styled smaller arrows at quantized rotations
-    if (cloneCount > 0) {
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.3);
-      let cloneDir = prng.nextFloat() * TWO_PI;
-      drawRotationalClones(cx, cy, cloneCount + 1, cloneDir, (i) => {
-        let style = pickShapeStyle(prng, i + 1, 0.6);
-        if (style === 'dots' || style === 'dotEdge') {
-          // Dots at arrow tip positions
-          let tipDist = r * 0.65;
-          svgPoint(cx, cy - tipDist);
-        } else {
-          drawBoldArrow(cx, cy, arrowSize * 0.25, -HALF_PI);
-        }
-      });
-      svgSetStrokeWeight(state.geometry.strokeWeight);
-    }
-  } else if (choice < 0.95) {
-    // Circle with crosshair + styled cloned rings
-    svgCircle(cx, cy, size);
-    drawCrosshair(cx, cy, size * 0.9, r * 0.1);
-    if (cloneCount > 0) {
-      for (let c = 1; c <= cloneCount; c++) {
-        svgSetStrokeWeight(state.geometry.strokeWeight * (0.5 - c * 0.08));
-        let style = pickShapeStyle(prng, c, 0.7);
-        let cSize = size * (0.5 + c * 0.12);
-        drawStyledCircle(cx, cy, cSize, style, getProgressiveParams(c, cSize, cloneCount + 1));
-      }
-      svgSetStrokeWeight(state.geometry.strokeWeight);
-    }
-  } else if (choice < 0.97) {
-    // Bold circle with inner ring
-    svgCircle(cx, cy, size);
-    if (s > 0.6) svgCircle(cx, cy, size * 0.35);
-  } else if (choice < 0.975) {
-    // NEW: Lissajous figure — parametric curve
-    let ratioA = prng.pick([1, 2, 3]);
-    let ratioB = prng.pick([2, 3, 4]);
-    let delta = prng.nextFloat() * PI;
-    // Animated: phase sweeps creating continuous deformation
-    if (animated && animCtx) {
-      delta += anim.sweep(animCtx.frameIndex, animCtx.frameCount, animCtx.frameCount * 2, animCtx.speedMul, (elemSeed % 1000) / 1000) * TWO_PI;
-    }
-    let steps = 80 + Math.round(s * 40);
-    svgSetStrokeWeight(state.geometry.strokeWeight * (0.8 + s * 0.4));
-    svgBeginShape();
-    for (let i = 0; i <= steps; i++) {
-      let t2 = (i / steps) * TWO_PI;
-      svgVertex(cx + r * 0.85 * Math.sin(ratioA * t2 + delta), cy + r * 0.85 * Math.sin(ratioB * t2));
-    }
-    svgEndShape(true);
-  } else if (choice < 0.98) {
-    // NEW: Concentric perspective tunnel — nested shapes with position shift
-    let tunnelCount = prng.nextInt(4, 8);
-    let shiftX = (prng.nextFloat() - 0.5) * r * 0.15;
-    let shiftY = (prng.nextFloat() - 0.5) * r * 0.1;
-    let useSquares = prng.nextFloat() < 0.4;
-    for (let i = 0; i < tunnelCount; i++) {
-      let t2 = (i + 1) / (tunnelCount + 1);
-      let sz = size * (1 - t2 * 0.8);
-      let ox2 = shiftX * t2 * 3;
-      let oy2 = shiftY * t2 * 3;
-      svgSetStrokeWeight(state.geometry.strokeWeight * (0.8 - t2 * 0.5));
-      if (useSquares) {
-        let rot = t2 * 0.15;
-        svgRec.beginGroupWithTransform('tunnel-sq', `rotate(${(rot * 180 / PI).toFixed(2)}, ${svgRec._r(cx + ox2)}, ${svgRec._r(cy + oy2)})`);
-        push(); translate(cx + ox2, cy + oy2); rotate(rot); translate(-(cx + ox2), -(cy + oy2));
-        svgRect(cx + ox2 - sz / 2, cy + oy2 - sz / 2, sz, sz);
-        pop(); svgRec.endGroup();
-      } else {
-        svgCircle(cx + ox2, cy + oy2, sz);
-      }
-    }
-  } else if (choice < 0.985) {
-    // NEW: Recursive subdivision (Sierpinski-like)
-    let baseShape = prng.nextFloat() < 0.5 ? 'triangle' : 'square';
-    let maxDepth = prng.nextInt(2, 3);
-    function subdivide(sx2, sy2, sz2, depth) {
-      if (depth <= 0) {
-        if (baseShape === 'triangle') {
-          drawTriangle(sx2, sy2, sz2 / 2);
-        } else {
-          svgRect(sx2 - sz2 / 2, sy2 - sz2 / 2, sz2, sz2);
-        }
-        return;
-      }
-      let half = sz2 * 0.5;
-      if (baseShape === 'triangle') {
-        subdivide(sx2, sy2 - half * 0.4, half, depth - 1);
-        subdivide(sx2 - half * 0.5, sy2 + half * 0.3, half, depth - 1);
-        subdivide(sx2 + half * 0.5, sy2 + half * 0.3, half, depth - 1);
-      } else {
-        let q = half * 0.55;
-        subdivide(sx2 - q, sy2 - q, half, depth - 1);
-        subdivide(sx2 + q, sy2 - q, half, depth - 1);
-        subdivide(sx2 - q, sy2 + q, half, depth - 1);
-        subdivide(sx2 + q, sy2 + q, half, depth - 1);
-      }
-    }
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.6);
-    subdivide(cx, cy, size * 0.9, maxDepth);
-  } else if (choice < 0.99) {
-    // NEW: Abstract sci-fi corporation logo
-    let logoOps = prng.nextInt(2, 3); // 2-3 operations
-    let acronym = '';
-    let letters = 'XYNVARKQZWTL';
-    for (let i = 0; i < prng.nextInt(2, 4); i++) acronym += letters[prng.nextInt(0, letters.length - 1)];
-    svgSetStrokeWeight(state.geometry.strokeWeight * (0.7 + s * 0.5));
-    // Base shape
-    let baseType = prng.nextInt(0, 3);
-    if (baseType === 0) { svgCircle(cx, cy, size * 0.7); }
-    else if (baseType === 1) { drawHexagon(cx, cy, r * 0.7); }
-    else if (baseType === 2) { drawDiamond(cx, cy, r * 0.6); }
-    else { svgRect(cx - r * 0.5, cy - r * 0.5, r, r); }
-    // Operations: split, nest, or intersect lines
-    for (let op = 0; op < logoOps; op++) {
-      let opType = prng.nextInt(0, 3);
-      svgSetStrokeWeight(state.geometry.strokeWeight * (0.5 + op * 0.15));
-      if (opType === 0) { // vertical split
-        svgLine(cx, cy - r * 0.5, cx, cy + r * 0.5);
-      } else if (opType === 1) { // nested smaller shape
-        let ns = r * (0.3 - op * 0.05);
-        if (prng.nextFloat() < 0.5) svgCircle(cx, cy, ns * 2);
-        else drawDiamond(cx, cy, ns);
-      } else if (opType === 2) { // diagonal slash
-        let slA = prng.nextFloat() * PI;
-        svgLine(cx - r * 0.4 * Math.cos(slA), cy - r * 0.4 * Math.sin(slA),
-                cx + r * 0.4 * Math.cos(slA), cy + r * 0.4 * Math.sin(slA));
-      } else { // arc accent
-        let arcStart = prng.nextFloat() * TWO_PI;
-        svgArc(cx, cy, r * 1.2, r * 1.2, arcStart, arcStart + PI * (0.5 + prng.nextFloat() * 0.5));
-      }
-    }
-    // Acronym below
-    if (detailActive('primaryLabels', s)) {
-      let fontSize = Math.max(5, r * 0.2);
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.8);
-      let tw = measureFallbackText(acronym, fontSize);
-      drawFallbackText(acronym, cx - tw / 2, cy + r + fontSize * 1.5, fontSize);
-    }
-  } else {
-    // NEW: Alien warning label — procedural constructed glyphs
-    let glyphCount = prng.nextInt(3, 5);
-    let glyphW = Math.min(size * 0.35, (size * 1.6) / glyphCount);
-    let glyphH = size * 0.5;
-    let startX = cx - (glyphCount * glyphW) / 2;
-    let glyphY = cy - glyphH * 0.3;
-    // Warning frame
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.5);
-    let frameW = glyphCount * glyphW + glyphW * 0.5;
-    svgRect(cx - frameW / 2, glyphY - glyphH * 0.3, frameW, glyphH * 1.6);
-    // Hazard stripes at top
-    if (detailActive('annotationTexture', s)) {
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.3);
-      drawWarningStripes(cx - frameW / 2 + 1, glyphY - glyphH * 0.3 + 1, frameW - 2, glyphH * 0.15, Math.round(frameW / 6));
-    }
-    // Procedural alien glyphs — each built from stroke primitives
-    svgSetStrokeWeight(state.geometry.strokeWeight * (0.6 + s * 0.3));
-    for (let gi = 0; gi < glyphCount; gi++) {
-      let gx = startX + gi * glyphW + glyphW * 0.5;
-      let gy = glyphY + glyphH * 0.35;
-      let gw = glyphW * 0.35, gh = glyphH * 0.45;
-      // Each glyph: 3-5 random stroke primitives
-      let strokes = 3 + prng.nextInt(0, 2);
-      for (let si = 0; si < strokes; si++) {
-        let strokeType = prng.nextInt(0, 5);
-        if (strokeType === 0) svgLine(gx - gw, gy - gh + si * gh * 0.5, gx + gw, gy - gh + si * gh * 0.5); // horizontal bar
-        else if (strokeType === 1) svgLine(gx + (si - 1) * gw * 0.5, gy - gh, gx + (si - 1) * gw * 0.5, gy + gh); // vertical stroke
-        else if (strokeType === 2) svgArc(gx, gy, gw * 1.5, gh * 1.5, prng.nextFloat() * PI, prng.nextFloat() * PI + PI * 0.5); // arc
-        else if (strokeType === 3) svgPoint(gx + (prng.nextFloat() - 0.5) * gw, gy + (prng.nextFloat() - 0.5) * gh); // dot
-        else if (strokeType === 4) { // hook
-          svgLine(gx - gw * 0.5, gy - gh * 0.5, gx - gw * 0.5, gy + gh * 0.3);
-          svgLine(gx - gw * 0.5, gy + gh * 0.3, gx + gw * 0.3, gy + gh * 0.3);
-        } else { // diagonal
-          svgLine(gx - gw, gy - gh * 0.5, gx + gw * 0.5, gy + gh * 0.5);
-        }
-      }
-    }
-  }
-
-  // Optional outer ring on any variant (at mid-high scale)
-  if (s > 0.5 && prng.nextFloat() < 0.35) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.5);
-    svgCircle(cx, cy, size * 1.2);
-    svgSetStrokeWeight(state.geometry.strokeWeight);
-  }
-
-  // Close animation group
+  symRenderForm(form, cx, cy, { fill, accentFill, band, bandGap, outline: s >= 0.6 ? 'heavy' : 'primary' });
   if (hasGlyphAnim) { pop(); svgRec.endGroup(); }
 
+  // Construction field — sheds toward macro
+  symField(rect, s, cx, cy, ext * 1.12, form.acc, { designation, status, labelSeed,
+    spec: ['FORM ' + fam.toUpperCase(), 'T/R ' + (T / R).toFixed(3), code] });
+
+  kitWeight('primary');
+  svgSetStrokeWeight(state.geometry.strokeWeight);
   svgRec.endGroup();
+}
+
+// ---- Archetype: Seal / Badge ----
+const SEAL_VARIANTS = ['gear', 'serrated', 'wavy', 'dotted', 'ratchet', 'double-ring'];
+const SEAL_WORDS = ['SYSTEMS AUTHORITY', 'ORBITAL SURVEY CORPS', 'SIGNAL DIVISION', 'DEEP FIELD COMMAND',
+  'CALIBRATION BUREAU', 'AUTONOMOUS GRID', 'ARCHIVE OF RECORD', 'VECTOR CONTROL', 'PERIMETER SERVICE',
+  'INSTRUMENT REGISTRY', 'TRANSIT AUTHORITY', 'QUARANTINE OFFICE', 'RELAY COMMISSION', 'BOREAL STATION'];
+
+// Toothed rim contour between root radius Ri and tip radius Ro.
+function sealRimPoly(type, cx, cy, Ro, Ri, N) {
+  let pts = [], P = (a, r) => pts.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r]);
+  let st = TWO_PI / N;
+  if (type === 'gear') {
+    for (let i = 0; i < N; i++) {
+      let a = i * st;
+      P(a + st * 0.06, Ri); P(a + st * 0.16, Ro); P(a + st * 0.44, Ro); P(a + st * 0.54, Ri); P(a + st * 0.8, Ri);
+    }
+  } else if (type === 'serrated' || type === 'double-ring') {
+    for (let i = 0; i < N; i++) { P(i * st, Ro); P((i + 0.5) * st, Ri); }
+  } else if (type === 'wavy') {
+    let n = N * 12;
+    for (let i = 0; i < n; i++) { let a = i / n * TWO_PI; P(a, Ri + (Ro - Ri) * Math.pow(Math.abs(Math.sin(a * N / 2)), 0.55)); }
+  } else if (type === 'ratchet') {
+    for (let i = 0; i < N; i++) { let a = i * st; P(a, Ri); P(a + st * 0.82, Ro); P(a + st * 0.9, Ri + (Ro - Ri) * 0.12); }
+  } else return symCircle(cx, cy, Ro, 180);
+  return pts;
+}
+
+// Run fn with text locked to the micro face, so an arc of single characters
+// does not mix fonts (each text call rolls the face; the rolls are still consumed).
+function sealMicroFont(fn) {
+  let keep = _cellScale;
+  _cellScale = Math.min(keep, 0.25);
+  try { fn(); } finally { _cellScale = keep; }
+}
+
+function sealArcWidths(str, size) {
+  let track = size * 0.14;
+  let ws = [...str].map(ch => (ch === ' ' ? size * 0.5 : measureFallbackText(ch, size)));
+  return { ws, track, total: ws.reduce((a, b) => a + b, 0) + track * Math.max(0, ws.length - 1) };
+}
+
+// Characters along an arc, each rotated to the curve. Top arcs read clockwise
+// with glyphs standing outward; bottom arcs read left to right standing inward.
+function sealArcText(cx, cy, r, str, size, centerAng, bottom, met) {
+  let { ws, track, total } = met;
+  let chars = [...str];
+  let a = bottom ? centerAng + total / r / 2 : centerAng - total / r / 2;
+  for (let i = 0; i < chars.length; i++) {
+    let wch = ws[i], ac = bottom ? a - wch / 2 / r : a + wch / 2 / r;
+    let c = Math.cos(ac), sn = Math.sin(ac);
+    if (chars[i] !== ' ') {
+      if (!bottom) drawFallbackTextRotated(chars[i], cx + c * r + sn * wch / 2, cy + sn * r - c * wch / 2, size, +(ac * 180 / PI + 90).toFixed(2));
+      else drawFallbackTextRotated(chars[i], cx + c * r - sn * wch / 2, cy + sn * r + c * wch / 2, size, +(ac * 180 / PI - 90).toFixed(2));
+    }
+    a += (bottom ? -1 : 1) * (wch + track) / r;
+  }
 }
 
 function composeSealBadge(rect, s, prng) {
   let { x, y, w, h } = rect;
-  let cx = x + w / 2, cy = y + h / 2;
-  let size = Math.min(w, h) * 0.42;
+  let cx = x + w / 2, cy = y + h / 2, m = Math.min(w, h);
+  let u = Math.max(0, Math.min(1, (s - 0.25) / 0.65));
 
   svgRec.beginGroup('seal-badge');
 
-  // Animation setup — bezel rotation (outer ring spins, interior static)
+  // Animation setup — bezel rotation (outer ring spins, interior static). PRNG consumed unconditionally.
   let elemSeed = prng.nextInt(0, 0xFFFFFF);
+  let zone = getAnimZoneParams(s);
+  let sealCycle = prng.nextInt(zone.minCycle, zone.maxCycle);
   let animated = shouldAnimate(elemSeed);
-  let zone = animated ? getAnimZoneParams(s) : null;
-  let sealCycle = animated ? prng.nextInt(zone.minCycle, zone.maxCycle) : 0;
-  let sealPhase = animated ? (elemSeed % 1000) / 1000 : 0;
+  let sealPhase = (elemSeed % 1000) / 1000;
   let bezelAngle = animated ? anim.rotate(animCtx.frameIndex, animCtx.frameCount, sealCycle * 5, animCtx.speedMul * 0.35, sealPhase) * animEnvelope(animCtx.t, 'plateau', ease.outQuad) * animCtx.motionAmount * (_compBus ? _compBus.dramaCurve : 1) : 0;
 
-  // Clone intensity for mid-to-macro range
-  let cloneChance = 0;
-  let maxClones = 2;
-  if (s >= 0.35 && s < 0.55) { cloneChance = 0.30; maxClones = 2; }
-  else if (s >= 0.55 && s < 0.75) { cloneChance = 0.50; maxClones = 3; }
-  else if (s >= 0.75 && s < 0.85) { cloneChance = 0.35; maxClones = 3; }
-  else if (s >= 0.85) { cloneChance = 0.10; maxClones = 2; }
-
-  let useClones = prng.nextFloat() < cloneChance;
-  let cloneCount = useClones ? prng.nextInt(2, maxClones) : 0;
-
-  // Double border ring (outer accent)
-  if (detailActive('secondaryRings', s) && prng.nextFloat() < 0.5) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-    svgCircle(cx, cy, size * 2.2);
-    svgSetStrokeWeight(state.geometry.strokeWeight);
-  }
-
-  // Outer edge — animated bezel rotation (6 edge type variants)
-  let teeth = prng.nextInt(8, Math.min(20, state.geometry.maxRadialArms));
-  if (s > 0.6) teeth = Math.max(6, Math.floor(teeth * 0.6));
-  let innerRatio = 0.8 + prng.nextFloat() * 0.1;
+  // Variant: the engineered outer edge
   let edgeType = prng.nextInt(0, 5);
   if (_cellOverrideVariant) {
-    let sealVars = ['gear','serrated','wavy','dotted','ratchet','double-ring'];
-    let oi = sealVars.indexOf(_cellOverrideVariant);
+    let oi = SEAL_VARIANTS.indexOf(_cellOverrideVariant);
     if (oi >= 0) edgeType = oi;
   }
-  _cellVariantInfo = ['gear','serrated','wavy','dotted','ratchet','double-ring'][edgeType] || '?';
+  let variant = SEAL_VARIANTS[edgeType];
+  _cellVariantInfo = variant;
 
+  let fill = kitFillStyle(s, prng);
+  let toothRoll = prng.nextFloat();
+  let bandStyle = prng.pick(['rope', 'knurl', 'rivets', 'rope']);
+  let fieldPick = prng.nextFloat();
+  let emblemFam = prng.pick(['radial', 'star', 'rune', 'sector', 'chevron', 'frames', 'radial', 'star']);
+  let sepStyle = prng.pick(['star', 'rivet', 'diamond']);
+  let topText = prng.pick(SEAL_WORDS);
+  let botText = prng.nextFloat() < 0.5 ? 'EST ' + textGen.year(prng) : textGen.identifier(prng);
+  let hatchAng = prng.pick([45, 135, 60, 120]);
+  let cornerId = textGen.identifier(prng), coord = textGen.coordinate(prng), ver = textGen.versionString(prng);
+  let status = textGen.statusLabel(prng);
+  let labelSeed = prng.nextInt(1, 0xFFFFFF);
+  let ringCount = prng.nextInt(1, 2);
+
+  // Ring geometry, outside in: rim teeth > bezel band > text ring > tick band > field
+  let Rs = m * (0.36 + 0.08 * u);
+  let toothD = Rs * (variant === 'serrated' || variant === 'double-ring' ? 0.055 : variant === 'wavy' ? 0.05 : variant === 'dotted' ? 0.07 : 0.075);
+  let Re = Rs - toothD;
+  let bandT = Rs * (0.075 + 0.07 * u);
+  let Rb = Re - bandT;
+  let gap = Rs * 0.028;
+  let micro = kitType(rect, 'micro'), body = kitType(rect, 'body');
+  let minT = getMinTextSizePx();
+  let pen = unitToPx(state.plotter.hatch.penDiameter, 'mm', state.plotter.dpi);
+  let N = Math.round((variant === 'gear' ? 30 - 16 * u : variant === 'wavy' ? 26 - 12 * u : variant === 'dotted' ? 40 - 18 * u : 52 - 24 * u) * (0.85 + toothRoll * 0.3));
+  if (variant === 'gear' || variant === 'wavy') N = Math.max(8, N);
+
+  let textOn = detailActive('primaryLabels', s);
+  let textBand = Rs * 0.16, tsize = Math.min(textBand * 0.52, 22);
+  if (tsize < minT * 1.02) textOn = false;
+  let beadOn = !textOn && detailActive('secondaryRings', s);
+  let tickOn = detailActive('secondaryRings', s) && Rs > 40;
+  let ringOut = Rb - gap, ringIn = textOn ? ringOut - textBand : beadOn ? ringOut - Rs * 0.06 : ringOut + gap * 0.4;
+  let tickLen = Rs * 0.05;
+  let Rf = tickOn ? ringIn - gap * 0.5 - tickLen - gap * 0.6 : ringIn - gap;
+  let bezelSolid = !!fill || s >= 0.55;
+
+  // ---- Bezel: rim + band (rotates as one) ----
   let hasBezelAnim = bezelAngle !== 0;
   if (hasBezelAnim) {
     let deg = bezelAngle * 180 / PI;
     svgRec.beginGroupWithTransform('anim-bezel', `rotate(${svgRec._r(deg)}, ${svgRec._r(cx)}, ${svgRec._r(cy)})`);
     push(); translate(cx, cy); rotate(bezelAngle); translate(-cx, -cy);
   }
-  if (edgeType === 0) {
-    drawGearWheel(cx, cy, size, size * 0.2, teeth, size * 0.08);
-  } else if (edgeType === 1) {
-    drawSerratedBadge(cx, cy, size, size * innerRatio, teeth);
-  } else if (edgeType === 2) {
-    // Wavy/scalloped edge — sinusoidal wave around circle
-    let wavePts = teeth * 3;
-    let waveAmp = size * 0.06;
-    svgBeginShape();
-    for (let i = 0; i <= wavePts; i++) {
-      let a = (i / wavePts) * TWO_PI;
-      let r2 = size + Math.sin(a * teeth) * waveAmp;
-      svgVertex(cx + r2 * Math.cos(a), cy + r2 * Math.sin(a));
+  let rim;
+  kitWeight(s >= 0.5 ? 'heavy' : 'primary');
+  if (variant === 'dotted') {
+    // Beaded edge: a ring of studs around a plain root circle
+    let br = Math.min(toothD * 0.62, PI * Rs / N * 0.36);
+    rim = symCircle(cx, cy, Re, 180);
+    for (let i = 0; i < N; i++) {
+      let a = i / N * TWO_PI, bx = cx + Math.cos(a) * (Rs - br), by = cy + Math.sin(a) * (Rs - br);
+      let stud = symCircle(bx, by, br, 14);
+      symShape(stud);
+      if (bezelSolid && br > pen * 2.5) symContourFill({ c: [stud], d: br }, Math.max(pen * 1.4, br * 0.3));
     }
-    svgEndShape(true);
-  } else if (edgeType === 3) {
-    // Dotted ring — evenly-spaced dots as outer boundary
-    let dotCount = teeth * 2;
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.5);
-    for (let i = 0; i < dotCount; i++) {
-      let a = (i / dotCount) * TWO_PI;
-      let dotR = (i % 3 === 0) ? size * 0.04 : size * 0.025;
-      svgCircle(cx + size * Math.cos(a), cy + size * Math.sin(a), dotR * 2);
-    }
-    // Connecting thin circle
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.15);
-    svgCircle(cx, cy, size * 2);
-  } else if (edgeType === 4) {
-    // Ratchet/saw blade — asymmetric teeth
-    svgBeginShape();
-    for (let i = 0; i < teeth; i++) {
-      let a1 = (i / teeth) * TWO_PI;
-      let a2 = ((i + 0.7) / teeth) * TWO_PI; // steep leading edge
-      let a3 = ((i + 1) / teeth) * TWO_PI;   // gradual trailing edge
-      svgVertex(cx + size * Math.cos(a1), cy + size * Math.sin(a1));
-      svgVertex(cx + (size + size * 0.08) * Math.cos(a2), cy + (size + size * 0.08) * Math.sin(a2));
-      svgVertex(cx + size * innerRatio * Math.cos(a3), cy + size * innerRatio * Math.sin(a3));
-    }
-    svgEndShape(true);
+    kitWeight(s >= 0.5 ? 'heavy' : 'primary');
+    symShape(rim);
   } else {
-    // Double-ring — two concentric serrated rings at different tooth counts
-    let outerTeeth = teeth;
-    let innerTeeth = Math.max(4, teeth - prng.nextInt(2, 5));
-    drawSerratedBadge(cx, cy, size, size * innerRatio, outerTeeth);
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.6);
-    drawSerratedBadge(cx, cy, size * 0.72, size * 0.72 * (innerRatio - 0.05), innerTeeth);
+    rim = sealRimPoly(variant, cx, cy, Rs, Re, N);
+    symShape(rim);
   }
-
-  // Cloned outer rings at smaller scales with quantized rotations
-  if (cloneCount > 0) {
-    for (let c = 1; c <= cloneCount; c++) {
-      let sr = size * (0.55 + c * 0.08);
-      let rotOffset = (c * TWO_PI) / (teeth * 2); // offset by half a tooth
-      svgSetStrokeWeight(state.geometry.strokeWeight * (0.7 - c * 0.12));
-      if (edgeType === 0) {
-        // Clone gear at different scale/rotation by drawing shifted serrated badge
-        let ct = Math.max(4, teeth - c * 2);
-        drawSerratedBadge(cx, cy, sr, sr * (innerRatio - 0.05 * c), ct);
-      } else {
-        let ct = Math.max(4, teeth + c * 2);
-        drawSerratedBadge(cx, cy, sr, sr * innerRatio, ct);
-      }
+  symShape(symCircle(cx, cy, Rb, 180));
+  if (variant === 'double-ring') {
+    // Second, counter-toothed ring inside the band
+    kitWeight('secondary');
+    symShape(sealRimPoly('serrated', cx, cy, Rb + bandT * 0.42, Rb, Math.max(12, Math.round(N * 0.6))));
+  }
+  if (bezelSolid) {
+    // Solid bezel: engraved contours that echo the rim, or the kit fill style
+    let sp = fill ? fill.spacing : Math.max(pen * 1.7, bandT * 0.06);
+    if (fill && fill.kind !== 'contour') kitFillContours([rim, symCircle(cx, cy, Rb, 180)], fill);
+    else {
+      kitWeight('fine');
+      let inner = variant === 'double-ring' ? Rb + bandT * 0.42 + sp : Rb + sp * 0.6;
+      for (let r = Re - sp; r > inner; r -= sp) svgCircle(cx, cy, r * 2);
+      if (variant !== 'dotted' && variant !== 'wavy') for (let k = 1; k <= 2; k++) symShape(symInset(rim, k * sp * 1.2));
     }
-    svgSetStrokeWeight(state.geometry.strokeWeight);
+  } else {
+    kitWeight('fine');
+    let rm = (Re + Rb) / 2;
+    if (bandStyle === 'rope') {
+      let K = Math.max(24, Math.round(TWO_PI * rm / (bandT * 0.55)));
+      for (let k = 0; k < K; k++) {
+        let a0 = k / K * TWO_PI, a1 = a0 + TWO_PI / K * 1.6;
+        let pts = [];
+        for (let j = 0; j <= 4; j++) {
+          let t = j / 4, rr = Rb + bandT * (0.12 + 0.76 * t), aa = a0 + (a1 - a0) * (t + Math.sin(t * PI) * 0.12);
+          pts.push([cx + Math.cos(aa) * rr, cy + Math.sin(aa) * rr]);
+        }
+        svgPolyline(pts);
+      }
+    } else if (bandStyle === 'knurl') {
+      let K = Math.max(36, Math.round(TWO_PI * rm / Math.max(3, bandT * 0.32)));
+      for (let k = 0; k < K; k++) {
+        let a = k / K * TWO_PI, c = Math.cos(a), sn = Math.sin(a);
+        let r0 = k % 2 ? Rb + bandT * 0.3 : Rb + bandT * 0.12, r1 = k % 2 ? Re - bandT * 0.3 : Re - bandT * 0.12;
+        svgLine(cx + c * r0, cy + sn * r0, cx + c * r1, cy + sn * r1);
+      }
+    } else {
+      let K = Math.max(8, Math.round(12 * Math.min(2, kitDensity(rect))));
+      let rr = bandT * 0.28;
+      for (let k = 0; k < K; k++) {
+        let a = (k + 0.5) / K * TWO_PI, bx = cx + Math.cos(a) * rm, by = cy + Math.sin(a) * rm;
+        svgCircle(bx, by, rr * 2);
+        svgLine(bx - rr * 0.6, by, bx + rr * 0.6, by);
+        svgLine(bx, by - rr * 0.6, bx, by + rr * 0.6);
+      }
+      drawDashedRing(cx, cy, rm, K * 3);
+    }
   }
-  // Close bezel animation group — interior content stays static
   if (hasBezelAnim) { pop(); svgRec.endGroup(); }
 
-  // Radial dividers (static — inside the bezel)
-  if (detailActive('internalDetail', s) && prng.nextFloat() < 0.4) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-    let divCount = prng.nextInt(2, 4);
-    for (let i = 0; i < divCount; i++) {
-      let a = (i / divCount) * TWO_PI + prng.nextFloat() * 0.3;
-      let ir = size * 0.15;
-      let or2 = size * innerRatio * 0.95;
-      svgLine(cx + ir * cos(a), cy + ir * sin(a), cx + or2 * cos(a), cy + or2 * sin(a));
+  // ---- Text ring / bead ring (static) ----
+  if (textOn) {
+    kitWeight('secondary');
+    svgCircle(cx, cy, ringOut * 2);
+    svgCircle(cx, cy, ringIn * 2);
+    kitWeight('fine');
+    svgCircle(cx, cy, (ringOut - gap * 0.45) * 2);
+    let capH = tsize * 0.72, sepA = (tsize * 1.6) / ((ringIn + ringOut) / 2);
+    sealMicroFont(() => {
+      let rTop = ringIn + (textBand - capH) / 2 - gap * 0.2, rBot = ringOut - (textBand - capH) / 2 - gap * 0.2;
+      let maxSpan = PI - sepA * 2.4;
+      let fit = (str, r) => {
+        let sz = tsize, met = sealArcWidths(str, sz);
+        while (met.total / r > maxSpan && sz > minT * 1.02) { sz = Math.max(minT, sz * 0.9); met = sealArcWidths(str, sz); }
+        return met.total / r <= maxSpan ? { sz, met } : null;
+      };
+      let top = fit(topText, rTop) || fit(topText.split(' ')[0], rTop);
+      let bot = fit(botText, rBot);
+      kitWeight('secondary');
+      if (top) sealArcText(cx, cy, rTop, top.met.ws.length === [...topText].length ? topText : topText.split(' ')[0], top.sz, -HALF_PI, false, top.met);
+      if (bot) sealArcText(cx, cy, rBot, botText, bot.sz, HALF_PI, true, bot.met);
+    });
+    // Separators at 3 and 9 o'clock
+    let rm = (ringIn + ringOut) / 2, ss = textBand * 0.26;
+    kitWeight('secondary');
+    for (let sd = -1; sd <= 1; sd += 2) {
+      let sx = cx + sd * rm;
+      if (sepStyle === 'star') drawStar(sx, cy, ss, ss * 0.4, 5);
+      else if (sepStyle === 'rivet') { svgCircle(sx, cy, ss * 1.4); svgPoint(sx, cy); }
+      else { symShape(symNgon(sx, cy, ss, 4, 0)); symShape(symNgon(sx, cy, ss * 0.45, 4, 0)); }
     }
-    svgSetStrokeWeight(state.geometry.strokeWeight);
+  } else if (beadOn) {
+    // Text shed: a band of bold dashes keeps the ring's weight
+    kitWeight('secondary');
+    let K = Math.max(16, Math.round(TWO_PI * ringOut / Math.max(6, (ringOut - ringIn) * 2.2)));
+    for (let k = 0; k < K; k++) {
+      let a = k / K * TWO_PI;
+      symShape(symShellArc(cx, cy, ringOut, ringOut - ringIn, 0, 0, a, a + TWO_PI / K * 0.55));
+    }
   }
 
-  // Interior symbol — expanded options with rotational auxiliary shapes
-  if (detailActive('internalDetail', s)) {
-    let innerSize = size * 0.35;
-    let choice = prng.nextFloat();
-    if (choice < 0.15) {
-      drawStar(cx, cy, innerSize, innerSize * 0.4, prng.nextInt(4, 6));
-    } else if (choice < 0.25) {
-      drawCrosshair(cx, cy, innerSize * 2, 0);
-    } else if (choice < 0.35) {
-      drawHexagon(cx, cy, innerSize * 0.8);
-    } else if (choice < 0.45) {
-      drawTriangle(cx, cy, innerSize * 0.8);
-    } else if (choice < 0.55) {
-      // Nested badge
-      drawSerratedBadge(cx, cy, innerSize, innerSize * 0.7, Math.max(6, Math.floor(teeth * 0.5)));
-    } else if (choice < 0.65) {
-      // Diamond inside
-      drawDiamond(cx, cy, innerSize * 0.7);
-    } else if (choice < 0.75) {
-      svgCircle(cx, cy, innerSize);
-    } else {
-      // Rotational auxiliary: small shapes arranged radially inside
-      let auxCount = prng.nextInt(3, 6);
-      let auxR = innerSize * 0.6;
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.6);
-      drawRotationalClones(cx, cy, auxCount, -HALF_PI, (i) => {
-        let aShape = prng.nextFloat();
-        if (aShape < 0.33) svgCircle(cx, cy - auxR, innerSize * 0.18);
-        else if (aShape < 0.66) drawTriangle(cx, cy - auxR, innerSize * 0.12, -HALF_PI);
-        else drawDiamond(cx, cy - auxR, innerSize * 0.12);
-      });
-      svgSetStrokeWeight(state.geometry.strokeWeight);
-      svgPoint(cx, cy);
-    }
+  // ---- Fine tick band ----
+  if (tickOn) {
+    kitWeight('fine');
+    let Rk = ringIn - gap * 0.5;
+    let n = Math.max(36, Math.round(Math.min(180, TWO_PI * Rk / Math.max(3.2, Rs * 0.022)) / 12) * 12);
+    let numerals = detailActive('tickMarks', s) && Rk > 120 && micro * 2.2 < tickLen + Rs * 0.04;
+    kitTickRing(cx, cy, Rk, { count: n, major: n / 12, len: tickLen, inward: true, baseline: true,
+                              labels: false });
+    if (ringCount > 1 && detailActive('internalDetail', s)) svgCircle(cx, cy, (Rk - tickLen - gap * 0.3) * 2);
+  }
+
+  // ---- Field + central emblem ----
+  let emR = Rf * (s >= 0.8 ? 0.4 : 0.64);
+  let em = symGlyphForm(s >= 0.8 ? 'star' : emblemFam, emR, emR * 0.17, prng, 1);
+  let emExt = emR + emR * 0.17 * 1.2;
+  let fieldMode = s < 0.45 ? (fieldPick < 0.4 ? 'rays' : fieldPick < 0.75 ? 'hatch' : 'contour') : (fieldPick < 0.6 ? 'hatch' : 'contour');
+  if (fill) fieldMode = fill.kind === 'contour' ? 'contour' : 'hatch';
+  let fs = fill || { kind: 'hatch', angle: hatchAng, spacing: Math.max(pen * 1.8, 2.3) };
+  kitWeight('secondary');
+  svgCircle(cx, cy, Rf * 2);
+  if (fieldMode === 'hatch') {
+    let holes = em.M.map(mm => symInset(mm.c[0].map(p => [p[0] + cx, p[1] + cy]), -emR * 0.17 * 0.35));
+    kitFillContours([symCircle(cx, cy, Rf - gap * 0.4, 180), ...holes], fs);
+  } else if (fieldMode === 'contour') {
+    kitWeight('fine');
+    let sp = Math.max(pen * 1.6, fs.spacing * 1.2);
+    for (let r = Rf - sp; r > emExt + gap; r -= sp) svgCircle(cx, cy, r * 2);
   } else {
-    svgCircle(cx, cy, size * 0.08);
-  }
-
-  // Bottom banner
-  if (detailActive('primaryLabels', s)) {
-    let label = textGen.statusLabel(prng);
-    let fontSize = Math.max(5, size * 0.1);
-    let tw = measureFallbackText(label, fontSize);
-    let bannerW = tw + fontSize * 2;
-    let bannerH = fontSize * 1.8;
-    let bannerY = cy + size + fontSize * 0.5;
-    if (detailActive('cornerBrackets', s)) {
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.5);
-      svgRect(cx - bannerW / 2, bannerY, bannerW, bannerH);
+    kitWeight('fine');
+    let K = Math.max(36, Math.round(TWO_PI * Rf / 5));
+    for (let k = 0; k < K; k++) {
+      let a = k / K * TWO_PI, c = Math.cos(a), sn = Math.sin(a), r0 = emExt + gap * (k % 3 ? 1.6 : 0.6);
+      svgLine(cx + c * r0, cy + sn * r0, cx + c * (Rf - gap * 0.4), cy + sn * (Rf - gap * 0.4));
     }
-    svgSetStrokeWeight(state.geometry.strokeWeight);
-    drawFallbackText(label, cx - tw / 2, bannerY + bannerH * 0.7, fontSize);
+  }
+  symRenderForm(em, cx, cy, { fill: null, accentFill: null, band: s >= 0.6 ? 2 : 1,
+                              bandGap: Math.max(emR * 0.17 * 0.13, pen * 1.6), outline: s >= 0.5 ? 'heavy' : 'primary' });
+
+  // ---- Index mark at 12 o'clock: the one asymmetric accent on the shell ----
+  if (detailActive('internalDetail', s) && Rs + toothD * 2.2 < m / 2) {
+    kitWeight('primary');
+    let ty = cy - Rs - gap * 0.6, ts = toothD * 0.9;
+    symShape([[cx, ty], [cx - ts * 0.7, ty - ts * 1.2], [cx + ts * 0.7, ty - ts * 1.2]]);
   }
 
+  // ---- Drawing-sheet annotation around the seal (micro end) ----
+  if (detailActive('cornerBrackets', s) && m > 200) {
+    kitWeight('fine');
+    let q = m / 2 - micro * 1.2, rr = Math.max(2.5, m * 0.01);
+    for (let i = 0; i < 4; i++) symRegMark(cx + (i % 2 ? q : -q), cy + (i < 2 ? -q : q), rr);
+    // Overall diameter, dimensioned above the seal
+    let dimY = cy - Rs - Math.max(micro * 1.6, Rs * 0.07);
+    if (dimY - micro * 1.6 > y && detailActive('tickMarks', s)) {
+      let dia = 'Ø ' + (2 * Rs * 25.4 / state.plotter.dpi).toFixed(1) + ' MM';
+      kitDimension(cx - Rs, cy - Rs * 0.2, cx + Rs, cy - Rs * 0.2, -(Rs * 0.8 + (cy - Rs - dimY)), dia, micro);
+    }
+    let tw = measureFallbackText(coord, micro);
+    if (tw < q - Rs * 0.75) kitText(coord, cx - q + rr * 2.5, cy - q + micro * 0.35, micro);
+    if (measureFallbackText(cornerId, micro) < q - Rs * 0.75) kitText(cornerId, cx + q - rr * 2.5, cy - q + micro * 0.35, micro, 'right');
+    if (detailActive('versionStrings', s)) kitText(ver, cx + q - rr * 2.5, cy + q + micro * 0.35, micro, 'right');
+  }
+  // Status plate under the seal (ticker hook)
+  if (detailActive('primaryLabels', s) && m > 150) {
+    let tw = measureFallbackText(status, body);
+    let py = cy + Rs + body * 2.1;
+    if (py + body * 0.5 < y + h && tw < m * 0.6) {
+      kitWeight('fine');
+      svgRect(cx - tw / 2 - body * 0.8, py - body * 1.35, tw + body * 1.6, body * 1.85);
+      kitWeight('secondary');
+      symAnimText(status, cx, py, body, 'center', labelSeed, 'bus:status');
+    }
+  }
+
+  kitWeight('primary');
+  svgSetStrokeWeight(state.geometry.strokeWeight);
   svgRec.endGroup();
 }
 
@@ -11015,21 +11174,59 @@ function sigilArmGlyph(contour, len, wid) {
   ]);
 }
 
+const SIGIL_ARMS = ['petal', 'blade', 'flame', 'hook', 'arrow', 'scurve', 'thorn', 'lozenge', 'glyph'];
+
+// One arm in local coords (axis along -y, base at y = 0).
+function sigilArmPts(kind, len, wid, p1, segs, contour) {
+  switch (kind) {
+    case 'petal': return sigilArmPetal(len, wid, p1, segs);
+    case 'blade': return sigilArmBlade(len, wid, p1, segs);
+    case 'flame': return sigilArmFlame(len, wid, p1, segs);
+    case 'hook': return sigilArmHook(len, wid, p1, segs);
+    case 'arrow': return sigilArmArrow(len, wid, p1);
+    case 'scurve': return sigilArmSCurve(len, wid, p1, segs);
+    case 'thorn': return sigilArmThorn(len, wid, p1);
+    case 'glyph': return sigilArmGlyph(contour, len, wid);
+    default: return sigilArmLozenge(len, wid, p1);
+  }
+}
+
+// Seat an arm's base at y = 0 and squeeze it sideways until every point stays
+// inside its angular wedge (half-angle lim) when the base sits at radius r0,
+// so neighbouring arms can never touch.
+function sigilFitWedge(pts, r0, lim) {
+  let maxY = -Infinity;
+  for (let p of pts) maxY = Math.max(maxY, p[1]);
+  pts = pts.map(p => [p[0], p[1] - maxY]);
+  for (let it = 0; it < 4; it++) {
+    let worst = 0;
+    for (let p of pts) worst = Math.max(worst, Math.abs(Math.atan2(p[0], r0 - p[1])));
+    if (worst <= lim) break;
+    let k = lim / worst * 0.97;
+    pts = pts.map(p => [p[0] * k, p[1]]);
+  }
+  return pts;
+}
+
+// Place a local arm at radius r0 along angle a.
+function sigilPlace(pts, cx, cy, r0, a) {
+  let c = Math.cos(a + HALF_PI), sn = Math.sin(a + HALF_PI);
+  return pts.map(p => { let px = p[0], py = p[1] - r0; return [cx + px * c - py * sn, cy + px * sn + py * c]; });
+}
+
 function composeSigil(rect, s, prng) {
   let { x, y, w, h } = rect;
-  let cx = x + w / 2, cy = y + h / 2;
-  let maxR = Math.min(w, h) * 0.42;
+  let cx = x + w / 2, cy = y + h / 2, m = Math.min(w, h);
+  let u = Math.max(0, Math.min(1, (s - 0.3) / 0.7));
 
   svgRec.beginGroup('sigil');
 
-  // Animation setup
+  // Animation setup (PRNG consumed unconditionally)
   let elemSeed = prng.nextInt(0, 0xFFFFFF);
+  let zone = getAnimZoneParams(s);
+  let sigilCycle = prng.nextInt(zone.minCycle, zone.maxCycle);
   let animated = shouldAnimate(elemSeed);
-  let zone = animated ? getAnimZoneParams(s) : null;
-  let sigilCycle = animated ? prng.nextInt(zone.minCycle, zone.maxCycle) : 0;
-  let sigilPhase = animated ? (elemSeed % 1000) / 1000 : 0;
-
-  // Sigil spin — whole structure rotates slowly
+  let sigilPhase = (elemSeed % 1000) / 1000;
   // Sigil spin: mostly smooth with gentle ramp, rare chance for erratic
   let sigilEnvShape = _profileHash(elemSeed, 50) < 0.2 ? 'attackDecay' : 'swell';
   let sigilEaseFn = _profileHash(elemSeed, 51) < 0.12 ? ease.outElastic : ease.inOutCubic;
@@ -11041,6 +11238,48 @@ function composeSigil(rect, s, prng) {
     breathScale = 1 + (breathScale - 1) * (0.5 + _compBus.audioWaveform[wIdx] * 1.5);
   }
 
+  // Form — fewer, bolder arms toward deep macro
+  let N = s < 0.5 ? prng.nextInt(5, 10) : s < 0.8 ? prng.nextInt(4, 8) : prng.nextInt(3, 6);
+  let kindRoll = prng.nextInt(0, 7), glyphRoll = prng.nextFloat();
+  let font = loadedFonts.macro.length > 0 ? prng.pick(loadedFonts.macro) : null;
+  let ch = prng.pick('AVWMXYKZNRS'.split(''));
+  let kind = glyphRoll < 0.22 && font ? 'glyph' : SIGIL_ARMS[kindRoll];
+  if (_cellOverrideVariant && SIGIL_ARMS.includes(_cellOverrideVariant)) kind = _cellOverrideVariant;
+  let lenF = prng.nextFloat(), widF = prng.nextFloat(), p1 = 0.3 + prng.nextFloat() * 0.5;
+  let baseRot = -HALF_PI + (prng.nextFloat() < 0.5 ? 0 : PI / N);
+  let hubK = prng.nextInt(0, 2);
+  let secOn = prng.nextFloat() < 0.6, secKind = prng.pick(['thorn', 'lozenge', 'arrow', 'petal']);
+  let satMode = prng.nextInt(0, 2);
+  let accI = prng.nextInt(0, N - 1);
+  let fill = kitFillStyle(s, prng);
+  let hatchRel = prng.pick([0, 90, 30, 60, 90]);
+  let designation = textGen.identifier(prng), code = textGen.coordinate(prng), status = textGen.statusLabel(prng);
+  let labelSeed = prng.nextInt(1, 0xFFFFFF);
+
+  // Glyph-contour arms come from the chosen macro font's outline
+  let contour = null;
+  if (kind === 'glyph') {
+    let cs = font ? getGlyphContours(font, ch, 100) : null;
+    if (cs) contour = cs.reduce((a, b) => (a.length > b.length ? a : b));
+    else kind = 'lozenge';
+  }
+  _cellVariantInfo = kind;
+
+  // Geometry
+  let maxR = m * (0.31 + 0.14 * u);
+  let T = maxR * (0.08 + 0.045 * u);
+  let rh = maxR * (0.16 + 0.06 * u), g = T * 0.5;
+  let r0 = rh + g * 1.5;
+  let rTip = satMode === 2 ? maxR * 0.97 : maxR * 0.8;
+  let len = (rTip - r0) * (0.82 + lenF * 0.18);
+  let wid = len * (kind === 'glyph' ? 0.55 + widF * 0.3 : (0.26 + widF * 0.32) * (1 + 0.5 * u));
+  let lim = PI / N * (secOn ? 0.6 : 0.86);
+  let segs = s < 0.5 ? 14 : 10;
+  let arm = sigilFitWedge(sigilArmPts(kind, len, wid, p1, segs, contour), r0, lim);
+  let pen = unitToPx(state.plotter.hatch.penDiameter, 'mm', state.plotter.dpi);
+  let armStyle = fill || (s >= 0.45 ? { kind: 'hatch', angle: hatchRel, spacing: Math.max(pen * 1.7, 2.2) } : null);
+  let heavy = s >= 0.55 ? 'heavy' : 'primary';
+
   let hasSpinAnim = spinAngle !== 0 || breathScale !== 1;
   if (hasSpinAnim) {
     let deg = spinAngle * 180 / PI;
@@ -11048,179 +11287,93 @@ function composeSigil(rect, s, prng) {
     push(); translate(cx, cy); rotate(spinAngle); scale(breathScale); translate(-cx, -cy);
   }
 
-  // Arm count — fewer at deep macro for bolder forms
-  let armCount = s < 0.5 ? prng.nextInt(5, 12) : s < 0.8 ? prng.nextInt(4, 8) : prng.nextInt(3, 6);
+  // Hub: a shell broken where the arms leave it, around a core mark
+  let dl = (g * 0.9) / rh;
+  let hubShape = hubK === 1 && N >= 5 ? N : 0;
+  let shells = [];
+  for (let i = 0; i < N; i++) {
+    let a = baseRot + i * TWO_PI / N;
+    shells.push(symShellArc(cx, cy, rh, T, hubShape, baseRot + PI / N, a + dl, a + TWO_PI / N - dl));
+  }
+  let coreR = Math.max(1.5, (rh - T - g) * (hubK === 2 ? 0.85 : 0.55));
+  if (armStyle && hubK !== 1) {
+    kitWeight('fine');
+    for (let sh of shells) kitFillContours([sh], { kind: 'hatch', angle: armStyle.angle + 45, spacing: armStyle.spacing });
+  }
+  if (hubK === 2) { kitWeight('fine'); for (let r = coreR - Math.max(pen * 1.6, 2); r > coreR * 0.25; r -= Math.max(pen * 1.6, 2)) svgCircle(cx, cy, r * 2); }
+  kitWeight(heavy);
+  for (let sh of shells) symShape(sh);
+  svgCircle(cx, cy, coreR * 2);
+  if (hubK === 0 && coreR > 4) { kitWeight('secondary'); svgCircle(cx, cy, coreR * 0.8); }
 
-  // Arm shape selection — procedural or font glyph
-  let armShapes = [sigilArmPetal, sigilArmBlade, sigilArmFlame, sigilArmHook,
-                   sigilArmArrow, sigilArmSCurve, sigilArmThorn, sigilArmLozenge];
-  let useGlyphArm = false;
-  let glyphContour = null;
-
-  // ~25% chance to use a font glyph as arm shape (when macro fonts available)
-  if (loadedFonts.macro.length > 0 && prng.nextFloat() < 0.25) {
-    let font = prng.pick(loadedFonts.macro);
-    // Wider/bolder chars make better sigil arms
-    let glyphChars = 'AVWMXYKZNRS'.split('');
-    let ch = prng.pick(glyphChars);
-    let contours = getGlyphContours(font, ch, maxR * 1.2);
-    if (contours) {
-      // Pick the largest contour (outer outline)
-      glyphContour = contours.reduce((a, b) => a.length > b.length ? a : b);
-      useGlyphArm = true;
+  // Primary arms
+  for (let i = 0; i < N; i++) {
+    let a = baseRot + i * TWO_PI / N;
+    let pts = sigilPlace(arm, cx, cy, r0, a);
+    if (armStyle) {
+      let deg = (a + HALF_PI) * 180 / PI;
+      kitFillContours([pts], { kind: armStyle.kind === 'cross' ? 'cross' : 'hatch', angle: armStyle.angle + deg, spacing: armStyle.spacing });
+    } else if (['petal', 'lozenge', 'thorn'].includes(kind)) {
+      kitWeight('secondary');
+      symShape(symInset(pts, Math.max(pen * 1.6, wid * 0.07)));
     }
+    kitWeight(heavy);
+    symShape(pts);
   }
 
-  let armFn = useGlyphArm ? null : prng.pick(armShapes);
-
-  // Arm parameters — glyph arms get wider proportions
-  let armLen = maxR * (0.5 + prng.nextFloat() * 0.4);
-  let armWid = useGlyphArm ? armLen * (0.35 + prng.nextFloat() * 0.3) : armLen * (0.15 + prng.nextFloat() * 0.25);
-  let armParam1 = 0.3 + prng.nextFloat() * 0.5;
-  let segs = s < 0.5 ? 12 : 8;
-  let baseRot = prng.nextFloat() * TWO_PI;
-
-  // Hub gap
-  let hubGap = maxR * (0.05 + prng.nextFloat() * 0.1);
-
-  // Draw primary arm ring
-  svgSetStrokeWeight(state.geometry.strokeWeight * (0.7 + s * 0.5));
-  for (let i = 0; i < armCount; i++) {
-    let angle = baseRot + (i / armCount) * TWO_PI;
-    let cosA = Math.cos(angle), sinA = Math.sin(angle);
-
-    // Generate arm points — from glyph contour or procedural shape
-    let armPts;
-    if (useGlyphArm) {
-      armPts = sigilArmGlyph(glyphContour, armLen, armWid);
-    } else if (armFn === sigilArmArrow) {
-      armPts = sigilArmArrow(armLen, armWid, armParam1);
-    } else if (armFn === sigilArmThorn) {
-      armPts = sigilArmThorn(armLen, armWid, armParam1);
-    } else if (armFn === sigilArmLozenge) {
-      armPts = sigilArmLozenge(armLen, armWid, armParam1);
-    } else {
-      armPts = armFn(armLen, armWid, armParam1, segs);
-    }
-
-    // Transform: offset from center by hubGap, then rotate around center
-    let transformedPts = [];
-    svgBeginShape();
-    for (let p of armPts) {
-      let px = p[0];
-      let py = p[1] - hubGap;
-      let rx = cx + px * cosA - py * sinA;
-      let ry = cy + px * sinA + py * cosA;
-      svgVertex(rx, ry);
-      transformedPts.push([rx, ry]);
-    }
-    svgEndShape(true);
-
-    // Hatch fill inside arm — angle relative to arm rotation
-    if (state.plotter.hatch.enabled) {
-      let hs = getHatchSpacing();
-      let hAngle = state.plotter.hatch.angle + angle * (180 / PI);
-      let gDir = state.plotter.hatch.gradient ? 1 : 0;
-      hatchFillPolygon(transformedPts, hAngle, hs, gDir);
-    }
+  // Secondary arms between the primaries: scale contrast
+  if (secOn && detailActive('allInternal', s)) {
+    let r2 = r0 + len * 0.5, len2 = len * 0.42;
+    let sec = sigilFitWedge(sigilArmPts(secKind, len2, len2 * 0.4, 0.45, 8, null), r2, PI / N * 0.22);
+    kitWeight('secondary');
+    for (let i = 0; i < N; i++) symShape(sigilPlace(sec, cx, cy, r2, baseRot + (i + 0.5) * TWO_PI / N));
   }
 
-  // Secondary ring (concentric, different arm shape/count)
-  if (s < 0.7 && prng.nextFloat() < 0.35) {
-    let secCount = prng.nextInt(3, armCount);
-    if (secCount === armCount) secCount = Math.max(3, armCount - 2); // different from primary
-    let secFn = prng.pick(armShapes);
-    let secLen = armLen * (0.35 + prng.nextFloat() * 0.25);
-    let secWid = secLen * (0.15 + prng.nextFloat() * 0.2);
-    let secParam = 0.3 + prng.nextFloat() * 0.4;
-    let secRot = baseRot + prng.nextFloat() * (TWO_PI / secCount * 0.5); // slight offset
-
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.5);
-    for (let i = 0; i < secCount; i++) {
-      let angle = secRot + (i / secCount) * TWO_PI;
-      let cosA = Math.cos(angle), sinA = Math.sin(angle);
-      let secPts;
-      if (secFn === sigilArmArrow) secPts = sigilArmArrow(secLen, secWid, secParam);
-      else if (secFn === sigilArmThorn) secPts = sigilArmThorn(secLen, secWid, secParam);
-      else if (secFn === sigilArmLozenge) secPts = sigilArmLozenge(secLen, secWid, secParam);
-      else secPts = secFn(secLen, secWid, secParam, 8);
-
-      svgBeginShape();
-      for (let p of secPts) {
-        let px = p[0], py = p[1] - hubGap * 0.5;
-        svgVertex(cx + px * cosA - py * sinA, cy + px * sinA + py * cosA);
+  // Satellites: an orbit of marks with one odd member (the asymmetric accent)
+  let acc;
+  let dr = Math.max(1.5, T * 0.38);
+  if (satMode === 0 || satMode === 1) {
+    let rs = satMode === 0 ? rTip + g * 1.6 + dr : maxR * 0.92;
+    let off = satMode === 0 ? 0 : 0.5;
+    if (detailActive('secondaryRings', s)) {
+      kitWeight('fine');
+      for (let i = 0; i < N; i++) {
+        let a0 = baseRot + (i + off) * TWO_PI / N + (dr + g) / rs, a1 = baseRot + (i + 1 + off) * TWO_PI / N - (dr + g) / rs;
+        svgArc(cx, cy, rs * 2, rs * 2, a0, a1);
       }
-      svgEndShape(true);
     }
-  }
-
-  // Center element
-  svgSetStrokeWeight(state.geometry.strokeWeight * 0.6);
-  let centerChoice = prng.nextFloat();
-  let centerR = maxR * (0.06 + prng.nextFloat() * 0.08);
-  if (centerChoice < 0.3) {
-    svgCircle(cx, cy, centerR * 2);
-  } else if (centerChoice < 0.5) {
-    drawHexagon(cx, cy, centerR);
-  } else if (centerChoice < 0.65) {
-    // Void ring (donut)
-    svgCircle(cx, cy, centerR * 2);
-    svgCircle(cx, cy, centerR * 1.2);
-  } else if (centerChoice < 0.8) {
-    svgPoint(cx, cy);
+    for (let i = 0; i < N; i++) {
+      let a = baseRot + (i + off) * TWO_PI / N, sx = cx + Math.cos(a) * rs, sy = cy + Math.sin(a) * rs;
+      kitWeight('primary');
+      if (i === accI) {
+        drawTriangle(sx, sy, dr * 1.6, a + PI);
+        acc = [sx - cx, sy - cy];
+      } else {
+        svgCircle(sx, sy, dr * 2);
+        if (armStyle && dr > pen * 2) symContourFill({ c: [symCircle(sx, sy, dr, 16)], d: dr }, Math.max(pen * 1.4, dr * 0.35));
+      }
+    }
   } else {
-    // No center — the arms converge
+    // Arms reach the rim: a single dot sits in one gap between the tips
+    let a = baseRot + (accI + 0.5) * TWO_PI / N, rs = rTip * 0.9;
+    acc = [Math.cos(a) * rs, Math.sin(a) * rs];
+    kitWeight('primary');
+    svgCircle(cx + acc[0], cy + acc[1], dr * 2.4);
+    if (dr > pen * 2) symContourFill({ c: [symCircle(cx + acc[0], cy + acc[1], dr * 1.2, 16)], d: dr * 1.2 }, Math.max(pen * 1.4, dr * 0.35));
+  }
+  // Outer bounding ring at mid scale
+  if (detailActive('internalDetail', s) && satMode !== 2) {
+    kitWeight('fine');
+    svgCircle(cx, cy, maxR * 2.06);
   }
 
-  // Outer bounding ring (optional, more common at mid-scale)
-  if (s < 0.65 && prng.nextFloat() < 0.3) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.3);
-    svgCircle(cx, cy, maxR * 2.05);
-  }
-
-  // Sigil variant overlays (PRNG consumed unconditionally)
-  // Sigil variant overlays — no prng inside branches (use hash)
-  let sigilVariant = prng.nextFloat();
-  if (sigilVariant < 0.18) {
-    // Ringed sigil with orbiting dots
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-    svgCircle(cx, cy, maxR * 1.85);
-    let dotCount = armCount * 2;
-    for (let di = 0; di < dotCount; di++) {
-      let da = baseRot + (di / dotCount) * TWO_PI;
-      let dotSz = (di % 2 === 0) ? maxR * 0.03 : maxR * 0.018;
-      svgCircle(cx + maxR * 0.92 * cos(da), cy + maxR * 0.92 * sin(da), dotSz * 2);
-    }
-  } else if (sigilVariant < 0.30) {
-    // Layered transparency — use hash for inner count
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.25);
-    let innerR = maxR * 0.55;
-    let innerCount = Math.max(3, armCount - 1 - Math.floor(_profileHash(elemSeed, 145) * 3));
-    let innerRot = baseRot + PI / armCount;
-    for (let i = 0; i < innerCount; i++) {
-      let a = innerRot + (i / innerCount) * TWO_PI;
-      let tipX = cx + innerR * cos(a), tipY = cy + innerR * sin(a);
-      svgLine(cx + hubGap * cos(a), cy + hubGap * sin(a), tipX, tipY);
-      svgArc(tipX, tipY, innerR * 0.15, innerR * 0.15, a - 0.5, a + 0.5);
-    }
-  } else if (sigilVariant < 0.40) {
-    // Branching arms — fork angles from hash
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.3);
-    for (let i = 0; i < armCount; i++) {
-      let a = baseRot + (i / armCount) * TWO_PI;
-      let midR = maxR * 0.5;
-      let mx = cx + midR * cos(a), my = cy + midR * sin(a);
-      let forkAngle = 0.4 + _profileHash(elemSeed + i * 17, 146) * 0.3;
-      let forkLen = maxR * 0.2;
-      svgLine(mx, my, mx + forkLen * cos(a + forkAngle), my + forkLen * sin(a + forkAngle));
-      svgLine(mx, my, mx + forkLen * cos(a - forkAngle), my + forkLen * sin(a - forkAngle));
-    }
-  }
-  // else: no variant overlay — standard sigil
-
-  // Close animation group
   if (hasSpinAnim) { pop(); svgRec.endGroup(); }
 
+  // Static construction field (rule 14: the field stays still while the sigil turns)
+  symField(rect, s, cx, cy, maxR * 1.1, acc, { designation, status, labelSeed,
+    spec: ['ARMS ' + N + ' ' + kind.toUpperCase(), 'HUB ' + (rh / maxR).toFixed(3), code] });
+
+  kitWeight('primary');
   svgSetStrokeWeight(state.geometry.strokeWeight);
   svgRec.endGroup();
 }
