@@ -1301,6 +1301,7 @@ const BORDER_AUTO_EXCLUDED = new Set(['corner-dots', 'tabbed', 'hexagonal', 'war
 // cell border on top of it.
 const SELF_FRAMED_ARCHETYPES = new Set(['terminalBlock', 'errorMessage', 'miniGame', 'dataReadout']);
 let _pageBorderStyle = null;
+const TEXT_LED_ARCHETYPES = new Set(['statusPanel', 'dataReadout', 'terminalBlock', 'errorMessage']);
 
 const BORDER_STYLES_BY_SCALE = {
   'corner-bracket':    [0.00, 0.75],
@@ -17970,6 +17971,9 @@ function generate(frameIndex) {
       if (cells.length > 1 && key === 'asciiArt' && cellScale > 0.6 && (usageCount.asciiArt || 0) >= 1) continue;
 
       let w = a.weight * sw;
+      // Text-led panels can't fit legible type (min text size) in small cells:
+      // let graphic archetypes take those
+      if (Math.min(origPadded.w, origPadded.h) < 120 && TEXT_LED_ARCHETYPES.has(key)) w *= 0.15;
 
       // Diversity penalty — stronger at macro scales
       if (cells.length > 1) {
