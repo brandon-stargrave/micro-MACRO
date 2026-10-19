@@ -19191,6 +19191,19 @@ function forEachCell(cellData, fn) {
   }
 }
 
+// A horizontal line at height y across the composition, broken at gutters:
+// one segment per cell spanning y (the whole width if there's no cell data).
+// Page-wide treatment lines read as stray hairlines where they cross gutters.
+function svgLineAcrossCells(x0, x1, y, cellData) {
+  if (!cellData || cellData.length < 2) { svgLine(x0, y, x1, y); return; }
+  for (let cm of cellData) {
+    let r = cm.rect;
+    if (y < r.y || y > r.y + r.h) continue;
+    let a = Math.max(x0, r.x), b = Math.min(x1, r.x + r.w);
+    if (b > a) svgLine(a, y, b, y);
+  }
+}
+
 function applyTreatment(treatment, intensity, rect, prng, cellData) {
   svgRec.beginGroup('treatment-' + treatment);
 
@@ -19230,9 +19243,9 @@ function applyGlitchTreatment(intensity, rect, prng, cellData) {
       sy = y + animCtx.framePRNG.nextFloat() * h;
       dx = (animCtx.framePRNG.nextFloat() - 0.5) * w * 0.1 * eff;
     }
-    svgLine(x, sy, x + w, sy);
+    svgLineAcrossCells(x, x + w, sy, cellData);
     if (prng.nextFloat() < eff * 0.5) {
-      svgLine(x + dx, sy + sliceH, x + w * 0.3 + dx, sy + sliceH);
+      svgLineAcrossCells(x + dx, x + w * 0.3 + dx, sy + sliceH, cellData);
     }
   }
 
@@ -19274,7 +19287,11 @@ function applyGlitchTreatment(intensity, rect, prng, cellData) {
       let fw = w * (0.05 + prng.nextFloat() * 0.15);
       let fh = h * (0.01 + prng.nextFloat() * 0.03);
       let fdx = (prng.nextFloat() - 0.5) * w * 0.05 * eff;
+      // A displaced slab: outline plus hatch at pen pitch (an empty outline
+      // read as a stray box, not as a torn-out strip of image)
       svgRect(fx + fdx, fy, fw, fh);
+      let pitch = Math.max(1.5, unitToPx(state.plotter.hatch.penDiameter, 'mm', state.plotter.dpi) * 2.5);
+      for (let hy = fy + pitch; hy < fy + fh - pitch * 0.5; hy += pitch) svgLine(fx + fdx, hy, fx + fdx + fw, hy);
     }
   }
 
@@ -19359,21 +19376,32 @@ function applyTerminalTreatment(intensity, rect, prng, cellData) {
     audioEnergy /= _compBus.audioSlices;
   }
   let spacingMod = 1 - audioEnergy * 0.4 * intensity; // louder = tighter spacing
-  let lineSpacing = Math.max(2, Math.round((6 - intensity * 3) * spacingMod));
-  let lineCount = Math.min(120, Math.floor(h / lineSpacing));
+  // Pitch at least 4 pen widths (closer lines plot as a solid smear), and the
+  // lines always span the full height: past the 120-line cap the pitch
+  // widens instead of the band stopping partway down.
+  let pen = unitToPx(state.plotter.hatch.penDiameter, 'mm', state.plotter.dpi);
+  // At most 40 lines and none in the gutters: a page of 120 full-width lines
+  // was ~20 m of ink for an overlay.
+  let lineSpacing = Math.max(2, pen * 4, Math.round((6 - intensity * 3) * spacingMod), h / 40);
+  let lineCount = Math.floor(h / lineSpacing);
   svgSetStrokeWeight(state.geometry.strokeWeight * 0.08);
   svgSetStroke(state.fgColor);
   for (let i = 0; i < lineCount; i++) {
     let ly = y + ((i * lineSpacing + scanOffset) % h);
-    svgLine(x, ly, x + w, ly);
+    svgLineAcrossCells(x, x + w, ly, cellData);
   }
 
-  // Screen bezel — double border
+  // Screen bezel — double border in the inner half of the margin, tagged as
+  // a border so plot-safe export keeps it (as a treatment it sat 2-4% outside
+  // the content rect and was clipped away, though the screen showed it)
+  let mMin = Math.min(state.margin.top, state.margin.right, state.margin.bottom, state.margin.left);
+  let bezelInset = Math.max(1.5, Math.min(Math.min(w, h) * 0.02, mMin * 0.22));
+  svgRec.beginGroup('border');
   svgSetStrokeWeight(state.geometry.strokeWeight * 0.6);
-  let bezelInset = Math.min(w, h) * 0.02;
   svgRect(x - bezelInset, y - bezelInset, w + bezelInset * 2, h + bezelInset * 2);
   svgSetStrokeWeight(state.geometry.strokeWeight * 0.3);
   svgRect(x - bezelInset * 2, y - bezelInset * 2, w + bezelInset * 4, h + bezelInset * 4);
+  svgRec.endGroup();
 
   // Corner phosphor dots
   if (intensity > 0.3) {
@@ -19677,9 +19705,12 @@ function applyDecodeTreatment(intensity, rect, prng, cellData) {
   // Audio-reactive decode speed — louder = faster decode progress
   let audioMod = _compBus ? Math.max(0.3, (_compBus.audioRmsDb + 40) / 40) : 1;
   // Scan beam position sweeps across composition
+  // A still frame freezes the beam partway across (a decode in progress);
+  // at 1 it sat on the right content edge, and audioMod could push it into
+  // the margin, so the position is clamped
   let scanPos = decodeAnimated ?
-    anim.sweep(animCtx.frameIndex, animCtx.frameCount, animCtx.frameCount, animCtx.speedMul, 0) : 1;
-  scanPos *= audioMod;
+    anim.sweep(animCtx.frameIndex, animCtx.frameCount, animCtx.frameCount, animCtx.speedMul, 0) : 0.62;
+  scanPos = Math.max(0, Math.min(1, scanPos * audioMod));
   let scanX = x + scanPos * w; // vertical beam sweeping left to right
 
   // PRNG consumption for stability (always consume same count)
@@ -19731,23 +19762,29 @@ function applyDecodeTreatment(intensity, rect, prng, cellData) {
       let cellDecodeT = Math.max(0, scanPos - cm.cascadeT * 0.3);
       cellDecodeT = Math.min(1, cellDecodeT * (1 + intensity * 0.5));
 
-      let fontSize = Math.max(3, Math.min(cr.w * 0.03, 5));
-      let cols = Math.max(2, Math.floor(cr.w / (fontSize * 1.1)));
-      let rows = Math.max(1, Math.floor(cr.h / (fontSize * 1.5)));
+      // Laid out at the drawn (min text) size and capped per cell, with
+      // built-in glyphs: a 3-5px grid overdrew at min text size, and the
+      // font pick per glyph shifted the cell PRNG as the decode advanced
+      // frame to frame.
+      let fontSize = Math.max(getMinTextSizePx(), Math.min(cr.w * 0.03, 5));
+      let pitchX = fontSize * 1.1, pitchY = fontSize * 1.5;
+      let cols = Math.max(2, Math.floor(cr.w / pitchX));
+      let rows = Math.max(1, Math.floor(cr.h / pitchY));
+      rows = Math.min(rows, Math.max(1, Math.floor(260 / cols)));
       // Only draw cipher characters in undecoded region
       let decodedCols = Math.floor(cols * cellDecodeT);
 
       for (let row = 0; row < rows; row++) {
         for (let col = decodedCols; col < cols; col++) {
-          let cx2 = cr.x + col * fontSize * 1.1 + fontSize * 0.3;
-          let cy2 = cr.y + row * fontSize * 1.5 + fontSize + 1;
+          let cx2 = cr.x + col * pitchX + fontSize * 0.3;
+          let cy2 = cr.y + row * pitchY + fontSize + 1;
           // Hash-based cipher character
           let charIdx = Math.floor(_profileHash(ci * 1000 + row * 50 + col, 0x4402) * cipherChars.length);
           // Animated: cycle cipher chars per frame
           if (decodeAnimated) {
             charIdx = Math.floor(_profileHash(ci * 1000 + row * 50 + col + animCtx.frameIndex * 7, 0x4403) * cipherChars.length);
           }
-          drawFallbackText(cipherChars[charIdx], cx2, cy2, fontSize);
+          _drawBuiltinText(cipherChars[charIdx], cx2, cy2, fontSize);
         }
       }
     });
@@ -19912,7 +19949,7 @@ function applyHackingTreatment(intensity, rect, prng, cellData) {
       let pitchX = fontSize * 0.9, pitchY = fontSize * 1.3;
       let cols = Math.max(2, Math.floor(cr.w / pitchX));
       let rows = Math.max(1, Math.floor(cr.h / pitchY));
-      rows = Math.min(rows, Math.max(1, Math.floor(1200 / cols)));
+      rows = Math.min(rows, Math.max(1, Math.floor(300 / cols)));
       let floodCols = Math.round(cols * Math.min(1, cellFloodT));
 
       // 50% XXXX fill, 50% hex dump fill
@@ -19986,8 +20023,11 @@ const TREATMENT_PER_CELL = {
     let { x, y, w, h } = rect;
     svgSetStrokeWeight(state.geometry.strokeWeight * 0.06);
     svgSetStroke(state.fgColor);
-    let spacing = Math.max(2, Math.round(4 - scanDensity * 2));
-    let count = Math.min(50, Math.floor(h / spacing));
+    // Span the whole cell (a 50-line cap at 2-4px stopped the band near the
+    // top of tall cells), at least 4 pen widths apart, at most ~18 lines
+    let pen = unitToPx(state.plotter.hatch.penDiameter, 'mm', state.plotter.dpi);
+    let spacing = Math.max(2, pen * 4, Math.round(4 - scanDensity * 2), h / 18);
+    let count = Math.floor(h / spacing);
     for (let i = 0; i < count; i++) {
       svgLine(x, y + i * spacing, x + w, y + i * spacing);
     }
