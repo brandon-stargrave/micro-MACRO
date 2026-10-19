@@ -1269,10 +1269,13 @@ const VARIANT_DEFS = {
   datavizFragment: ['histogram','waveform','scatter','polar','hBarBank','candlestick','oscilloscope','heatmap','sankey','stackedArea'],
   spectrogram: ['stippleAudio','ditherBlock','ditherBand','waterfall','dotMatrix','waveform+spectrum','bandAnalyzer'],
   miniGame: ['pong','breakout','snake','pacman','platformer','tetris'],
-  statusPanel: null, targetingReticle: null, dataReadout: null,
+  dataReadout: ['telemetry','ledger','split','register'],
+  errorMessage: ['dump','panic','dialog'],
+  terminalBlock: ['shell','boot','monitor','split'],
+  statusPanel: null, targetingReticle: null,
   nodeNetwork: null, standaloneGlyph: null, heroText: null,
   starChart: null, sigil: null, globeSphere: null,
-  errorMessage: null, terminalBlock: null, encodedData: null
+  encodedData: null
 };
 
 const DETAIL_SHEDDING = [
@@ -6998,126 +7001,601 @@ function composeMeterGauge(rect, s, prng) {
   svgRec.endGroup();
 }
 
+// ---- Text archetypes: shared helpers --------------------------------------
+// Used only by composeDataReadout, composeErrorMessage and composeTerminalBlock.
+
+// Every text draw/measure picks a font by rolling _cellPRNG. Text that blinks
+// out (animation presence) skips that roll and would shift the cell stream
+// between frames. The text composers swap in a fixed roll for their duration:
+// no cell draws are spent on fonts, and text always uses the generation's
+// micro font (what these archetypes are set in). Returns the stream to restore.
+const _TX_FONT_ROLL = { nextFloat: () => 0, nextInt: (a) => a, pick: (arr) => arr[0] };
+function _txFontStream() {
+  let saved = _cellPRNG;
+  if (saved) _cellPRNG = _TX_FONT_ROLL;
+  return saved;
+}
+
+// The font getTextRenderer resolves to under the fixed roll.
+function _txFont() {
+  let te = state.typeEngine || {};
+  if (te.microFont && te.microFont !== 'auto' && _cellScale < 0.6) return loadedFonts.micro.find(f => f.name === te.microFont) || null;
+  if (te.macroFont && te.macroFont !== 'auto' && _cellScale >= 0.3) return loadedFonts.macro.find(f => f.name === te.macroFont) || null;
+  return _genFonts.micro || _genFonts.macro;
+}
+
+// Text width. The single-line SVG fonts draw a space (a glyph with no path)
+// at the 0.7 em fallback advance but measure it at the font's own advance, so
+// strings with spaces measure short; correct for that here.
+function _txW(str, size) {
+  str = String(str);
+  let w = measureFallbackText(str, size);
+  if (!loadedFonts.ready || str.indexOf(' ') < 0) return w;
+  let f = _txFont();
+  if (f && f.type === 'svg') {
+    let g = f.glyphs.get(' ');
+    let sz = Math.max(size, getMinTextSizePx());
+    if (g && !g.d) w += (str.split(' ').length - 1) * (sz * 0.7 - g.advance * sz / f.em);
+  }
+  return w;
+}
+
+// Heavy weight only where the type is large enough to stay legible; small
+// text drawn heavy closes up into a blot.
+function _txBold(size) { kitWeight(size > getMinTextSizePx() * 2.2 ? 'heavy' : 'primary'); }
+
+// kitText with alignment measured by _txW.
+function _txText(str, x, y, size, align, seed, hint) {
+  str = String(str);
+  if (align === 'center' || align === 'right') x -= align === 'center' ? _txW(str, size) / 2 : _txW(str, size);
+  kitText(str, x, y, size, 'left', seed, hint);
+}
+
+// Trim a string from the end until it fits maxW; '' when fewer than `min` chars fit.
+function _txFit(str, size, maxW, min) {
+  str = String(str);
+  let full = _txW(str, size);
+  if (full <= maxW) return str;
+  let n = Math.floor(maxW / (full / Math.max(1, str.length)));
+  while (n > 0 && _txW(str.slice(0, n), size) > maxW) n--;
+  return n >= (min || 3) ? str.slice(0, n) : '';
+}
+
+// Plotter-safe "solid" for a rectangle. dir: 1 '/', -1 '\', 0 horizontal,
+// 2 vertical. phase (0-1) shifts the lines by a fraction of a step so stripes
+// can march seamlessly.
+function _txHatchRect(x, y, w, h, spacing, dir, phase) {
+  if (w <= 0.6 || h <= 0.6) return;
+  let pen = unitToPx(state.plotter.hatch.penDiameter, 'mm', state.plotter.dpi);
+  spacing = Math.max(spacing, pen * 1.2, 0.8);
+  let ph = ((phase || 0) % 1 + 1) % 1;
+  if (dir === 0) { for (let yy = y + spacing * ((0.5 + ph) % 1); yy < y + h; yy += spacing) svgLine(x, yy, x + w, yy); return; }
+  if (dir === 2) { for (let xx = x + spacing * ((0.5 + ph) % 1); xx < x + w; xx += spacing) svgLine(xx, y, xx, y + h); return; }
+  let step = spacing * Math.SQRT2;
+  for (let t = step * ((0.5 + ph) % 1); t < w + h; t += step) {
+    let u1 = Math.min(t, w), v1 = t - u1;
+    let v2 = Math.min(t, h), u2 = t - v2;
+    if (dir === 1) svgLine(x + u1, y + v1, x + u2, y + v2);
+    else svgLine(x + w - u1, y + v1, x + w - u2, y + v2);
+  }
+}
+
+// Section header: boxed index, title, rule to the right edge with an end tick.
+// y is the top; returns the height used.
+function _txSection(x, y, w, idx, title, size) {
+  let tag = String(idx).padStart(2, '0');
+  let tw = _txW(tag, size);
+  let base = y + size * 1.2;
+  kitWeight('secondary');
+  svgRect(x, y + size * 0.05, tw + size * 0.7, size * 1.5);
+  _txText(tag, x + size * 0.35, base, size);
+  let tx = x + tw + size * 1.3;
+  let ttl = _txFit(title, size, x + w - tx - size * 1.5);
+  kitWeight('primary');
+  if (ttl) _txText(ttl, tx, base, size);
+  let rx = tx + (ttl ? _txW(ttl, size) + size * 0.6 : 0);
+  kitWeight('fine');
+  if (x + w - rx > size * 2) {
+    svgLine(rx, y + size * 0.8, x + w, y + size * 0.8);
+    svgLine(x + w, y + size * 0.35, x + w, y + size * 1.25);
+  }
+  return size * 2.1;
+}
+
+// Sparkline in a table cell; vals in 0-1, off scrolls the buffer.
+function _txSpark(x, y, w, h, vals, off, mark) {
+  let n = vals.length, pts = [];
+  for (let i = 0; i < n; i++) pts.push([x + w * i / (n - 1), y + h * (1 - vals[(i + off) % n])]);
+  svgPolyline(pts);
+  if (mark) { let p = pts[n - 1]; svgCircle(p[0], p[1], Math.max(2, h * 0.35)); }
+}
+
+// Horizontal bar meter: outline, hatched fill to v, limit tick at lim.
+function _txMeter(x, y, w, h, v, lim) {
+  kitWeight('fine');
+  svgRect(x, y, w, h);
+  _txHatchRect(x, y, w * Math.max(0, Math.min(1, v)), h, Math.max(1.6, h * 0.3), 2);
+  if (lim) { let lx = x + w * lim; svgLine(lx, y - h * 0.4, lx, y + h * 1.4); }
+}
+
+// One row of legend swatches + labels, as many as fit. y is the baseline.
+function _txLegend(x, y, w, size, items) {
+  let sw = size * 1.7, sh = size * 0.85, cx = x;
+  let title = 'LEGEND';
+  kitWeight('secondary');
+  _txText(title, cx, y, size);
+  cx += _txW(title, size) + size * 1.2;
+  for (let it of items) {
+    let lw = _txW(it.label, size);
+    if (cx + sw + size * 0.5 + lw > x + w) break;
+    let sy = y - sh;
+    kitWeight('fine');
+    if (it.kind === 'hatch') { svgRect(cx, sy, sw, sh); _txHatchRect(cx, sy, sw, sh, Math.max(1.6, sh * 0.3), 1); }
+    else if (it.kind === 'box') svgRect(cx, sy, sw, sh);
+    else if (it.kind === 'dash') drawDashedLine(cx, sy + sh / 2, cx + sw, sy + sh / 2, sw * 0.18, sw * 0.12);
+    else if (it.kind === 'ring') { svgLine(cx, sy + sh / 2, cx + sw, sy + sh / 2); svgCircle(cx + sw / 2, sy + sh / 2, sh * 0.8); }
+    else if (it.kind === 'tri') drawTriangle(cx + sw / 2, sy + sh * 0.55, sh * 0.6, -HALF_PI);
+    else if (it.kind === 'spark') svgPolyline([[cx, sy + sh], [cx + sw * 0.3, sy + sh * 0.3], [cx + sw * 0.55, sy + sh * 0.7], [cx + sw, sy]]);
+    kitWeight('secondary');
+    _txText(it.label, cx + sw + size * 0.5, y, size);
+    cx += sw + size * 0.5 + lw + size * 1.4;
+  }
+}
+
+// Measurement channels: name, unit, decimals, min, max
+const _TX_CHANNELS = [
+  ['TEMP', '°C', 1, -40, 120], ['VOLT', 'V', 2, 0, 48], ['CURR', 'A', 3, 0, 12], ['FREQ', 'MHZ', 2, 1, 999],
+  ['GAIN', 'DB', 1, -30, 30], ['PHASE', 'DEG', 1, 0, 360], ['LOAD', '%', 1, 0, 100], ['PRESS', 'KPA', 1, 80, 220],
+  ['FLUX', 'WB', 3, 0, 2], ['SNR', 'DB', 1, 0, 60], ['RSSI', 'DBM', 0, -110, -20], ['JITTR', 'MS', 2, 0, 40],
+  ['LAT', 'MS', 1, 0, 500], ['RPM', 'RPM', 0, 0, 9000], ['DRIFT', 'PPM', 2, -50, 50], ['O2', '%', 2, 0, 25],
+  ['RAD', 'MSV', 3, 0, 5], ['TORQ', 'NM', 1, 0, 400], ['HUM', '%RH', 1, 0, 100], ['BIAS', 'MV', 1, -500, 500]
+];
+const _TX_GROUPS = ['THERMAL', 'POWER BUS', 'RF LINK', 'MECHANICAL', 'ENVIRONMENT', 'TIMING', 'SENSOR ARRAY', 'COOLANT LOOP'];
+
+// One channel row: random-walk trend buffer (n points), value, status.
+function _txChannel(prng, n) {
+  let ch = prng.pick(_TX_CHANNELS);
+  let v = prng.nextFloat(), walk = [], u = v;
+  for (let i = 0; i < n; i++) { u = Math.max(0.05, Math.min(0.95, u + (prng.nextFloat() - 0.5) * 0.3)); walk.push(u); }
+  let num = ch[3] + (ch[4] - ch[3]) * v;
+  let lim = 0.75 + prng.nextFloat() * 0.15;
+  return { name: ch[0], unit: ch[1], val: num.toFixed(ch[2]), v, lim, walk,
+           st: v > lim ? (v > 0.93 ? 'CRIT' : 'WARN') : 'OK' };
+}
+
+// Value drawn so its decimal point sits on xDec (right-aligned integer part).
+function _txDecimal(str, xDec, y, size, seed, hint) {
+  let dot = str.indexOf('.');
+  let intPart = dot < 0 ? str : str.slice(0, dot);
+  _txText(str, xDec - _txW(intPart, size), y, size, 'left', seed, hint);
+}
+
+// Channel table: header row, ruled rows, decimal-aligned values, meter and
+// trend cells. Columns drop (trend, meter, ch, unit, status) when narrow.
+// Returns the height used.
+function _txChannelTable(x, y, w, rows, size, seed, s) {
+  let cw = _txW('0000000000', size) / 10, gap = cw * 1.2;
+  let cols = { ch: cw * 3, name: cw * 5, val: cw * 9, unit: cw * 4, st: cw * 4, meter: 0, trend: 0 };
+  let fixed = () => Object.keys(cols).reduce((a, k) => a + (cols[k] > 0 ? cols[k] + gap : 0), 0) - gap;
+  let spare = w - fixed();
+  let wantTrend = detailActive('connectorLines', s);
+  if (spare > cw * 16 && wantTrend) { cols.meter = spare * 0.42 - gap; cols.trend = spare * 0.58 - gap; }
+  else if (spare > cw * 6) cols.meter = spare - gap;
+  else {
+    for (let k of ['ch', 'unit', 'st']) { if (fixed() > w) cols[k] = 0; }
+    if (fixed() > w) cols.val = cw * 7;
+  }
+  let order = ['ch', 'name', 'val', 'unit', 'meter', 'trend', 'st'];
+  let xs = {}, cx = x;
+  for (let k of order) { if (cols[k] > 0) { xs[k] = cx; cx += cols[k] + gap; } }
+  let rowH = size * 1.6;
+  let micro = Math.max(getMinTextSizePx(), size * 0.75);
+  // Header
+  let hy = y + micro;
+  kitWeight('fine');
+  const heads = { ch: 'CH', name: 'SIGNAL', val: 'VALUE', unit: 'UNIT', meter: 'LEVEL', trend: 'TREND 60S', st: 'STAT' };
+  for (let k of order) {
+    if (!(cols[k] > 0)) continue;
+    let lbl = _txFit(heads[k], micro, cols[k], 2);
+    if (!lbl) continue;
+    if (k === 'val') _txText(lbl, xs[k] + cols[k], hy, micro, 'right');
+    else _txText(lbl, xs[k], hy, micro);
+  }
+  let ty = y + micro * 1.5;
+  kitWeight('secondary');
+  svgLine(x, ty, x + w, ty);
+  // Rows
+  let xDec = xs.val !== undefined ? xs.val + cols.val - cw * 3.5 : 0;
+  for (let i = 0; i < rows.length; i++) {
+    let r = rows[i];
+    let base = ty + rowH * (i + 1) - size * 0.4;
+    let mid = base - size * 0.35;
+    let rs = (seed + i * 7717) >>> 0;
+    kitWeight('secondary');
+    if (xs.ch !== undefined) _txText('C' + String(i + 1).padStart(2, '0'), xs.ch, base, size);
+    _txText(_txFit(r.name, size, cols.name, 2), xs.name, base, size);
+    if (xs.val !== undefined) {
+      kitWeight(r.st === 'OK' ? 'secondary' : 'primary');
+      _txDecimal(r.val, xDec, base, size, rs, 'counter');
+    }
+    kitWeight('fine');
+    if (xs.unit !== undefined) _txText(r.unit, xs.unit, base, micro);
+    if (xs.meter !== undefined) _txMeter(xs.meter, mid - size * 0.3, cols.meter, size * 0.6, r.v, r.lim);
+    if (xs.trend !== undefined) {
+      let off = 0;
+      if (animCtx && shouldAnimate(rs)) off = anim.step(animCtx.frameIndex, animCtx.frameCount, r.walk.length, animCtx.frameCount, animCtx.speedMul, (rs % 1000) / 1000);
+      kitWeight('fine');
+      _txSpark(xs.trend, mid - size * 0.5, cols.trend, size * 1.0, r.walk, off, true);
+    }
+    if (xs.st !== undefined) {
+      kitWeight(r.st === 'OK' ? 'fine' : 'primary');
+      _txText(r.st, xs.st, base, micro);
+      if (r.st !== 'OK') svgRect(xs.st - cw * 0.3, base - micro * 1.05, _txW(r.st, micro) + cw * 0.6, micro * 1.4);
+    }
+    // Fine row rule every 4 rows
+    if ((i + 1) % 4 === 0 && i < rows.length - 1) { kitWeight('fine'); drawDashedLine(x, ty + rowH * (i + 1), x + w, ty + rowH * (i + 1), size * 0.15, size * 0.45); }
+  }
+  // Column separators
+  kitWeight('fine');
+  let bottom = ty + rowH * rows.length;
+  for (let k of ['val', 'meter', 'st']) if (xs[k] !== undefined && xs[k] > x + 1) svgLine(xs[k] - gap / 2, ty, xs[k] - gap / 2, bottom);
+  svgLine(x, bottom, x + w, bottom);
+  return bottom - y;
+}
+
+// Rows that fit in h for a channel table at this size.
+function _txTableRows(h, size) {
+  let micro = Math.max(getMinTextSizePx(), size * 0.75);
+  return Math.max(0, Math.floor((h - micro * 1.5 - size * 0.3) / (size * 1.6)));
+}
+
+// 270-degree gauge: graduated arc with numerals, hatched value band (concentric
+// arcs), red-line zone and needle.
+function _txGauge(cx, cy, R, v, lim, label, size, fill) {
+  let a0 = PI * 0.75, a1 = PI * 2.25, av = a0 + (a1 - a0) * v;
+  kitWeight('secondary');
+  svgArc(cx, cy, R * 2, R * 2, a0, a1);
+  kitWeight('fine');
+  let labels = R > size * 4.5;
+  kitTickRing(cx, cy, R * 0.97, { count: 50, major: 10, len: R * 0.11, inward: true, a0, a1, labels, labelSize: size, labelFn: i => String(i * 2) });
+  // Value band: concentric arcs = hatched sector
+  let r0 = R * (labels ? 0.5 : 0.62), r1 = R * (labels ? 0.6 : 0.8);
+  let step = Math.max(1.4, (r1 - r0) / (fill ? 7 : 4));
+  for (let r = r0; r <= r1 + 0.01; r += step) svgArc(cx, cy, r * 2, r * 2, a0, av);
+  svgArc(cx, cy, r1 * 2, r1 * 2, av, a1);
+  // Red-line zone: radial hatch on the outer rim past the limit
+  let al = a0 + (a1 - a0) * lim;
+  for (let a = al; a <= a1 + 1e-6; a += (a1 - al) / Math.max(3, Math.round(R * (a1 - al) / 3.5))) {
+    svgLine(cx + Math.cos(a) * R * 1.04, cy + Math.sin(a) * R * 1.04, cx + Math.cos(a) * R * 1.12, cy + Math.sin(a) * R * 1.12);
+  }
+  svgArc(cx, cy, R * 2.24, R * 2.24, al, a1);
+  kitWeight('heavy');
+  svgLine(cx - Math.cos(av) * R * 0.12, cy - Math.sin(av) * R * 0.12, cx + Math.cos(av) * R * 0.86, cy + Math.sin(av) * R * 0.86);
+  kitWeight('primary');
+  svgCircle(cx, cy, R * 0.14);
+  kitWeight('fine');
+  svgCircle(cx, cy, R * 0.05);
+  if (label && R > size * 2.5) _txText(label, cx, cy + R * 0.62, size, 'center');
+}
+
+// ---- Archetype: Data Readout ----
+// Variants: telemetry (hero value + gauge + channel table), ledger (grouped
+// dense table under a trend strip), split (key/value column + bar bank),
+// register (bit field + hex dump + channels).
+const DR_VARIANTS = ['telemetry', 'ledger', 'split', 'register'];
+
 function composeDataReadout(rect, s, prng) {
-  let { x, y, w, h } = rect;
-  let pad = Math.min(w, h) * 0.06;
-  let ix = x + pad, iy = y + pad, iw = w - pad * 2, ih = h - pad * 2;
-  let fontSize = Math.max(5, Math.min(ih * 0.07, 10));
-  let lineH = fontSize * 1.5;
-  let tinyFont = fontSize * 0.55;
-
   svgRec.beginGroup('data-readout');
+  let fontSaved = _txFontStream();
 
-  // Animation seeds — independent profiles for sub-elements
-  let seedHeader = prng.nextInt(0, 0xFFFFFF);
-  let seedValues = prng.nextInt(0, 0xFFFFFF);
-  let seedHex = prng.nextInt(0, 0xFFFFFF);
-  let seedFooter = prng.nextInt(0, 0xFFFFFF);
+  // Seeds and fixed data first, so the stream never depends on what fits
+  let seedHeader = prng.nextInt(1, 0xFFFFFF);
+  let seedValues = prng.nextInt(1, 0xFFFFFF);
+  let seedHex = prng.nextInt(1, 0xFFFFFF);
+  let seedFooter = prng.nextInt(1, 0xFFFFFF);
+  let seedHero = prng.nextInt(1, 0xFFFFFF);
+  let variant = DR_VARIANTS[Math.floor(prng.nextFloat() * DR_VARIANTS.length)];
+  if (_cellOverrideVariant && DR_VARIANTS.includes(_cellOverrideVariant)) variant = _cellOverrideVariant;
+  _cellVariantInfo = variant;
+  let ident = textGen.identifier(prng), srcId = textGen.identifier(prng);
+  let status = textGen.statusLabel(prng);
+  let hero = _txChannel(prng, 24);
+  let delta = ((prng.nextFloat() - 0.4) * 9).toFixed(2);
+  let rate = prng.pick([10, 25, 50, 60, 100, 120]);
+  let ver = textGen.versionString(prng), ts = textGen.timestamp(prng);
+  let crc = prng.nextInt(0, 0xFFFFFFFF).toString(16).toUpperCase().padStart(8, '0');
+  let groupStart = prng.nextInt(0, _TX_GROUPS.length - 1);
+  let page = prng.nextInt(1, 4);
 
-  // Border
-  drawCornerBrackets(ix, iy, iw, ih, Math.min(iw, ih) * 0.1);
+  let lay = kitLayout(rect, s, prng, { header: false, footer: false, side: variant === 'telemetry' || variant === 'register', minSize: 460 });
+  kitFillLayout(lay, s, prng);
+  let M = lay.main;
+  let { x, y, w, h } = M;
+  let S = Math.min(w, h);
+  let grow = 1 + s * 1.6; // fewer, larger rows toward the top of the range
+  let body = Math.min(kitType(M, 'body') * grow, 18);
+  let micro = kitType(M, 'micro');
+  let pad = Math.max(micro * 0.8, S * 0.045);
+  let ix = x + pad, iy = y + pad, iw = w - pad * 2, ih = h - pad * 2;
+  if (iw < micro * 6 || ih < micro * 3) { _cellPRNG = fontSaved; svgRec.endGroup(); return; }
 
-  // Header line — animated: statusCycle or scramble
-  let headerText = '-- ' + textGen.identifier(prng) + ' --';
-  svgSetStrokeWeight(state.geometry.strokeWeight * 1.1);
-  drawAnimText(headerText, ix + pad, iy + pad + fontSize, fontSize, seedHeader, 'bus:status');
-  svgLine(ix + pad + measureFallbackText(headerText, fontSize) + 4, iy + pad + fontSize * 0.5, ix + iw - pad, iy + pad + fontSize * 0.5);
+  if (detailActive('cornerBrackets', s)) {
+    kitWeight('secondary');
+    drawCornerBrackets(x, y, w, h, S * 0.08);
+  }
 
-  // Key-value pairs — each row animated independently
-  svgSetStrokeWeight(state.geometry.strokeWeight * 0.8);
-  let curY = iy + pad + lineH * 1.8;
-  let kvCount = prng.nextInt(3, Math.min(6, Math.floor(ih / lineH) - 3));
-  for (let i = 0; i < kvCount; i++) {
-    let key = textGen.statusLabel(prng);
-    let val = textGen.valueReadout(prng);
-    let rowSeed = (seedValues + i * 7717) >>> 0;
-    // Key uses statusCycle, value uses counter — linked to bus
-    let displayKey = animCtx ? animatedText(key, 'statusCycle', rowSeed) : key;
-    let displayVal = animCtx ? animatedText(val, 'counter', rowSeed + 1) : val;
-    drawAnimText(displayKey + ': ' + displayVal, ix + pad, curY, fontSize * 0.85, rowSeed);
-    curY += lineH;
+  // Header: identifier, rule, boxed status
+  let cy = iy;
+  let hs = body * 1.05;
+  kitWeight('primary');
+  let title = _txFit('// ' + ident, hs, iw * 0.6);
+  _txText(title, ix, cy + hs, hs, 'left', seedHeader, 'counter');
+  let stW = _txW(status, micro);
+  let tEnd = ix + _txW(title, hs) + hs * 0.6;
+  if (ix + iw - stW - micro * 1.2 > tEnd + micro * 2) {
+    kitWeight('secondary');
+    svgRect(ix + iw - stW - micro * 0.8, cy + hs - micro * 1.1, stW + micro * 0.8, micro * 1.5);
+    _txText(status, ix + iw - stW - micro * 0.4, cy + hs, micro, 'left', seedHeader + 1, 'bus:status');
+    kitWeight('fine');
+    svgLine(tEnd, cy + hs * 0.6, ix + iw - stW - micro * 1.4, cy + hs * 0.6);
+  }
+  cy += hs * 1.5;
+  if (detailActive('annotationTexture', s) && ih > body * 14) {
+    kitWeight('fine');
+    let ann = _txFit('SRC ' + srcId + '  //  ' + rate + 'HZ  //  FRAME 000000  //  CRC ' + crc, micro, iw);
+    _txText(ann, ix, cy + micro, micro, 'left', seedHeader + 2, 'counter');
+    cy += micro * 1.7;
+  }
+  if (detailActive('tickMarks', s)) {
+    kitWeight('fine');
+    let n = Math.max(10, Math.floor(iw / Math.max(3, micro * 0.6)));
+    svgLine(ix, cy, ix + iw, cy);
+    for (let i = 0; i <= n; i++) svgLine(ix + iw * i / n, cy, ix + iw * i / n, cy + (i % 10 === 0 ? micro * 0.7 : i % 5 === 0 ? micro * 0.45 : micro * 0.22));
+    cy += micro * 1.3;
+  }
 
-    // Section divider after some rows
-    if (i === 1 && kvCount > 3 && detailActive('connectorLines', s)) {
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.3);
-      drawDashedLine(ix + pad, curY - lineH * 0.3, ix + iw * 0.5, curY - lineH * 0.3, 3, 3);
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.8);
+  // Footer and legend reserve
+  let footH = detailActive('versionStrings', s) && ih > body * 10 ? micro * 2.2 : 0;
+  let legendH = detailActive('primaryLabels', s) && ih > body * 16 && iw > micro * 30 ? micro * 2.6 : 0;
+  let bottom = iy + ih - footH - legendH;
+
+  // Hero: label, dominant value, unit, delta, and a variant instrument at right
+  let heroSize = Math.max(body * 1.8, Math.min(S * 0.13 * (1 + s * 1.5), 110));
+  let heroBlock = () => micro * 1.6 + heroSize * 1.05 + body * 1.6;
+  while (heroSize > body * 1.3 && heroBlock() > (bottom - cy) * 0.5) heroSize *= 0.85;
+  let hv = hero.val;
+  let maxHeroW = iw * (iw > S * 1.2 ? 0.5 : 0.62);
+  while (heroSize > body * 1.3 && _txW(hv, heroSize) > maxHeroW) heroSize *= 0.9;
+  if (heroBlock() < bottom - cy) {
+    let hy = cy + micro * 1.2;
+    kitWeight('fine');
+    _txText(_txFit('PRIMARY // ' + hero.name + ' // CH00', micro, maxHeroW), ix, hy, micro);
+    let vb = hy + heroSize * 1.12;
+    _txBold(heroSize);
+    _txText(hv, ix, vb, heroSize, 'left', seedHero, 'counter');
+    let hvW = _txW(hv, heroSize);
+    kitWeight('primary');
+    if (hvW + _txW(hero.unit, body) + body < iw) _txText(hero.unit, ix + hvW + body * 0.4, vb, body);
+    // Delta line with a trend triangle
+    let dy = vb + body * 1.45;
+    let up = +delta >= 0;
+    kitWeight('secondary');
+    drawTriangle(ix + body * 0.45, dy - body * 0.38, body * 0.42, up ? -HALF_PI : HALF_PI);
+    let dl = _txFit((up ? '+' : '') + delta + ' ' + hero.unit + '  /60S   LIM ' + Math.round(hero.lim * 100) + '%', micro, maxHeroW - body);
+    _txText(dl, ix + body * 1.2, dy, micro, 'left', seedHero + 1, 'counter');
+    let blockH = heroBlock();
+    // Instrument in the space right of the hero value
+    let rx = ix + Math.max(hvW + _txW(hero.unit, body) + body * 2, maxHeroW + body), rw = ix + iw - rx;
+    if (rw > blockH * 0.8 && detailActive('tickMarks', s)) {
+      let ry = cy, rh = blockH;
+      if (variant === 'telemetry') {
+        let R = Math.min(rh * 0.5, rw * 0.42);
+        _txGauge(rx + rw - R * 1.15, ry + rh * 0.52, R, (animCtx && _compBus) ? 0.15 + _compBus.meterValue * 0.75 : hero.v, hero.lim, hero.unit, micro, s > 0.12);
+        // Min/avg/max readouts left of the gauge
+        let lx = rx, lw = rw - R * 2.5;
+        if (lw > micro * 9) {
+          let mm = [['MIN', hero.walk.reduce((a, b) => Math.min(a, b))], ['AVG', hero.walk.reduce((a, b) => a + b) / hero.walk.length], ['MAX', hero.walk.reduce((a, b) => Math.max(a, b))]];
+          for (let i = 0; i < 3; i++) {
+            let by = ry + rh * 0.3 + i * micro * 1.8;
+            kitWeight('fine');
+            _txText(mm[i][0], lx, by, micro);
+            kitWeight('secondary');
+            _txText((mm[i][1] * 100).toFixed(1), lx + lw - micro, by, micro, 'right');
+          }
+        }
+      } else if (variant === 'ledger' || variant === 'split') {
+        // Trend chart with grid, limit line and axis labels
+        let gx = rx + micro * 3, gy = ry + micro * 0.5, gw = rw - micro * 3, gh = rh - micro * 2.2;
+        kitWeight('fine');
+        for (let i = 0; i <= 4; i++) drawDashedLine(gx, gy + gh * i / 4, gx + gw, gy + gh * i / 4, 1.5, 3);
+        for (let i = 0; i <= 6; i++) svgLine(gx + gw * i / 6, gy + gh, gx + gw * i / 6, gy + gh + micro * 0.4);
+        _txText('100', gx - micro * 0.4, gy + micro * 0.4, micro, 'right');
+        _txText('0', gx - micro * 0.4, gy + gh + micro * 0.3, micro, 'right');
+        _txText('-60S', gx, gy + gh + micro * 1.6, micro);
+        _txText('NOW', gx + gw, gy + gh + micro * 1.6, micro, 'right');
+        kitWeight('secondary');
+        svgLine(gx, gy + gh * (1 - hero.lim), gx + gw, gy + gh * (1 - hero.lim));
+        let off = animCtx && shouldAnimate(seedHero) ? anim.step(animCtx.frameIndex, animCtx.frameCount, hero.walk.length, animCtx.frameCount, animCtx.speedMul, 0) : 0;
+        kitWeight('primary');
+        _txSpark(gx, gy, gw, gh, hero.walk, off, true);
+        // Hatched area under the trace for the last third
+        let n = hero.walk.length;
+        kitWeight('fine');
+        for (let i = Math.floor(n * 0.66); i < n; i++) {
+          let px = gx + gw * i / (n - 1);
+          svgLine(px, gy + gh * (1 - hero.walk[(i + off) % n]), px, gy + gh);
+        }
+      } else {
+        // Register: 16-bit status word as a bit field
+        let bits = 16, bw = Math.min(rw / bits, rh * 0.3), bx0 = rx + rw - bw * bits, by0 = ry + rh * 0.25;
+        let word = Math.floor(hero.v * 0xFFFF);
+        kitWeight('fine');
+        _txText('STATUS WORD 0x' + word.toString(16).toUpperCase().padStart(4, '0'), bx0, by0 - micro * 0.6, micro, 'left', seedHex, 'bus:hex');
+        for (let b = 0; b < bits; b++) {
+          let bx = bx0 + b * bw;
+          kitWeight('secondary');
+          svgRect(bx, by0, bw, bw);
+          if ((word >> (15 - b)) & 1) { kitWeight('fine'); _txHatchRect(bx, by0, bw, bw, Math.max(1.6, bw * 0.18), 1); }
+          if (b % 4 === 0 && bw * 4 > micro * 2) { kitWeight('fine'); _txText(String(15 - b), bx + bw * 0.1, by0 + bw + micro * 1.2, micro); }
+        }
+        kitWeight('fine');
+        let fields = ['MODE', 'IRQ', 'FAULT', 'RDY'];
+        for (let f = 0; f < 4; f++) {
+          let fx = bx0 + f * bw * 4;
+          svgLine(fx + 1, by0 + bw + micro * 1.8, fx + bw * 4 - 1, by0 + bw + micro * 1.8);
+          if (bw * 4 > _txW(fields[f], micro) + 2) _txText(fields[f], fx + bw * 2, by0 + bw + micro * 3, micro, 'center');
+        }
+      }
+    }
+    cy += blockH + body * 0.4;
+  } else {
+    // No room for the hero: the value becomes an inline line
+    kitWeight('primary');
+    _txText(_txFit(hero.name + ' ' + hv + hero.unit, body, iw), ix, cy + body, body, 'left', seedHero, 'counter');
+    cy += body * 1.6;
+  }
+
+  // Body: variant layout filling down to the legend/footer
+  let avail = bottom - cy;
+  let sec = Math.max(micro, body * 0.85);
+  let gIdx = groupStart;
+  if (variant === 'telemetry' || variant === 'ledger') {
+    let first = true, secN = 1;
+    while (avail > body * 3) {
+      let sh = (avail > body * 6) ? _txSection(ix, cy, iw, secN, _TX_GROUPS[gIdx % _TX_GROUPS.length] + (first ? '  //  ' + srcId : ''), sec) : 0;
+      cy += sh; avail -= sh;
+      let maxRows = _txTableRows(avail, body);
+      // Ledger splits into groups of 4-7 rows; telemetry is one table
+      let n = variant === 'ledger' ? Math.min(maxRows, 4 + (gIdx % 4)) : maxRows;
+      if (variant === 'ledger' && maxRows - n < 3) n = maxRows;
+      if (n < 1) break;
+      let rows = [];
+      for (let i = 0; i < n; i++) rows.push(_txChannel(prng, Math.max(10, Math.min(28, Math.floor(iw / (body * 2.2))))));
+      let used = _txChannelTable(ix, cy, iw, rows, body, (seedValues + secN * 131) >>> 0, s);
+      cy += used + body * 0.9; avail -= used + body * 0.9;
+      gIdx++; secN++; first = false;
+      if (variant === 'telemetry') break;
+    }
+  } else if (variant === 'split') {
+    // Left: key/value column with leader dots. Right: vertical bar bank with scale.
+    let colW = iw > body * 30 ? iw * 0.48 : iw;
+    let sh = avail > body * 6 ? _txSection(ix, cy, colW, 1, _TX_GROUPS[gIdx % _TX_GROUPS.length], sec) : 0;
+    let ky = cy + sh;
+    let rowH = body * 1.55;
+    let n = Math.max(0, Math.floor((bottom - ky - body * 0.3) / rowH));
+    let cw = _txW('0', body);
+    for (let i = 0; i < n; i++) {
+      let r = _txChannel(prng, 4);
+      let base = ky + rowH * (i + 1) - body * 0.3;
+      kitWeight('secondary');
+      let key = r.name + (colW > cw * 22 ? '.' + String(i).padStart(2, '0') : '');
+      _txText(key, ix, base, body);
+      let xDec = ix + colW - cw * 7.5;
+      kitWeight(r.st === 'OK' ? 'secondary' : 'primary');
+      _txDecimal(r.val, xDec, base, body, (seedValues + i * 7717) >>> 0, 'counter');
+      kitWeight('fine');
+      if (colW > cw * 16) _txText(r.unit, ix + colW - cw * 3.4, base, micro);
+      let kx = ix + _txW(key, body) + cw * 0.6, vx = xDec - _txW(r.val.split('.')[0], body) - cw * 0.6;
+      if (vx - kx > cw * 2) drawDashedLine(kx, base - body * 0.3, vx, base - body * 0.3, body * 0.1, body * 0.4);
+      if (r.st !== 'OK') { kitWeight('primary'); drawTriangle(ix + colW - cw * 0.5, base - body * 0.35, body * 0.35, -HALF_PI); }
+    }
+    if (colW < iw) {
+      let bx = ix + colW + iw * 0.04, bw = ix + iw - bx;
+      let sh2 = _txSection(bx, cy, bw, 2, 'LEVELS', sec);
+      let gy = cy + sh2 + body * 0.5, gh = bottom - gy - micro * 2.2;
+      if (gh > body * 3) {
+        let nb = Math.max(4, Math.min(16, Math.floor(bw / (body * 1.6))));
+        let sx = bx + micro * 3.2, sw = bw - micro * 3.2;
+        kitWeight('fine');
+        kitRuler(sx - micro * 0.5, gy, gh, { vertical: true, divisions: 10, major: 5, len: -micro * 0.6, side: -1, labels: true, from: 100, to: 0, labelSize: micro });
+        let slot = sw / nb;
+        for (let i = 0; i < nb; i++) {
+          let v = 0.12 + prng.nextFloat() * 0.85;
+          let bxi = sx + i * slot + slot * 0.18, bwi = slot * 0.64, bh = gh * v;
+          kitWeight('secondary');
+          svgRect(bxi, gy + gh - bh, bwi, bh);
+          kitWeight('fine');
+          _txHatchRect(bxi, gy + gh - bh, bwi, bh, Math.max(1.6, bwi * 0.22), v > 0.8 ? 1 : 0);
+          if (slot > micro * 1.6) _txText(String(i + 1).padStart(2, '0'), bxi + bwi / 2, gy + gh + micro * 1.3, micro, 'center');
+        }
+        kitWeight('secondary');
+        svgLine(sx, gy + gh, sx + sw, gy + gh);
+        drawDashedLine(sx, gy + gh * 0.2, sx + sw, gy + gh * 0.2, 3, 2);
+        kitWeight('fine');
+        _txText('LIM', sx + sw, gy + gh * 0.2 - micro * 0.4, micro, 'right');
+      }
+    }
+  } else {
+    // Register: hex dump with address and ASCII columns, then a channel table
+    // Hex takes ~55% when a channel table also fits below, else everything
+    let hexH = avail * 0.45 > body * 5.5 ? avail * 0.55 : avail;
+    let sh = avail > body * 6 ? _txSection(ix, cy, iw, 1, 'MEMORY 0x' + srcId.replace(/[^0-9A-F]/g, '').padStart(4, '0') + '0000', sec) : 0;
+    let hy = cy + sh;
+    let hsz = Math.max(micro, body * 0.9);
+    let rowH = hsz * 1.45;
+    let cw = _txW('0', hsz);
+    let perRow = Math.max(4, Math.min(16, Math.floor((iw - cw * 8) / (cw * 3.8))));
+    perRow -= perRow % 4;
+    let n = Math.max(0, Math.floor((hexH - sh) / rowH));
+    let base0 = prng.nextInt(0, 0xFFF) * 16;
+    for (let i = 0; i < n; i++) {
+      let by = hy + rowH * (i + 1) - hsz * 0.3;
+      let bytes = [], asc = '';
+      for (let b = 0; b < perRow; b++) { let v = prng.nextInt(0, 255); bytes.push(v.toString(16).toUpperCase().padStart(2, '0')); asc += v > 64 && v < 91 ? String.fromCharCode(v) : '.'; }
+      kitWeight('fine');
+      _txText((base0 + i * perRow).toString(16).toUpperCase().padStart(6, '0'), ix, by, hsz);
+      kitWeight('secondary');
+      let groups = [];
+      for (let g = 0; g < perRow; g += 4) groups.push(bytes.slice(g, g + 4).join(' '));
+      let line = groups.join('  ');
+      _txText(line, ix + cw * 8, by, hsz, 'left', (seedHex + i * 31) >>> 0, 'counter');
+      let ax = ix + cw * 8 + _txW(line, hsz) + cw * 2;
+      if (ax + _txW(asc, hsz) <= ix + iw) { kitWeight('fine'); _txText(asc, ax, by, hsz); }
+    }
+    kitWeight('fine');
+    if (n > 0) svgLine(ix + cw * 7, hy + rowH * 0.15, ix + cw * 7, hy + rowH * n + hsz * 0.2);
+    cy = hy + rowH * n + body * 0.8;
+    avail = bottom - cy;
+    if (avail > body * 5) {
+      let sh2 = _txSection(ix, cy, iw, 2, _TX_GROUPS[gIdx % _TX_GROUPS.length], sec);
+      cy += sh2;
+      let rows = [];
+      let nr = _txTableRows(bottom - cy, body);
+      for (let i = 0; i < nr; i++) rows.push(_txChannel(prng, Math.max(10, Math.min(24, Math.floor(iw / (body * 2.4))))));
+      if (nr > 0) _txChannelTable(ix, cy, iw, rows, body, seedValues, s);
     }
   }
 
-  // Inline sparkline
-  if (curY + lineH * 2 < iy + ih && prng.nextFloat() < 0.5 && detailActive('connectorLines', s)) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.6);
-    drawMiniSparkline(ix + pad, curY, iw * 0.6, fontSize * 1.2, prng.nextInt(8, 16), prng);
-    curY += fontSize * 1.5;
+  // Legend
+  if (legendH > 0) {
+    let ly = iy + ih - footH - micro * 0.9;
+    kitWeight('fine');
+    svgLine(ix, ly - micro * 1.6, ix + iw * 0.25, ly - micro * 1.6);
+    _txLegend(ix, ly, iw, micro, [
+      { kind: 'hatch', label: 'MEASURED' }, { kind: 'box', label: 'HEADROOM' }, { kind: 'dash', label: 'LIMIT' },
+      { kind: 'spark', label: 'TREND' }, { kind: 'ring', label: 'LAST' }, { kind: 'tri', label: 'ALARM' }
+    ]);
   }
 
-  // Bar bank section
-  if (curY + lineH * 2.5 < iy + ih && prng.nextFloat() < 0.5) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.7);
-    let barH = Math.min(fontSize * 2, ih * 0.15);
-    if (prng.nextFloat() < 0.5) {
-      drawBarBank(ix + pad, curY, iw - pad * 2, barH, prng.nextInt(5, 10), prng);
-    } else {
-      drawHorizontalBarBank(ix + pad, curY, iw * 0.5, barH, prng.nextInt(3, 6), prng);
-    }
-    curY += barH + lineH * 0.5;
+  // Footer: version, page, checksum, timestamp
+  if (footH > 0) {
+    let fy = iy + ih;
+    kitWeight('fine');
+    svgLine(ix, fy - micro * 1.4, ix + iw, fy - micro * 1.4);
+    _txText(ver, ix, fy, micro, 'left', seedFooter, 'counter');
+    let pg = 'PG ' + String(page).padStart(2, '0') + '/04';
+    if (iw > micro * 30) _txText(pg, ix + iw * 0.35, fy, micro);
+    _txText(ts, ix + iw, fy, micro, 'right', seedFooter + 1, 'counter');
   }
 
-  // Hex dump row — animated counter/cycling
-  if (curY + lineH < iy + ih && detailActive('annotationTexture', s) && prng.nextFloat() < 0.4) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.5);
-    drawAnimText(textGen.hexDump(prng, 8), ix + pad, curY, tinyFont, seedHex, 'bus:hex');
-    curY += lineH;
+  // Rotated source path in the right margin
+  if (detailActive('annotationTexture', s) && pad > micro * 1.4 && ih > micro * 20) {
+    kitWeight('fine');
+    drawFallbackTextRotated(textGen.systemPath(prng), x + w - pad * 0.35, iy + ih * 0.3, micro, 90);
   }
 
-  // Side margin rotated text
-  if (detailActive('annotationTexture', s) && prng.nextFloat() < 0.35 && iw > fontSize * 8) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-    let sideLabel = textGen.systemPath(prng);
-    drawFallbackTextRotated(sideLabel, ix + iw - tinyFont * 0.3, iy + ih * 0.2, tinyFont, 90);
-  }
-
-  // Footer — animated: version counter, timestamp counter
-  svgSetStrokeWeight(state.geometry.strokeWeight * 0.7);
-  let footerY = iy + ih - pad;
-  drawAnimText(textGen.versionString(prng), ix + pad, footerY, fontSize * 0.8, seedFooter, 'counter');
-  let ts = textGen.timestamp(prng);
-  drawAnimText(ts, ix + iw - pad - measureFallbackText(ts, fontSize * 0.8), footerY, fontSize * 0.8, seedFooter + 1, 'counter');
-
-  // Data readout variant overlays
-  // Data readout variant overlays — PRNG pre-consumed for stability
-  let drVariant = prng.nextFloat();
-  let drVarSeed = prng.nextInt(0, 0xFFFFFF);
-  if (drVariant < 0.20 && ih > lineH * 6) {
-    // Register dump — use hash-derived hex values instead of prng
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-    let regFont = Math.max(4, fontSize * 0.65);
-    let regY = iy + pad + lineH * 2.5;
-    let regs = ['AX','BX','CX','DX','SP','IP','FL'];
-    let regCols = Math.min(2, Math.floor(iw / (regFont * 12)));
-    for (let ri = 0; ri < Math.min(regs.length, 6); ri++) {
-      let col = ri % regCols, row = Math.floor(ri / regCols);
-      let rx = ix + pad + col * iw * 0.5, ry = regY + row * lineH * 0.8;
-      let hexVal = Math.round(_profileHash(drVarSeed + ri, 130) * 0xFFFF).toString(16).toUpperCase().padStart(4, '0');
-      drawAnimText(regs[ri] + ':' + hexVal, rx, ry, regFont, drVarSeed + ri, 'bus:hex');
-    }
-  } else if (drVariant < 0.35 && ih > lineH * 5) {
-    // Dual-pane hint — use hash for sparkline point count, no prng passed
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.2);
-    let divX = ix + iw * 0.6;
-    svgLine(divX, iy + lineH * 2, divX, iy + ih - lineH);
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-    // Draw simple sparkline without consuming prng
-    let spPts = 6 + Math.round(_profileHash(drVarSeed, 131) * 6);
-    for (let sp = 0; sp < spPts; sp++) {
-      let spx = divX + pad + (sp / spPts) * (iw * 0.35 - pad * 2);
-      let spy = iy + lineH * 2.5 + _profileHash(drVarSeed + sp * 7, 132) * ih * 0.3;
-      if (sp > 0) svgLine(spx - (iw * 0.35 - pad * 2) / spPts, iy + lineH * 2.5 + _profileHash(drVarSeed + (sp-1) * 7, 132) * ih * 0.3, spx, spy);
-    }
-  }
-
-  svgSetStrokeWeight(state.geometry.strokeWeight);
+  kitWeight('primary');
+  _cellPRNG = fontSaved;
   svgRec.endGroup();
 }
 
@@ -7841,325 +8319,1099 @@ function composeSealBadge(rect, s, prng) {
   svgRec.endGroup();
 }
 
+// ---- Archetype: Error Message ----
+
+// Parameter interval [t0, t1] of segment (x1,y1)-(x2,y2) inside a rect, or null.
+function _txClip(x1, y1, x2, y2, rx, ry, rw, rh) {
+  let t0 = 0, t1 = 1, dx = x2 - x1, dy = y2 - y1;
+  let p = [-dx, dx, -dy, dy], q = [x1 - rx, rx + rw - x1, y1 - ry, ry + rh - y1];
+  for (let i = 0; i < 4; i++) {
+    if (Math.abs(p[i]) < 1e-9) { if (q[i] < 0) return null; continue; }
+    let r = q[i] / p[i];
+    if (p[i] < 0) t0 = Math.max(t0, r); else t1 = Math.min(t1, r);
+  }
+  return t0 < t1 ? [t0, t1] : null;
+}
+
+// Caution-tape frame: a square ring of thick diagonal stripes (each stripe a
+// run of close parallel lines) between the outer square and an inset square.
+function _txCautionFrame(x, y, B, t, phase) {
+  let pen = unitToPx(state.plotter.hatch.penDiameter, 'mm', state.plotter.dpi);
+  let P = Math.max(t * 1.3, 5), sp = Math.max(pen * 1.25, 1.2, P * 0.06);
+  let off = (phase || 0) * P;
+  kitWeight('fine');
+  for (let c0 = -P + off; c0 < B * 2 + P; c0 += P) {
+    for (let c = c0; c < c0 + P * 0.5; c += sp) {
+      // Line u + v = c in local coords, clipped to outer minus inner square
+      let a = _txClip(x + c, y, x + c - B * 2, y + B * 2, x, y, B, B);
+      if (!a) continue;
+      let ax = x + c, ay = y, bx = x + c - B * 2, by = y + B * 2;
+      let L = (t0, t1) => svgLine(ax + (bx - ax) * t0, ay + (by - ay) * t0, ax + (bx - ax) * t1, ay + (by - ay) * t1);
+      let inn = _txClip(ax, ay, bx, by, x + t, y + t, B - t * 2, B - t * 2);
+      if (!inn) { L(a[0], a[1]); continue; }
+      if (inn[0] > a[0]) L(a[0], Math.min(inn[0], a[1]));
+      if (inn[1] < a[1]) L(Math.max(inn[1], a[0]), a[1]);
+    }
+  }
+  kitWeight('secondary');
+  svgRect(x, y, B, B);
+  svgRect(x + t, y + t, B - t * 2, B - t * 2);
+}
+
+// Warning triangle: heavy outer outline, hatched ring, fine inner outline and a
+// hatched exclamation (tapered bar + dot). `bang` false hides the exclamation.
+function _txWarnTriangle(cx, cy, r, bang, fill) {
+  let tri = (rr, oy) => [0, 1, 2].map(k => { let a = -HALF_PI + k * TWO_PI / 3; return [cx + Math.cos(a) * rr, cy + oy + Math.sin(a) * rr]; });
+  let outer = tri(r, 0), inner = tri(r * 0.74, r * 0.06);
+  kitWeight('heavy');
+  svgPolyline(outer.concat([outer[0]]));
+  kitWeight('fine');
+  svgPolyline(inner.concat([inner[0]]));
+  hatchFillContours([outer, inner], fill ? fill.angle : 45, fill ? fill.spacing : Math.max(1.4, r * 0.035), 0);
+  if (fill && fill.kind === 'cross') hatchFillContours([outer, inner], (fill.angle + 90) % 180, fill.spacing * 1.4, 0);
+  if (!bang) return;
+  let top = cy - r * 0.34, bot = cy + r * 0.2, wt = r * 0.085, wb = r * 0.05;
+  let bar = [[cx - wt, top], [cx + wt, top], [cx + wb, bot], [cx - wb, bot]];
+  let dr = r * 0.075, dy = cy + r * 0.34;
+  let dot = [[cx - dr, dy - dr], [cx + dr, dy - dr], [cx + dr, dy + dr], [cx - dr, dy + dr]];
+  kitWeight('primary');
+  svgPolyline(bar.concat([bar[0]]));
+  svgPolyline(dot.concat([dot[0]]));
+  kitWeight('fine');
+  hatchFillContours([bar], 90, Math.max(1.3, wt * 0.45), 0);
+  hatchFillContours([dot], 90, Math.max(1.3, dr * 0.5), 0);
+}
+
+// Hazard icon block: caution-tape square framing the warning triangle, with a
+// class label underneath when there is room. Returns the block height.
+function _txHazardBlock(x, y, B, bang, phase, fill, label, size) {
+  let t = B * 0.13;
+  _txCautionFrame(x, y, B, t, phase);
+  _txWarnTriangle(x + B / 2, y + B * 0.57, (B - t * 2) * 0.5, bang, fill);
+  if (label && B > _txW(label, size) * 0.9) {
+    kitWeight('fine');
+    _txText(_txFit(label, size, B), x, y + B + size * 1.35, size);
+    return B + size * 1.8;
+  }
+  return B;
+}
+
+// Redacted span: outline + hatch, like a censor bar.
+function _txRedact(x, y, w, h) {
+  kitWeight('fine');
+  svgRect(x, y, w, h);
+  _txHatchRect(x, y, w, h, Math.max(1.5, h * 0.22), 1);
+}
+
+// Corrupted barcode along a vertical edge: horizontal bars of 1-3 strokes with
+// torn zones where bars shift, truncate or drop out.
+function _txBarcodeEdge(x, y, w, h, prng) {
+  let pen = unitToPx(state.plotter.hatch.penDiameter, 'mm', state.plotter.dpi);
+  let unit = Math.max(pen * 1.3, 1.4);
+  let tears = [prng.nextFloat(), prng.nextFloat(), prng.nextFloat()];
+  let seed = prng.nextInt(1, 0xFFFFFF);
+  kitWeight('fine');
+  let pos = 0, i = 0;
+  while (pos < h) {
+    let k = 1 + Math.floor(_profileHash(seed + i, 150) * 3);
+    let gap = (1 + Math.floor(_profileHash(seed + i, 151) * 3)) * unit;
+    let t = pos / h;
+    let torn = tears.some(c => Math.abs(t - c) < 0.045);
+    let sx = 0, ex = w;
+    if (torn) {
+      let hsh = _profileHash(seed + i, 152);
+      if (hsh < 0.35) { pos += k * unit + gap; i++; continue; }
+      sx = w * _profileHash(seed + i, 153) * 0.5;
+      ex = sx + w * (0.2 + _profileHash(seed + i, 154) * 0.5);
+    }
+    for (let j = 0; j < k && pos < h; j++, pos += unit) svgLine(x + sx, y + pos, x + Math.min(w, ex), y + pos);
+    pos += gap; i++;
+  }
+}
+
+const _TX_MODULES = ['KERNEL', 'NETSTACK', 'VMM', 'SCHED', 'IOCTL', 'DRV_ARX', 'CRYPTO', 'FS_CORE', 'HAL', 'IRQ', 'DMA', 'TELEM'];
+const _TX_FUNCS = ['DISPATCH', 'PAGE_FAULT', 'ALLOC_POOL', 'MAP_REGION', 'READ_SECTOR', 'HANDLE_IRQ', 'SPIN_LOCK', 'COPY_USER', 'VALIDATE', 'SYNC_BARRIER', 'DECODE_FRAME', 'FLUSH_TLB', 'WALK_TABLE', 'RESOLVE'];
+const _TX_HEADLINES = ['KERNEL MODE EXCEPTION', 'UNHANDLED TRAP', 'SYSTEM HALTED', 'INTEGRITY FAILURE', 'WATCHDOG TIMEOUT', 'PROTECTION FAULT'];
+
+function _txHex(prng, digits) {
+  let s = '';
+  for (let i = 0; i < digits; i++) s += '0123456789ABCDEF'[prng.nextInt(0, 15)];
+  return s;
+}
+
+// Backtrace rows: frame index, address, indented symbol (tree leaders) and
+// file:line at right; some symbols redacted. Returns height used.
+function _txBacktrace(x, y, w, frames, size, seed, maxRows) {
+  let cw = _txW('0000000000', size) / 10, rowH = size * 1.5;
+  let addrDigits = w > cw * 60 ? 16 : w > cw * 34 ? 8 : 0;
+  let showFile = w > cw * 58;
+  let n = Math.min(frames.length, maxRows);
+  let xSym = x + cw * 4 + (addrDigits ? cw * (addrDigits + 4) : 0);
+  for (let i = 0; i < n; i++) {
+    let f = frames[i];
+    let base = y + rowH * (i + 1) - size * 0.35;
+    kitWeight('fine');
+    _txText('#' + String(i).padStart(2, '0'), x, base, size);
+    kitWeight('secondary');
+    if (addrDigits) _txText('0x' + f.addr.slice(16 - addrDigits), x + cw * 4, base, size, 'left', (seed + i * 53) >>> 0, 'counter');
+    let ind = Math.min(f.depth, 6) * cw * 1.6;
+    let sx = xSym + ind;
+    // Tree leader: elbow from the parent column
+    kitWeight('fine');
+    if (f.depth > 0) {
+      let px = sx - cw * 1.1;
+      svgLine(px, base - size * 1.25, px, base - size * 0.35);
+      svgLine(px, base - size * 0.35, sx - cw * 0.3, base - size * 0.35);
+    }
+    let fileStr = showFile ? f.file : '';
+    let fw = fileStr ? _txW(fileStr, size * 0.85) + cw * 2 : 0;
+    let room = x + w - sx - fw - cw * 0.5;
+    if (f.redact) {
+      _txRedact(sx, base - size * 0.95, Math.min(room, f.redactW * cw), size * 1.05);
+    } else {
+      kitWeight(i === 0 ? 'primary' : 'secondary');
+      let sym = _txFit(f.sym, size, room, 4);
+      if (sym) _txText(sym, sx, base, size);
+    }
+    if (fileStr) { kitWeight('fine'); _txText(fileStr, x + w, base, size * 0.85, 'right'); }
+  }
+  return rowH * n + size * 0.3;
+}
+
+// Register table: ruled grid of NAME VALUE cells, one flagged as the fault.
+function _txRegisters(x, y, w, regs, size, seed, flag) {
+  let cw = _txW('0000000000', size) / 10;
+  let cellW = cw * (regs[0].val.length + 7.5);
+  let cols = Math.max(1, Math.min(4, Math.floor(w / cellW)));
+  let rows = Math.ceil(regs.length / cols);
+  let rowH = size * 1.55, gw = w / cols;
+  kitWeight('secondary');
+  svgRect(x, y, w, rowH * rows);
+  kitWeight('fine');
+  for (let c = 1; c < cols; c++) svgLine(x + gw * c, y, x + gw * c, y + rowH * rows);
+  for (let r = 1; r < rows; r++) drawDashedLine(x, y + rowH * r, x + w, y + rowH * r, size * 0.15, size * 0.35);
+  for (let i = 0; i < regs.length; i++) {
+    let c = i % cols, r = Math.floor(i / cols);
+    let cx = x + gw * c + cw * 0.6, base = y + rowH * (r + 1) - size * 0.4;
+    kitWeight('fine');
+    _txText(regs[i].name, cx, base, size);
+    kitWeight(i === flag ? 'primary' : 'secondary');
+    _txText(regs[i].val, x + gw * (c + 1) - cw * 0.6, base, size, 'right', i === flag ? seed : (i % 3 === 0 ? (seed + i) >>> 0 : 0), i === flag ? 'bus:hex' : 'counter');
+    if (i === flag) {
+      kitWeight('primary');
+      svgRect(x + gw * c + 1.5, y + rowH * r + 1.5, gw - 3, rowH - 3);
+    }
+  }
+  return rowH * rows;
+}
+
+// Memory map: segmented bar with per-segment hatch, labels, address ticks and
+// a fault marker with callout. Returns height used.
+function _txMemMap(x, y, w, segs, faultT, size, faultLabel) {
+  let barH = size * 1.6, labY = y + size, by = y + size * 1.5;
+  let total = segs.reduce((a, s) => a + s.w, 0), cx = x;
+  let styles = [1, -1, 2, 0, null, 1, 2];
+  for (let i = 0; i < segs.length; i++) {
+    let sw = w * segs[i].w / total;
+    kitWeight('secondary');
+    svgRect(cx, by, sw, barH);
+    let st = styles[i % styles.length];
+    if (st !== null) { kitWeight('fine'); _txHatchRect(cx, by, sw, barH, Math.max(1.6, barH * (0.16 + (i % 3) * 0.06)), st); }
+    kitWeight('fine');
+    if (_txW(segs[i].name, size) < sw - 2) _txText(segs[i].name, cx + 1, labY, size);
+    svgLine(cx, by + barH, cx, by + barH + size * 0.6);
+    let addr = (segs[i].addr).toString(16).toUpperCase().padStart(4, '0');
+    if (i % 2 === 0 && _txW(addr, size) < sw * 1.6) _txText(addr, cx, by + barH + size * 1.6, size);
+    cx += sw;
+  }
+  svgLine(x + w, by + barH, x + w, by + barH + size * 0.6);
+  // Fault marker
+  let fx = x + w * faultT;
+  kitWeight('heavy');
+  svgLine(fx, by - size * 0.4, fx, by + barH + size * 0.4);
+  drawTriangle(fx, by - size * 0.75, size * 0.45, HALF_PI);
+  if (faultLabel) {
+    kitWeight('primary');
+    let lw = _txW(faultLabel, size);
+    let lx = fx + lw + size > x + w ? fx - lw - size * 0.6 : fx + size * 0.6;
+    _txText(faultLabel, lx, by + barH + size * 2.9, size);
+    kitWeight('fine');
+    svgLine(fx, by + barH + size * 0.4, fx, by + barH + size * 2.2);
+    svgLine(fx, by + barH + size * 2.2, lx + (lx > fx ? 0 : lw), by + barH + size * 2.2);
+  }
+  return size * 1.5 + barH + size * 3.3;
+}
+
+// Diagonal stripe band (back-slash lines) with x-intervals left open for labels.
+// phase (0-1) marches the stripes by one step.
+function _txStripeBand(x, y, w, h, spacing, phase, holes) {
+  let pen = unitToPx(state.plotter.hatch.penDiameter, 'mm', state.plotter.dpi);
+  let step = Math.max(spacing, pen * 1.2) * Math.SQRT2;
+  for (let xa = x - h + step * (((phase || 0) % 1 + 1) % 1); xa < x + w; xa += step) {
+    // Line from (xa, y) to (xa + h, y + h); x is linear in t
+    let segs = [[Math.max(0, (x - xa) / h), Math.min(1, (x + w - xa) / h)]];
+    for (let hl of holes || []) {
+      let h0 = (hl[0] - xa) / h, h1 = (hl[1] - xa) / h, out = [];
+      for (let sg of segs) {
+        if (h1 <= sg[0] || h0 >= sg[1]) { out.push(sg); continue; }
+        if (h0 > sg[0]) out.push([sg[0], h0]);
+        if (h1 < sg[1]) out.push([h1, sg[1]]);
+      }
+      segs = out;
+    }
+    for (let sg of segs) if (sg[1] - sg[0] > 1e-3) svgLine(xa + h * sg[0], y + h * sg[0], xa + h * sg[1], y + h * sg[1]);
+  }
+}
+
+// Variants: dump (icon block + headline + backtrace + registers + memory map),
+// panic (centred icon over a two-column dump, hazard bands top and bottom),
+// dialog (alert window with title bar, buttons and an inset details pane).
+const ERR_VARIANTS = ['dump', 'panic', 'dialog'];
+
 function composeErrorMessage(rect, s, prng) {
-  let { x, y, w, h } = rect;
-  let pad = Math.min(w, h) * 0.06;
-  let ix = x + pad, iy = y + pad, iw = w - pad * 2, ih = h - pad * 2;
-  let fontSize = Math.max(5, Math.min(ih * 0.07, 10));
-  let lineH = fontSize * 1.5;
-  let tinyFont = fontSize * 0.55;
-
   svgRec.beginGroup('error-message');
+  let fontSaved = _txFontStream();
 
-  // Animation setup — warning blink
+  // Animation setup — warning blink, marching stripes
   let elemSeed = prng.nextInt(0, 0xFFFFFF);
   let animated = shouldAnimate(elemSeed);
   let warningVisible = animated ? anim.blink(animCtx.frameIndex, 3, 2, (elemSeed % 100) / 100) : true;
+  let march = animated ? anim.sweep(animCtx.frameIndex, animCtx.frameCount, Math.max(4, animCtx.frameCount / 4), animCtx.speedMul, 0) : 0;
+  let cursorOn = animCtx ? anim.blink(animCtx.frameIndex, 2, 1, 0) : true;
 
-  // Full border
-  svgRect(ix, iy, iw, ih);
-
+  // All data drawn up front: stream never depends on what fits
+  let variant = ERR_VARIANTS[Math.floor(prng.nextFloat() * ERR_VARIANTS.length)];
+  if (_cellOverrideVariant && ERR_VARIANTS.includes(_cellOverrideVariant)) variant = _cellOverrideVariant;
+  _cellVariantInfo = variant;
   let errData = textGen.errorMessageBlock(prng);
-  let curY = iy + pad + lineH;
+  let errType = prng.pick(textGen._errorTypes);
+  let headline = prng.pick(_TX_HEADLINES);
+  let faultAddr = _txHex(prng, 4);
+  let pid = prng.nextInt(100, 9999), cpu = prng.nextInt(0, 15);
+  let frames = [];
+  let depth = 0;
+  for (let i = 0; i < 14; i++) {
+    depth = i === 0 ? 0 : Math.max(0, Math.min(5, depth + (prng.nextFloat() < 0.6 ? 1 : -prng.nextInt(0, 2))));
+    frames.push({ addr: '00007F' + _txHex(prng, 10), depth,
+      sym: prng.pick(_TX_MODULES) + '::' + prng.pick(_TX_FUNCS) + '+0x' + _txHex(prng, 3),
+      file: textGen.systemPath(prng) + ':' + prng.nextInt(1, 999),
+      redact: prng.nextFloat() < 0.16, redactW: prng.nextInt(10, 26) });
+  }
+  let regs64 = ['RAX', 'RBX', 'RCX', 'RDX', 'RSI', 'RDI', 'RBP', 'RSP', 'R8', 'R9', 'R10', 'R11', 'R12', 'R13', 'RIP', 'EFL'];
+  let regVals = regs64.map(() => _txHex(prng, 16));
+  let flagReg = prng.nextInt(0, 7);
+  let segNames = ['TEXT', 'RODATA', 'DATA', 'BSS', 'HEAP', 'MMAP', 'STACK'];
+  let segs = segNames.map((n, i) => ({ name: n, w: 0.4 + prng.nextFloat() * (n === 'HEAP' || n === 'MMAP' ? 2.2 : 1), addr: 0 }));
+  let acc = 0;
+  for (let sg of segs) { sg.addr = Math.floor(acc * 0x1000); acc += sg.w; }
+  let faultT = 0.25 + prng.nextFloat() * 0.6;
+  let progress = prng.nextFloat();
+  if (_compBus) progress = _compBus.globalProgress;
+  let haltWord = prng.pick(['ABORTED', 'FAILED', 'TIMEOUT', 'HALTED', 'CRITICAL']);
+  let ts = textGen.timestamp(prng), ver = textGen.versionString(prng);
+  let fill = kitFillStyle(s, prng);
+  let barcodeLeft = prng.nextFloat() < 0.3;
+  let seedCode = prng.nextInt(1, 0xFFFFFF), seedTrace = prng.nextInt(1, 0xFFFFFF), seedReg = prng.nextInt(1, 0xFFFFFF);
 
-  // Striped warning header zone
-  if (ih > lineH * 7 && detailActive('annotationTexture', s)) {
-    let stripeH = Math.min(ih * 0.08, lineH * 1.5);
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-    drawWarningStripes(ix + 1, iy + 1, iw - 2, stripeH, Math.round(iw / 8));
-    svgSetStrokeWeight(state.geometry.strokeWeight);
-    svgLine(ix, iy + stripeH, ix + iw, iy + stripeH);
-    curY = iy + stripeH + lineH;
+  let lay = kitLayout(rect, s, prng, { header: false, footer: false, side: variant === 'dump', minSize: 560 });
+  kitFillLayout(lay, s, prng);
+  let M = lay.main;
+  let { x, y, w, h } = M;
+  let S = Math.min(w, h);
+  let grow = 1 + s * 1.8;
+  let body = Math.min(kitType(M, 'body') * grow, 18);
+  let micro = kitType(M, 'micro');
+  let titleSize = Math.min(kitType(M, 'title') * (1 + s), 72);
+  let valueSize = Math.min(kitType(M, 'value') * (1 + s), 40);
+  if (w < micro * 8 || h < micro * 4) { _cellPRNG = fontSaved; svgRec.endGroup(); return; }
+
+  // Container: full border (dialog adds a drop shadow and title bar)
+  let pad = Math.max(micro * 0.7, S * 0.035);
+  kitWeight('primary');
+  let fx = x, fy = y, fw = w, fh = h;
+  if (variant === 'dialog' && S > micro * 14) {
+    let d = Math.max(3, S * 0.018);
+    fw -= d; fh -= d;
+    kitWeight('fine');
+    svgLine(fx + d, fy + fh, fx + d, fy + fh + d); svgLine(fx + d, fy + fh + d, fx + fw + d, fy + fh + d);
+    svgLine(fx + fw + d, fy + fh + d, fx + fw + d, fy + d); svgLine(fx + fw + d, fy + d, fx + fw, fy + d);
+    _txHatchRect(fx + d, fy + fh, fw, d, Math.max(1.4, d * 0.3), 1);
+    _txHatchRect(fx + fw, fy + d, d, fh - d, Math.max(1.4, d * 0.3), 1);
+  }
+  kitWeight('primary');
+  svgRect(fx, fy, fw, fh);
+  if (S > micro * 20 && variant !== 'dialog') { kitWeight('fine'); svgRect(fx + 2.5, fy + 2.5, fw - 5, fh - 5); }
+
+  let ix = fx + pad, iy = fy + pad, iw = fw - pad * 2, ih = fh - pad * 2;
+
+  // Corrupted barcode edge (reserves a strip)
+  if (detailActive('annotationTexture', s) && iw > micro * 24 && ih > micro * 12) {
+    let bw = Math.max(micro * 1.6, iw * 0.035);
+    let bx = barcodeLeft ? ix : ix + iw - bw;
+    _txBarcodeEdge(bx, iy + ih * 0.12, bw, ih * 0.76, prng);
+    kitWeight('fine');
+    _txText('DMP', bx, iy + ih * 0.12 - micro * 0.5, micro);
+    if (barcodeLeft) ix += bw + pad;
+    iw -= bw + pad;
   }
 
-  // Warning X — animated blink
-  if (ih > lineH * 6 && warningVisible) {
-    let xSize = Math.min(iw, ih) * 0.12;
-    svgSetStrokeWeight(state.geometry.strokeWeight * 1.5);
-    svgLine(ix + iw / 2 - xSize, curY - lineH * 0.5, ix + iw / 2 + xSize, curY - lineH * 0.5 + xSize * 2);
-    svgLine(ix + iw / 2 + xSize, curY - lineH * 0.5, ix + iw / 2 - xSize, curY - lineH * 0.5 + xSize * 2);
-    svgSetStrokeWeight(state.geometry.strokeWeight);
-    curY += xSize * 2 + lineH * 0.3;
-  } else if (ih > lineH * 6) {
-    let xSize = Math.min(iw, ih) * 0.12;
-    curY += xSize * 2 + lineH * 0.3; // maintain layout even when X hidden
+  let cy = iy;
+  // Top hazard band (title bar for dialog)
+  if (variant === 'dialog') {
+    let tbH = Math.max(body * 1.8, ih * 0.06);
+    kitWeight('secondary');
+    svgLine(fx, fy + tbH + pad * 0.5, fx + fw, fy + tbH + pad * 0.5);
+    _txText(_txFit('SYSTEM ALERT  //  ' + errData.code, body, iw - tbH * 2), ix, fy + pad * 0.25 + tbH * 0.5 + body * 0.4, body);
+    let cb = tbH * 0.62, cbx = fx + fw - pad - cb, cby = fy + pad * 0.25 + (tbH - cb) / 2;
+    svgRect(cbx, cby, cb, cb);
+    svgLine(cbx + cb * 0.25, cby + cb * 0.25, cbx + cb * 0.75, cby + cb * 0.75);
+    svgLine(cbx + cb * 0.75, cby + cb * 0.25, cbx + cb * 0.25, cby + cb * 0.75);
+    // Grip lines in the title bar
+    kitWeight('fine');
+    let gx0 = ix + _txW('SYSTEM ALERT  //  ' + errData.code, body) + body, gx1 = cbx - body;
+    if (gx1 - gx0 > body * 3) for (let k = 0; k < 3; k++) svgLine(gx0, cby + cb * (0.25 + k * 0.25), gx1, cby + cb * (0.25 + k * 0.25));
+    cy = fy + tbH + pad * 1.2;
+  } else if (ih > body * 8) {
+    let bandH = Math.max(micro * 1.2, Math.min(ih * 0.05, body * 1.6));
+    // Labels knocked out of the stripe band
+    let lbl = errType + ' // ' + haltWord, lw = _txW(lbl, micro);
+    let rl = ver + '  ' + ts, rw = _txW(rl, micro);
+    let holes = [], labels = [];
+    if (lw < iw * 0.6 && bandH > micro * 1.1) {
+      let lx = ix + iw * 0.06;
+      holes.push([lx - micro * 0.5, lx + lw + micro * 0.5]);
+      labels.push([lbl, lx, seedCode + 3, 'bus:status']);
+      if (detailActive('versionStrings', s) && lw + rw + micro * 6 < iw * 0.85) {
+        let rx = ix + iw * 0.94 - rw;
+        holes.push([rx - micro * 0.5, rx + rw + micro * 0.5]);
+        labels.push([rl, rx, seedCode + 2, 'counter']);
+      }
+    }
+    kitWeight('secondary');
+    svgRect(ix, cy, iw, bandH);
+    kitWeight('fine');
+    _txStripeBand(ix, cy, iw, bandH, Math.max(1.4, bandH * 0.13), march, holes);
+    kitWeight('secondary');
+    for (let hl of holes) { svgLine(hl[0], cy, hl[0], cy + bandH); svgLine(hl[1], cy, hl[1], cy + bandH); }
+    for (let lb of labels) _txText(lb[0], lb[1], cy + bandH * 0.5 + micro * 0.4, micro, 'left', lb[2], lb[3]);
+    cy += bandH + body * 0.9;
   }
 
-  // Error header
-  svgSetStrokeWeight(state.geometry.strokeWeight * 1.2);
-  drawFallbackText('> ' + errData.header, ix + pad, curY, fontSize);
-  curY += lineH;
-
-  // Stack lines
-  svgSetStrokeWeight(state.geometry.strokeWeight * 0.7);
-  for (let line of errData.stackLines) {
-    if (curY + lineH > iy + ih - pad * 3) break;
-    drawFallbackText('> ' + line, ix + pad, curY, fontSize * 0.85);
-    curY += lineH;
-  }
-
-  // Hex dump section
-  if (detailActive('annotationTexture', s) && curY + lineH < iy + ih - pad * 3) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.5);
-    drawFallbackText(textGen.hexDump(prng, 10), ix + pad, curY, tinyFont);
-    curY += lineH * 0.8;
-    if (prng.nextFloat() < 0.5 && curY + lineH < iy + ih - pad * 3) {
-      drawFallbackText(textGen.hexDump(prng, 10), ix + pad, curY, tinyFont);
-      curY += lineH * 0.8;
+  // Headline block: hazard icon + error code
+  let avail = iy + ih - cy;
+  let footH = ih > body * 9 ? body * 2.6 : 0;
+  // Toward the top of the range the dump sheds its detail and the hazard icon
+  // takes over: centred and larger, as in the panic layout
+  let centred = variant === 'panic' || (variant === 'dump' && !detailActive('versionStrings', s));
+  let B = centred
+    ? Math.min(S * (0.2 + s * 0.75), avail * (detailActive('versionStrings', s) ? 0.42 : 0.55), iw * 0.6)
+    : Math.min(S * (0.2 + s * 0.75), avail * 0.5, iw * 0.42);
+  if (variant === 'dialog') B = Math.min(B, S * 0.22 + s * S * 0.4);
+  let showIcon = B > micro * 3.2;
+  let txtX = ix, headH = 0;
+  if (centred) {
+    if (showIcon) {
+      let bh = _txHazardBlock(ix + (iw - B) / 2, cy, B, warningVisible, march, fill, null, micro);
+      cy += bh + body * 0.8;
+    }
+    let ts1 = titleSize;
+    while (ts1 > body && _txW(errType, ts1) > iw) ts1 *= 0.85;
+    _txBold(ts1);
+    _txText(errType, ix + iw / 2, cy + ts1, ts1, 'center', seedCode, 'bus:status');
+    cy += ts1 * 1.3;
+    kitWeight('primary');
+    if (cy + valueSize < iy + ih - footH) { _txText(errData.code, ix + iw / 2, cy + valueSize, valueSize, 'center', seedCode + 1, 'counter'); cy += valueSize * 1.45; }
+    kitWeight('secondary');
+    let det = [headline + '  //  CPU ' + cpu + '  //  PID ' + pid, headline].find(c => _txW(c, body) <= iw);
+    if (det && cy + body < iy + ih - footH) { _txText(det, ix + iw / 2, cy + body, body, 'center'); cy += body * 2; }
+  } else {
+    if (showIcon) {
+      headH = _txHazardBlock(ix, cy, B, warningVisible, march, fill, 'CLASS ' + (cpu % 4 + 1) + ' // HAZ', micro);
+      txtX = ix + B + body * 1.2;
+    }
+    let tw = ix + iw - txtX;
+    let ty = cy;
+    kitWeight('fine');
+    let l1 = _txFit('*** STOP ***  ' + headline, micro, tw);
+    if (l1 && B > micro * 6) { _txText(l1, txtX, ty + micro, micro); ty += micro * 1.6; }
+    let ts1 = Math.min(titleSize, Math.max(body * 1.2, (showIcon ? B : avail) * 0.32));
+    while (ts1 > body && _txW(errType, ts1) > tw) ts1 *= 0.85;
+    _txBold(ts1);
+    _txText(_txFit(errType, ts1, tw), txtX, ty + ts1, ts1, 'left', seedCode, 'bus:status');
+    ty += ts1 * 1.25;
+    let vs = Math.min(valueSize, ts1 * 0.62);
+    if (ty + vs < cy + Math.max(B, ts1 * 3)) {
+      kitWeight('primary');
+      let code = _txFit(errData.code, vs, tw);
+      _txText(code, txtX, ty + vs, vs, 'left', seedCode + 1, 'counter');
+      // Countdown at the right of the code
+      let cd = 'T-' + String(animCtx ? Math.max(0, 10 - anim.step(animCtx.frameIndex, animCtx.frameCount, 11, animCtx.frameCount, animCtx.speedMul, 0)) : 10).padStart(2, '0');
+      if (_txW(code, vs) + _txW(cd, body) + body * 2 < tw) { kitWeight('secondary'); _txText(cd, txtX + tw, ty + vs, body, 'right'); }
+      ty += vs * 1.4;
+    }
+    if (detailActive('secondaryText', s) && ty + body < cy + Math.max(B, body * 4)) {
+      kitWeight('secondary');
+      let l3 = ['AT 0x' + faultAddr + ' // PID ' + pid + ' // CPU ' + cpu, 'AT 0x' + faultAddr + ' // PID ' + pid, 'AT 0x' + faultAddr].find(c => _txW(c, body) <= tw);
+      if (l3) { _txText(l3, txtX, ty + body, body); ty += body * 1.6; }
+    }
+    if (variant === 'dialog' && ty + body * 2 < cy + Math.max(B, body * 6)) {
+      // Message lines
+      kitWeight('fine');
+      for (let ln of [errData.stackLines[2], 'THE OPERATION COULD NOT BE COMPLETED.']) {
+        let t = _txFit(ln, micro, tw);
+        if (t && ty + micro * 1.5 < cy + Math.max(B, body * 6)) { _txText(t, txtX, ty + micro * 1.2, micro); ty += micro * 1.6; }
+      }
+    }
+    cy = Math.max(cy + headH, ty) + body * 0.9;
+    if (variant === 'dialog' && iy + ih - cy > body * 4) {
+      // Buttons row
+      let labels = ['RETRY', 'ABORT', 'DETAILS'];
+      let bwid = Math.min(iw / 3.4, _txW('DETAILS', body) + body * 2.4), bh = body * 2;
+      let bx = ix + iw - bwid * 3 - body * 1.0;
+      for (let k = 0; k < 3; k++) {
+        let x0 = bx + k * (bwid + body * 0.5);
+        kitWeight(k === 1 ? 'primary' : 'secondary');
+        svgRect(x0, cy, bwid, bh);
+        if (k === 1) { kitWeight('fine'); svgRect(x0 + 2.5, cy + 2.5, bwid - 5, bh - 5); }
+        kitWeight('secondary');
+        _txText(labels[k], x0 + bwid / 2, cy + bh * 0.5 + body * 0.4, body, 'center');
+      }
+      cy += bh + body;
     }
   }
 
-  // Seed display
-  if (detailActive('secondaryText', s) && curY + lineH < iy + ih - pad * 2) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.7);
-    drawFallbackText('> SEED: ' + state.seed, ix + pad, curY, fontSize * 0.8);
-    curY += lineH;
+  // Detail sections share what remains above the footer
+  let bottom = iy + ih - footH;
+  let sec = Math.max(micro, body * 0.85);
+  let trSize = Math.max(micro, body * 0.9);
+  if (variant === 'dialog' && bottom - cy > body * 5) {
+    // Inset details pane
+    kitWeight('secondary');
+    svgRect(ix, cy, iw, bottom - cy);
+    kitWeight('fine');
+    svgLine(ix + 2, cy + 2, ix + iw - 2, cy + 2);
+    ix += body * 0.6; iw -= body * 1.2; cy += body * 0.5; bottom -= body * 0.4;
+  }
+  let regRows = (cols) => Math.ceil(16 / cols);
+  let regCw = _txW('0000000000', micro) / 10;
+  let wantReg = detailActive('versionStrings', s);
+  let wantMap = detailActive('secondaryText', s) && detailActive('tickMarks', s) && iw > micro * 30;
+  let secN = 1;
+  let twoCol = variant === 'panic' && iw > micro * 70;
+  // Backtrace
+  let avail2 = bottom - cy;
+  let regDigits = iw * (twoCol ? 0.45 : 1) > regCw * 22 * 2 ? 16 : 8;
+  let regH = wantReg ? sec * 2.1 + micro * 1.55 * regRows(Math.max(1, Math.min(4, Math.floor(iw * (twoCol ? 0.45 : 1) / (regCw * (regDigits + 6)))))) + body * 0.8 : 0;
+  let mapH = wantMap ? sec * 2.1 + micro * 6.4 + body * 0.6 : 0;
+  if (regH + mapH > avail2 * 0.6) { mapH = mapH > 0 && regH + mapH > avail2 * 0.75 ? 0 : mapH; }
+  if (regH + mapH > avail2 * 0.7) regH = 0;
+  let trRowsMax = Math.floor((avail2 - (twoCol ? mapH : regH + mapH) - sec * 2.2) / (trSize * 1.5));
+  if (!detailActive('annotationTexture', s)) trRowsMax = Math.min(trRowsMax, 3);
+  let colW = twoCol ? iw * 0.52 : iw;
+  if (trRowsMax >= 1) {
+    cy += _txSection(ix, cy, colW, secN++, 'BACKTRACE  //  ' + errData.header, sec);
+    let used = _txBacktrace(ix, cy, colW, frames, trSize, seedTrace, trRowsMax);
+    if (!twoCol) cy += used + body * 0.7;
+    else {
+      // Registers in the right column, top-aligned with the trace
+      let rx = ix + iw * 0.56, rw = iw * 0.44, ry = cy - sec * 2.1;
+      if (regH > 0) {
+        ry += _txSection(rx, ry, rw, secN++, 'REGISTERS', sec);
+        ry += _txRegisters(rx, ry, rw, regs64.map((n, i) => ({ name: regDigits === 16 ? n : n.replace(/^R(?=[A-Z])/, 'E'), val: regVals[i].slice(16 - regDigits) })), micro, seedReg, flagReg) + body * 0.8;
+      }
+      // Memory map under the registers when the column has room
+      if (mapH > 0 && ry + mapH <= bottom && rw > micro * 30) {
+        ry += _txSection(rx, ry, rw, secN++, 'MEMORY MAP', sec);
+        _txMemMap(rx, ry, rw, segs, faultT, micro, 'FAULT 0x' + faultAddr);
+        mapH = 0;
+      }
+      cy += used + body * 0.7;
+      regH = 0;
+    }
+  }
+  if (regH > 0 && cy + regH <= bottom + 1) {
+    cy += _txSection(ix, cy, iw, secN++, 'REGISTERS  //  CPU ' + cpu, sec);
+    cy += _txRegisters(ix, cy, iw, regs64.map((n, i) => ({ name: regDigits === 16 ? n : n.replace(/^R(?=[A-Z])/, 'E'), val: regVals[i].slice(16 - regDigits) })), micro, seedReg, flagReg) + body * 0.8;
+  }
+  if (mapH > 0 && cy + mapH <= bottom + 1) {
+    cy += _txSection(ix, cy, iw, secN++, 'MEMORY MAP', sec);
+    cy += _txMemMap(ix, cy, iw, segs, faultT, micro, 'FAULT 0x' + faultAddr) + body * 0.6;
   }
 
-  // Progress bar
-  if (curY + lineH * 1.5 < iy + ih) {
-    svgSetStrokeWeight(state.geometry.strokeWeight);
-    let barW = iw - pad * 2;
-    let ratio = prng.nextFloat(); // consume PRNG unconditionally
-    if (_compBus) ratio = _compBus.globalProgress; // sync with shared progress
-    svgRect(ix + pad, curY, barW * ratio, fontSize * 0.6);
-    drawDashedLine(ix + pad + barW * ratio, curY + fontSize * 0.3, ix + pad + barW, curY + fontSize * 0.3, 3, 3);
-    let statusText = prng.pick(['ABORTED', 'FAILED', 'TIMEOUT', 'HALTED', 'CRITICAL']);
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.7);
-    drawFallbackText(statusText, ix + iw - pad - measureFallbackText(statusText, fontSize * 0.7), curY + fontSize * 0.5, fontSize * 0.7);
-    curY += lineH;
+  // Whatever remains: hex dump around the fault address (hash-driven bytes)
+  if (bottom - cy > body * 4.5 && detailActive('secondaryText', s)) {
+    cy += _txSection(ix, cy, iw, secN++, 'MEMORY @ 0x' + faultAddr, sec);
+    let hsz = trSize, rowH = hsz * 1.45, cw = _txW('0000000000', hsz) / 10;
+    let perRow = Math.max(4, Math.min(16, Math.floor((iw - cw * 9) / (cw * 3.3))));
+    perRow -= perRow % 4;
+    let n = Math.floor((bottom - cy) / rowH);
+    let base0 = parseInt(faultAddr, 16) & 0xFFF0;
+    let faultRow = Math.floor(n / 2), faultCol = parseInt(faultAddr, 16) % perRow;
+    for (let i = 0; i < n; i++) {
+      let by = cy + rowH * (i + 1) - hsz * 0.35;
+      let addr = ((base0 + (i - faultRow) * perRow) & 0xFFFF).toString(16).toUpperCase().padStart(4, '0');
+      kitWeight('fine');
+      _txText('0x' + addr, ix, by, hsz);
+      let gx = ix + cw * 8;
+      if (_profileHash(seedReg + i * 97, 161) < 0.12 && i !== faultRow) {
+        _txRedact(gx, by - hsz * 0.95, Math.min(iw - cw * 8, perRow * cw * 3.2), hsz * 1.05);
+        continue;
+      }
+      for (let g = 0; g < perRow; g += 4) {
+        let bytes = [];
+        for (let b = g; b < g + 4; b++) bytes.push(Math.floor(_profileHash(seedReg + i * 131 + b, 160) * 256).toString(16).toUpperCase().padStart(2, '0'));
+        let str = bytes.join(' ');
+        kitWeight(i === faultRow ? 'primary' : 'secondary');
+        _txText(str, gx, by, hsz, 'left', i === faultRow ? 0 : ((seedReg + i * 17 + g) >>> 0), 'counter');
+        if (i === faultRow && faultCol >= g && faultCol < g + 4) {
+          let pre = _txW(bytes.slice(0, faultCol - g).join(' ') + (faultCol > g ? ' ' : ''), hsz);
+          kitWeight('primary');
+          svgRect(gx + pre - cw * 0.3, by - hsz * 1.05, _txW('00', hsz) + cw * 0.6, hsz * 1.4);
+        }
+        gx += _txW(str, hsz) + cw * 1.4;
+      }
+      if (i === faultRow && gx + _txW('<< FAULT', hsz) < ix + iw) { kitWeight('primary'); _txText('<< FAULT', gx + cw, by, hsz); }
+    }
+    cy += rowH * n;
+  }
 
-    // Secondary progress bar (smaller)
-    if (curY + lineH < iy + ih && prng.nextFloat() < 0.4) {
-      let ratio2 = prng.nextFloat();
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.5);
-      svgRect(ix + pad, curY, barW * 0.5 * ratio2, fontSize * 0.35);
-      drawDashedLine(ix + pad + barW * 0.5 * ratio2, curY + fontSize * 0.175, ix + pad + barW * 0.5, curY + fontSize * 0.175, 2, 2);
+  // Footer: dump progress, prompt with blinking cursor, timestamp
+  if (footH > 0) {
+    let fyb = iy + ih;
+    kitWeight('fine');
+    svgLine(ix, fyb - body * 2.0, ix + iw, fyb - body * 2.0);
+    let lbl = 'DUMPING MEMORY';
+    let pct = String(Math.round(progress * 100)).padStart(2, '0') + '%';
+    let lw = _txW(lbl, micro);
+    let barX = ix + lw + micro, barW = Math.min(iw * 0.35, ix + iw - barX - micro * 16);
+    kitWeight('secondary');
+    _txText(lbl, ix, fyb - body * 0.5, micro);
+    if (barW > micro * 4) {
+      let bh = micro * 0.9, by = fyb - body * 0.5 - bh * 0.95;
+      svgRect(barX, by, barW, bh);
+      kitWeight('fine');
+      _txHatchRect(barX, by, barW * progress, bh, Math.max(1.4, bh * 0.25), 2);
+      kitWeight('secondary');
+      _txText(pct, barX + barW + micro * 0.6, fyb - body * 0.5, micro);
+    }
+    let pr = iw > micro * 46 ? 'PRESS ANY KEY TO REBOOT' : 'REBOOT?';
+    let prW = _txW(pr, micro);
+    let px = ix + iw - prW - micro * 1.4;
+    if (px > barX + Math.max(0, barW) + micro * 5) {
+      kitWeight('primary');
+      _txText(pr, px, fyb - body * 0.5, micro);
+      if (cursorOn) { kitWeight('fine'); let cxp = px + prW + micro * 0.4; svgRect(cxp, fyb - body * 0.5 - micro * 0.85, micro * 0.6, micro * 0.95); _txHatchRect(cxp, fyb - body * 0.5 - micro * 0.85, micro * 0.6, micro * 0.95, 1.4, 0); }
     }
   }
 
-  // Timestamp in footer
-  if (detailActive('versionStrings', s)) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.5);
-    let ts = textGen.timestamp(prng);
-    drawFallbackText(ts, ix + iw - pad - measureFallbackText(ts, tinyFont), iy + ih - pad * 0.5, tinyFont);
-  }
-
-  // Corrupted barcode fragment
-  if (detailActive('annotationTexture', s) && prng.nextFloat() < 0.3) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.5);
-    drawBarcodeLines(ix + pad, iy + ih - pad * 2 - fontSize, iw * 0.3, fontSize * 0.8, prng.nextInt(8, 15), prng);
-  }
-
-  // Error variant overlays — no prng inside branches (use hash)
-  let errVariant = prng.nextFloat();
-  let errVarSeed = prng.nextInt(0, 0xFFFFFF);
-  if (errVariant < 0.18 && ih > lineH * 7) {
-    // Memory corruption view — hex values from hash, not prng
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.25);
-    let hexFont = Math.max(3, tinyFont * 0.8);
-    let hexRows = Math.min(4, Math.floor((ih - lineH * 4) / (hexFont * 1.4)));
-    let hexY = iy + ih * 0.4;
-    for (let hr = 0; hr < hexRows; hr++) {
-      let addr = '0x' + (errVarSeed + hr * 16).toString(16).toUpperCase().padStart(4, '0') + ':';
-      let hexLine = addr;
-      for (let hc = 0; hc < 4; hc++) hexLine += ' ' + Math.round(_profileHash(errVarSeed + hr * 10 + hc, 135) * 255).toString(16).toUpperCase().padStart(2, '0');
-      drawAnimText(hexLine, ix + pad, hexY + hr * hexFont * 1.4, hexFont, errVarSeed + hr, 'bus:hex');
-    }
-    // Corruption highlight rectangle
-    if (animCtx) {
-      let corrX = ix + pad + iw * (0.3 + _profileHash(errVarSeed, 130) * 0.3);
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.6);
-      svgRect(corrX, hexY - 2, iw * 0.2, hexRows * hexFont * 1.4 + 4);
-    }
-  } else if (errVariant < 0.30 && ih > lineH * 6) {
-    // Shutdown countdown overlay
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.8);
-    let countFont = Math.max(6, fontSize * 1.2);
-    let countVal = animCtx ? Math.max(0, 10 - anim.step(animCtx.frameIndex, animCtx.frameCount, 11, animCtx.frameCount, animCtx.speedMul, 0)) : 10;
-    let countStr = 'T-' + countVal.toString().padStart(2, '0');
-    let ctw = measureFallbackText(countStr, countFont);
-    drawAnimText(countStr, ix + iw - pad - ctw, iy + pad + lineH * 0.8, countFont, errVarSeed, 'counter');
-  }
-
-  svgSetStrokeWeight(state.geometry.strokeWeight);
+  kitWeight('primary');
+  _cellPRNG = fontSaved;
   svgRec.endGroup();
 }
 
-function composeTerminalBlock(rect, s, prng) {
-  let { x, y, w, h } = rect;
-  let pad = Math.min(w, h) * 0.05;
-  let ix = x + pad, iy = y + pad, iw = w - pad * 2, ih = h - pad * 2;
-  let fontSize = Math.max(5, Math.min(ih * 0.06, 9));
-  let lineH = fontSize * 1.4;
-  let tinyFont = fontSize * 0.55;
-  let lineNumW = fontSize * 2;
+// ---- Archetype: Terminal Block ----
 
+const _TX_CMDS = ['scan --deep /dev/node{n}', 'ping -c 4 10.0.{n}.17', 'tail -n 8 /var/log/core.log', 'ls -la /sys/core', 'diag --all --verbose',
+  'mount /dev/sdb{n} /mnt/arx', 'trace --pid {p}', 'dump 0x{h} 64', 'verify --sig CORE_ARX.BIN', 'netstat -tulpn', 'flush --cache L{n}',
+  'query node[0{n}..07]', 'sync --force', 'cat /proc/telemetry', 'decode --frame {p}', 'ssh op@relay-{n}'];
+const _TX_HOSTS = ['arx-7f', 'node3', 'relay-02', 'core', 'deck', 'eoh-11', 'sigma', 'vault'];
+
+function _txCmd(prng) {
+  return prng.pick(_TX_CMDS).replace('{n}', prng.nextInt(1, 9)).replace('{p}', prng.nextInt(100, 9999)).replace('{h}', _txHex(prng, 4));
+}
+
+// One line of command output.
+function _txOutLine(prng) {
+  let r = prng.nextFloat();
+  let hh = String(prng.nextInt(0, 23)).padStart(2, '0'), mm = String(prng.nextInt(0, 59)).padStart(2, '0'), ss = String(prng.nextInt(0, 59)).padStart(2, '0');
+  if (r < 0.22) return { t: 'out', text: '[' + hh + ':' + mm + ':' + ss + '] ' + prng.pick(_TX_MODULES) + ': ' + textGen.annotation(prng) };
+  if (r < 0.4) { let ok = prng.nextFloat(); return { t: 'out', text: prng.pick(['STARTED', 'MOUNTED', 'REACHED', 'LOADED', 'VERIFIED']) + ' ' + textGen.systemPath(prng), st: ok < 0.12 ? 'FAIL' : ok < 0.22 ? 'WARN' : 'OK' }; }
+  if (r < 0.55) return { t: 'out', text: '  ' + prng.pick(textGen._idPrefixes).padEnd(6, ' ') + '= ' + textGen.valueReadout(prng) };
+  if (r < 0.7) return { t: 'out', text: prng.pick(['drwxr-x---', '-rw-r--r--', '-rwx------', 'lrwxrwxrwx']) + '  ' + String(prng.nextInt(64, 99999)).padStart(5, ' ') + '  ' + textGen.systemPath(prng) };
+  if (r < 0.82) return { t: 'out', text: '  ' + _txHex(prng, 4) + ':  ' + textGen.hexDump(prng, 8) };
+  if (r < 0.92) return { t: 'out', text: '64 BYTES FROM 10.0.' + prng.nextInt(1, 9) + '.17: SEQ=' + prng.nextInt(1, 9) + ' TTL=64 T=' + (prng.nextFloat() * 2).toFixed(3) + ' MS' };
+  return { t: 'out', text: '  ' + textGen.identifier(prng) + '  ' + textGen.statusLabel(prng) };
+}
+
+// Scrollback for a shell: command blocks, one framed chart/diagram block and a
+// progress line, ending on the live prompt. `n` lines, `cols` chars wide.
+function _txShellRows(prng, n, prompt, chartKind) {
+  let rows = [];
+  let chartAt = n >= 14 ? prng.nextInt(2, Math.max(2, Math.floor(n * 0.4))) : -1;
+  let chartSpan = Math.max(5, Math.min(12, Math.floor(n * 0.3)));
+  let progAt = n >= 8 ? prng.nextInt(1, n - 3) : -1;
+  while (rows.length < n - 1) {
+    rows.push({ t: 'cmd', prompt, cmd: _txCmd(prng) });
+    let outs = prng.nextInt(1, 5);
+    for (let i = 0; i < outs && rows.length < n - 1; i++) {
+      if (chartAt >= 0 && rows.length >= chartAt && rows.length + chartSpan < n - 1) {
+        rows.push({ t: 'chart', span: chartSpan, kind: chartKind, data: Array.from({ length: 48 }, () => prng.nextFloat()), title: prng.pick(['LOAD 60S', 'THROUGHPUT', 'PKT/S', 'TEMP ARRAY', 'LATENCY']) });
+        for (let k = 1; k < chartSpan; k++) rows.push({ t: 'span' });
+        chartAt = -1;
+        continue;
+      }
+      if (progAt >= 0 && rows.length >= progAt) {
+        rows.push({ t: 'prog', label: prng.pick(['FETCH', 'UNPACK', 'VERIFY', 'XFER', 'SYNC']), v: prng.nextFloat(), rate: (prng.nextFloat() * 9.9).toFixed(1) + 'MB/S' });
+        progAt = -1;
+        continue;
+      }
+      rows.push(_txOutLine(prng));
+    }
+  }
+  rows.length = Math.min(rows.length, n - 1);
+  // Never cut a chart: drop a trailing partial span
+  for (let i = rows.length - 1; i >= 0; i--) if (rows[i].t === 'chart') { if (i + rows[i].span > rows.length) rows.length = i; break; }
+  while (rows.length < n - 1) rows.push(_txOutLine(prng));
+  rows.push({ t: 'cmd', prompt, cmd: _txCmd(prng), live: true });
+  return rows;
+}
+
+// Kernel boot log: timestamped lines, [ OK ] column, a module progress bar.
+function _txBootRows(prng, n) {
+  let rows = [], tsec = prng.nextFloat() * 0.01;
+  let progAt = prng.nextInt(Math.floor(n * 0.3), Math.max(Math.floor(n * 0.3), n - 4));
+  let chartAt = n >= 18 ? prng.nextInt(Math.floor(n * 0.45), Math.floor(n * 0.6)) : -1;
+  let chartSpan = Math.max(5, Math.min(10, Math.floor(n * 0.25)));
+  while (rows.length < n - 2) {
+    tsec += prng.nextFloat() * 0.4;
+    if (rows.length === progAt) { rows.push({ t: 'prog', label: 'MODULES', v: prng.nextFloat(), rate: prng.nextInt(12, 96) + '/128' }); continue; }
+    if (rows.length === chartAt && rows.length + chartSpan < n - 2) {
+      rows.push({ t: 'chart', span: chartSpan, kind: 'tree', data: Array.from({ length: 48 }, () => prng.nextFloat()), title: 'DEVICE TREE' });
+      for (let k = 1; k < chartSpan; k++) rows.push({ t: 'span' });
+      continue;
+    }
+    let ok = prng.nextFloat();
+    rows.push({ t: 'out', text: '[' + tsec.toFixed(6).padStart(11, ' ') + '] ' + prng.pick(_TX_MODULES) + ': ' + prng.pick(['INIT', 'PROBE', 'ATTACH', 'MAP', 'LINK UP', 'CALIBRATE']) + ' ' + textGen.identifier(prng),
+                st: ok < 0.08 ? 'FAIL' : ok < 0.16 ? 'WARN' : 'OK' });
+  }
+  rows.length = Math.min(rows.length, n - 2);
+  rows.push({ t: 'out', text: textGen.versionString(prng) + ' ' + prng.pick(_TX_HOSTS).toUpperCase() + ' TTY1' });
+  rows.push({ t: 'cmd', prompt: 'LOGIN:', cmd: '', live: true });
+  return rows;
+}
+
+// Framed chart block on the character grid. kind: bars (block-character
+// histogram), spark (plotted trace) or tree (box diagram + tree listing).
+function _txTermChart(x, y, w, h, row, cw, size, micro, seed) {
+  kitWeight('secondary');
+  let title = '[ ' + row.title + ' ]', tw = _txW(title, micro);
+  svgLine(x, y, x + cw * 2, y);
+  svgLine(x + cw * 2.6 + tw, y, x + w, y);
+  svgLine(x + w, y, x + w, y + h); svgLine(x + w, y + h, x, y + h); svgLine(x, y + h, x, y);
+  kitWeight('primary');
+  _txText(title, x + cw * 2.3, y + micro * 0.35, micro);
+  let ix = x + cw * 4.5, iy = y + h * 0.12, iw = w - cw * 6, ih = h * 0.72;
+  kitWeight('fine');
+  if (row.kind === 'tree') {
+    // Bus diagram: boxes on a row joined by a bus line, a tree listing under it
+    let names = ['CPU0', 'CPU1', 'MEM', 'DMA', 'NIC', 'GPU'];
+    let nb = Math.max(2, Math.min(names.length, Math.floor(iw / (cw * 9))));
+    let bw = cw * 6, bh = size * 1.5, slot = iw / nb;
+    let busY = iy + bh + size * 1.2;
+    kitWeight('secondary');
+    svgLine(ix + slot * 0.5, busY, ix + slot * (nb - 0.5), busY);
+    for (let i = 0; i < nb; i++) {
+      let bx = ix + slot * (i + 0.5) - bw / 2;
+      kitWeight(i === 0 ? 'primary' : 'secondary');
+      svgRect(bx, iy, bw, bh);
+      _txText(names[i], bx + bw / 2, iy + bh * 0.5 + size * 0.38, size, 'center');
+      kitWeight('fine');
+      svgLine(bx + bw / 2, iy + bh, bx + bw / 2, busY);
+      svgCircle(bx + bw / 2, busY, 3);
+    }
+    _txText('SYS BUS ' + (row.data[0] * 9 + 1).toFixed(1) + ' GT/S', ix + slot * 0.5, busY + micro * 1.4, micro);
+    let ty = busY + micro * 2.2;
+    let leaves = Math.floor((iy + ih + h * 0.1 - ty) / (size * 1.35));
+    for (let i = 0; i < leaves; i++) {
+      let by = ty + size * 1.35 * (i + 1) - size * 0.3;
+      let depth = row.data[i + 3] < 0.5 ? 1 : 2;
+      let lx = ix + depth * cw * 2.5;
+      svgLine(lx - cw * 2, by - size * 1.25, lx - cw * 2, by - size * 0.35);
+      svgLine(lx - cw * 2, by - size * 0.35, lx - cw * 0.5, by - size * 0.35);
+      _txText(_txFit(_txTreeLeaf(row.data, i) , size, iw - (lx - ix)), lx, by, size);
+    }
+  } else {
+    // Axis labels and gridlines on the character grid
+    _txText('100', ix - cw * 0.6, iy + micro * 0.4, micro, 'right');
+    _txText('0', ix - cw * 0.6, iy + ih + micro * 0.3, micro, 'right');
+    for (let k = 0; k <= 4; k++) drawDashedLine(ix, iy + ih * k / 4, ix + iw, iy + ih * k / 4, 1, 3);
+    let n = Math.max(6, Math.min(row.data.length, Math.floor(iw / cw)));
+    let off = animCtx && shouldAnimate(seed) ? anim.step(animCtx.frameIndex, animCtx.frameCount, row.data.length, animCtx.frameCount, animCtx.speedMul, 0) : 0;
+    let vals = [];
+    let u = row.data[0];
+    for (let i = 0; i < row.data.length; i++) { u = Math.max(0.06, Math.min(0.98, u * 0.55 + row.data[i] * 0.45)); vals.push(u); }
+    let cell = iw / n;
+    if (row.kind === 'bars') {
+      // Each bar quantised to eighth-blocks, drawn as horizontal strokes like block glyphs
+      let q = Math.max(1.6, ih / Math.max(8, Math.round(ih / 2.2)));
+      for (let i = 0; i < n; i++) {
+        let v = vals[(i + off) % vals.length], bh = Math.round(v * ih / q) * q;
+        let bx = ix + i * cell + cell * 0.12, bw = cell * 0.76;
+        kitWeight(v > 0.8 ? 'secondary' : 'fine');
+        for (let yy = iy + ih - q * 0.5; yy > iy + ih - bh; yy -= q) svgLine(bx, yy, bx + bw, yy);
+      }
+    } else {
+      let pts = [];
+      for (let i = 0; i < n; i++) pts.push([ix + (i + 0.5) * cell, iy + ih * (1 - vals[(i + off) % vals.length])]);
+      kitWeight('primary');
+      svgPolyline(pts);
+      kitWeight('fine');
+      for (let p of pts) { svgLine(p[0] - 1.5, p[1] - 1.5, p[0] + 1.5, p[1] + 1.5); svgLine(p[0] - 1.5, p[1] + 1.5, p[0] + 1.5, p[1] - 1.5); }
+    }
+    kitWeight('secondary');
+    svgLine(ix, iy + ih, ix + iw, iy + ih);
+    kitWeight('fine');
+    _txText('-' + n + 'S', ix, iy + ih + micro * 1.3, micro);
+    _txText('NOW', ix + iw, iy + ih + micro * 1.3, micro, 'right');
+  }
+}
+
+// Device-tree leaf labels without spending PRNG draws (hash of chart data).
+function _txTreeLeaf(data, i) {
+  let names = ['PCI0000:00', 'USB3-HUB', 'NVME0N1', 'ETH0', 'I2C-1', 'SPI0.0', 'TTY0', 'RTC0', 'HWMON3', 'SENSOR-ARRAY'];
+  let st = ['BOUND', 'PROBED', 'ONLINE', 'IDLE'];
+  return names[Math.floor(data[(i * 3 + 7) % data.length] * names.length)] + '  ' + st[Math.floor(data[(i * 5 + 2) % data.length] * st.length)];
+}
+
+// Inline progress bar row: label, bracketed cell track with hatched fill, %, rate.
+function _txProgRow(x, base, w, row, cw, size, v) {
+  kitWeight('secondary');
+  _txText(row.label, x, base, size);
+  let full = w > cw * 34;
+  let bx = x + cw * 9, tail = full ? cw * 16 : cw * 6.5;
+  let bw = Math.min(cw * 40, w - (bx - x) - tail);
+  if (bw < cw * 4) return;
+  let bh = size * 0.8, by = base - size * 0.82;
+  _txText('[', bx - cw, base, size);
+  let cells = Math.max(6, Math.floor(bw / cw)), cwid = bw / cells;
+  let on = Math.round(cells * v);
+  for (let i = 0; i < cells; i++) {
+    kitWeight(i < on ? 'secondary' : 'fine');
+    if (i < on) { svgRect(bx + i * cwid + cwid * 0.12, by, cwid * 0.76, bh); _txHatchRect(bx + i * cwid + cwid * 0.12, by, cwid * 0.76, bh, Math.max(1.4, cwid * 0.25), 2); }
+    else svgLine(bx + i * cwid + cwid * 0.35, by + bh * 0.5, bx + i * cwid + cwid * 0.65, by + bh * 0.5);
+  }
+  kitWeight('secondary');
+  _txText(']', bx + bw + cw * 0.2, base, size);
+  let pct = String(Math.round(v * 100)).padStart(3, ' ') + '%';
+  _txText(full ? pct + '  ' + row.rate : pct, bx + bw + cw * 1.6, base, size);
+}
+
+// Draw a list of terminal rows into a pane on the character grid.
+function _txDrawRows(rows, x, y, w, lineH, size, micro, cw, s, seed, opt) {
+  let stCol = x + w - cw * 6;
+  for (let i = 0; i < rows.length; i++) {
+    let r = rows[i], base = y + lineH * (i + 1) - lineH * 0.3;
+    if (r.t === 'span') continue;
+    let rs = (seed + i * 7717) >>> 0;
+    if (r.t === 'cmd') {
+      kitWeight('primary');
+      let pw = _txW(r.prompt, size);
+      _txText(r.prompt, x, base, size);
+      let cmd = r.cmd;
+      if (r.live && opt.typed !== undefined) cmd = cmd.slice(0, Math.floor(opt.typed * (cmd.length + 3)));
+      kitWeight('secondary');
+      let cmdFit = _txFit(cmd, size, w - pw - cw * 3, 0);
+      if (cmdFit) _txText(cmdFit, x + pw + cw, base, size);
+      if (r.live && opt.cursor) {
+        let cx = x + pw + cw + (cmdFit ? _txW(cmdFit, size) + cw * 0.3 : 0);
+        kitWeight('fine');
+        svgRect(cx, base - size * 0.95, cw * 0.9, size * 1.15);
+        _txHatchRect(cx, base - size * 0.95, cw * 0.9, size * 1.15, 1.4, 0);
+      }
+    } else if (r.t === 'out') {
+      let room = r.st ? stCol - x - cw : w;
+      kitWeight(r.st === 'FAIL' ? 'primary' : 'secondary');
+      let txt = _txFit(r.text, size, room, 0);
+      if (txt) _txText(txt, x, base, size, 'left', opt.animOut && i % 3 === 1 ? rs : 0, 'counter');
+      if (r.st && stCol > x + cw * 12) {
+        let lbl = r.st === 'OK' ? ' OK ' : r.st;
+        kitWeight(r.st === 'OK' ? 'fine' : 'primary');
+        _txText('[', stCol, base, size);
+        _txText(lbl, stCol + cw * 2.7, base, size, 'center');
+        _txText(']', stCol + cw * 4.6, base, size);
+        if (r.st === 'FAIL') svgRect(stCol - cw * 0.4, base - size * 1.05, cw * 5.8, size * 1.4);
+      }
+    } else if (r.t === 'prog') {
+      _txProgRow(x, base, w, r, cw, size, opt.progress !== undefined ? opt.progress : r.v);
+    } else if (r.t === 'chart') {
+      if (detailActive('internalDetail', s) && w > cw * 20) _txTermChart(x + cw, y + lineH * i + lineH * 0.35, Math.min(w - cw * 2, cw * 72), lineH * r.span - lineH * 0.5, r, cw, size, micro, rs);
+    }
+  }
+}
+
+// Variants: shell (session with chart block), boot (kernel log + device
+// tree), monitor (top-style meters, process table, key bar), split (two
+// panes and a multiplexer status line).
+const TERM_VARIANTS = ['shell', 'boot', 'monitor', 'split'];
+
+function composeTerminalBlock(rect, s, prng) {
   svgRec.beginGroup('terminal-block');
+  let fontSaved = _txFontStream();
 
   // Animation seeds
   let seedCursor = prng.nextInt(0, 0xFFFFFF);
   let seedLines = prng.nextInt(0, 0xFFFFFF);
   let seedStatus = prng.nextInt(0, 0xFFFFFF);
   let termAnimated = animCtx ? shouldAnimate(seedCursor) : false;
+  let cursorVisible = animCtx ? anim.blink(animCtx.frameIndex, 2, 1, 0) : true;
 
-  // Full border (terminal window)
+  let variant = TERM_VARIANTS[Math.floor(prng.nextFloat() * TERM_VARIANTS.length)];
+  if (_cellOverrideVariant && TERM_VARIANTS.includes(_cellOverrideVariant)) variant = _cellOverrideVariant;
+  _cellVariantInfo = variant;
+  let host = prng.pick(_TX_HOSTS), user = prng.pick(['root', 'op', 'sys', 'tech']);
+  let path = prng.pick(['~', '~/sys/core', '/var/log', '/dev', '/mnt/arx', '~/relay']);
+  let prompt = user + '@' + host + ':' + path + (user === 'root' ? '#' : '$');
+  let chartKind = prng.nextFloat() < 0.5 ? 'bars' : 'spark';
+  let macStyle = prng.nextFloat() < 0.55;
+  let crt = prng.nextFloat() < 0.25;
+  let tabsOn = prng.nextFloat() < 0.6;
+  let scrollPos = prng.nextFloat() * 0.6;
+  let modeLabel = prng.pick(['INSERT', 'NORMAL', 'VISUAL', 'CMD']);
+  let posLabel = prng.nextInt(1, 99) + ':' + prng.nextInt(1, 80);
+  let clock = textGen.timestamp(prng);
+  let highlightPick = prng.nextFloat();
+  let dataSeed = prng.nextInt(1, 0x7FFFFFFF);
+  let rp = new PRNG(dataSeed); // content stream: amount drawn depends on window size
+
+  let { x, y, w, h } = rect;
+  let S = Math.min(w, h);
+  let grow = 1 + s * 1.5;
+  let size = Math.min(kitType(rect, 'body') * grow, 16);
+  let micro = kitType(rect, 'micro');
+  let pad = Math.max(2, S * 0.03);
+  let ix = x + pad, iy = y + pad, iw = w - pad * 2, ih = h - pad * 2;
+  if (iw < micro * 8 || ih < micro * 4) { _cellPRNG = fontSaved; svgRec.endGroup(); return; }
+  let cw = _txW('0000000000', size) / 10;
+  let lineH = size * 1.42;
+
+  // Window chrome: double bezel on large windows, title bar with controls
+  kitWeight('primary');
   svgRect(ix, iy, iw, ih);
+  if (S > 300 && detailActive('cornerBrackets', s)) { kitWeight('fine'); svgRect(ix - pad * 0.45, iy - pad * 0.45, iw + pad * 0.9, ih + pad * 0.9); }
+  let tbH = Math.max(micro * 1.9, size * 1.8);
+  kitWeight('secondary');
+  svgLine(ix, iy + tbH, ix + iw, iy + tbH);
+  let ctl = tbH * 0.42, ctlW = 0;
+  if (macStyle) {
+    for (let i = 0; i < 3; i++) {
+      let cx = ix + tbH * 0.5 + i * ctl * 1.6, cyy = iy + tbH / 2;
+      kitWeight('secondary');
+      svgCircle(cx, cyy, ctl);
+      if (i === 0) { kitWeight('fine'); _txHatchRect(cx - ctl * 0.3, cyy - ctl * 0.3, ctl * 0.6, ctl * 0.6, 1.3, 1); }
+    }
+    ctlW = tbH * 0.5 + ctl * 4.2;
+  } else {
+    for (let i = 0; i < 3; i++) {
+      let bx = ix + iw - tbH * (i + 1) + tbH * 0.2, by = iy + tbH * 0.2, bs = tbH * 0.6;
+      kitWeight('secondary');
+      svgRect(bx, by, bs, bs);
+      kitWeight('fine');
+      if (i === 0) { svgLine(bx + bs * 0.25, by + bs * 0.25, bx + bs * 0.75, by + bs * 0.75); svgLine(bx + bs * 0.75, by + bs * 0.25, bx + bs * 0.25, by + bs * 0.75); }
+      else if (i === 1) svgRect(bx + bs * 0.25, by + bs * 0.25, bs * 0.5, bs * 0.5);
+      else svgLine(bx + bs * 0.25, by + bs * 0.7, bx + bs * 0.75, by + bs * 0.7);
+    }
+  }
+  let titleStr = user + '@' + host + ': ' + path + '  --  ' + Math.max(20, Math.floor(iw / cw)) + 'x' + Math.max(4, Math.floor(ih / lineH));
+  let tSize = Math.max(micro, Math.min(size, tbH * 0.5));
+  let tRoom = iw - tbH * 3.4 - ctlW;
+  let tFit = _txFit(titleStr, tSize, tRoom, 6) || _txFit(user + '@' + host, tSize, tRoom, 4);
+  kitWeight('secondary');
+  if (tFit) _txText(tFit, ix + iw / 2 + (macStyle ? ctlW / 2 : -tbH * 1.5), iy + tbH / 2 + tSize * 0.38, tSize, 'center');
+  // Grip texture each side of the title
+  if (detailActive('annotationTexture', s) && tFit) {
+    let tw = _txW(tFit, tSize), tcx = ix + iw / 2 + (macStyle ? ctlW / 2 : -tbH * 1.5);
+    let g0 = macStyle ? ix + ctlW + tbH * 0.3 : ix + tbH * 0.4, g1 = tcx - tw / 2 - tbH * 0.4;
+    let g2 = tcx + tw / 2 + tbH * 0.4, g3 = macStyle ? ix + iw - tbH * 0.4 : ix + iw - tbH * 3.2;
+    kitWeight('fine');
+    for (let k = 0; k < 3; k++) {
+      let gy = iy + tbH * (0.32 + k * 0.18);
+      if (g1 - g0 > tbH) svgLine(g0, gy, g1, gy);
+      if (g3 - g2 > tbH) svgLine(g2, gy, g3, gy);
+    }
+  }
+  let top = iy + tbH;
+  // Tab strip
+  if (tabsOn && detailActive('annotationTexture', s) && ih > tbH * 8 && iw > micro * 30) {
+    let tabH = tbH * 0.85, labels = ['1:' + (variant === 'monitor' ? 'top' : 'sh'), '2:log', '3:net'];
+    let nt = iw > micro * 50 ? 3 : 2, tw = Math.min(iw / nt, micro * 14);
+    for (let i = 0; i < nt; i++) {
+      let tx = ix + i * tw;
+      kitWeight(i === 0 ? 'secondary' : 'fine');
+      svgLine(tx + tw, top, tx + tw, top + tabH);
+      if (i > 0) svgLine(tx, top + tabH, tx + tw, top + tabH);
+      _txText(labels[i], tx + micro * 0.8, top + tabH * 0.5 + micro * 0.4, micro);
+    }
+    kitWeight('fine');
+    svgLine(ix + nt * tw, top + tabH, ix + iw, top + tabH);
+    top += tabH;
+  }
 
-  // Title bar with tab indicators
-  let titleH = lineH * 1.2;
-  svgLine(ix, iy + titleH, ix + iw, iy + titleH);
+  // Status bar
+  let sbH = detailActive('versionStrings', s) && ih > tbH * 5 ? Math.max(micro * 1.8, size * 1.5) : 0;
+  let bot = iy + ih - sbH;
+  if (sbH > 0) {
+    kitWeight('secondary');
+    svgLine(ix, bot, ix + iw, bot);
+    let sy = bot + sbH * 0.5 + micro * 0.4;
+    let ml = variant === 'split' ? '[0] 0:bash*  1:log-  2:net' : '-- ' + modeLabel + ' --';
+    let mw = _txW(ml, micro);
+    kitWeight('primary');
+    svgRect(ix + micro * 0.5, bot + sbH * 0.18, mw + micro, sbH * 0.64);
+    _txText(ml, ix + micro, sy, micro, 'left', variant === 'split' ? 0 : seedStatus, 'bus:status');
+    kitWeight('fine');
+    let rt = posLabel + '   ' + clock;
+    let mid = 'UTF-8  LF  ' + (variant === 'boot' ? 'TTY1' : 'ZSH');
+    _txText(rt, ix + iw - micro, sy, micro, 'right', seedStatus + 1, 'counter');
+    if (_txW(mid, micro) + mw + _txW(rt, micro) + micro * 6 < iw) _txText(mid, ix + iw * 0.5, sy, micro, 'center');
+  }
 
-  // Tab indicators (2-3 small rectangles)
-  if (detailActive('annotationTexture', s)) {
-    let tabCount = prng.nextInt(2, 3);
-    for (let i = 0; i < tabCount; i++) {
-      let tabX = ix + pad + i * (iw * 0.2);
-      let tabW = iw * 0.15;
-      svgRect(tabX, iy, tabW, titleH * 0.6);
-      if (i === 0) {
-        // Active tab marker
-        svgLine(tabX, iy + titleH * 0.6, tabX + tabW, iy + titleH * 0.6);
+  // Scrollbar
+  let sbW = detailActive('connectorLines', s) && iw > micro * 16 ? Math.max(micro * 0.9, size * 0.8) : 0;
+  if (sbW > 0) {
+    let sx = ix + iw - sbW;
+    kitWeight('fine');
+    svgLine(sx, top, sx, bot);
+    drawTriangle(sx + sbW / 2, top + sbW * 0.6, sbW * 0.3, -HALF_PI);
+    drawTriangle(sx + sbW / 2, bot - sbW * 0.6, sbW * 0.3, HALF_PI);
+    let th = (bot - top - sbW * 2.4) * 0.22, ty = top + sbW * 1.2 + (bot - top - sbW * 2.4 - th) * scrollPos;
+    kitWeight('secondary');
+    svgRect(sx + sbW * 0.2, ty, sbW * 0.6, th);
+    kitWeight('fine');
+    _txHatchRect(sx + sbW * 0.2, ty, sbW * 0.6, th, Math.max(1.4, sbW * 0.15), 0);
+  }
+
+  // Content area with optional line-number gutter
+  let cx0 = ix + cw * 0.6, cy0 = top + lineH * 0.25, cxw = iw - sbW - cw * 1.2, cyh = bot - cy0;
+  let gut = (variant !== 'monitor' && iw > cw * 26 && detailActive('annotationTexture', s)) ? cw * 4.2 : 0;
+  let nLines = Math.max(1, Math.floor(cyh / lineH));
+  let scrollOff = termAnimated && animCtx ? anim.step(animCtx.frameIndex, animCtx.frameCount, 20, animCtx.frameCount, animCtx.speedMul, 0) : 0;
+  let firstNum = 1 + Math.floor(highlightPick * 400);
+  if (gut > 0) {
+    let msz = Math.max(micro, size * 0.8);
+    kitWeight('fine');
+    for (let i = 0; i < nLines; i++) _txText(String(firstNum + i + scrollOff), cx0 + gut - cw * 1.2, cy0 + lineH * (i + 1) - lineH * 0.3, msz, 'right');
+    drawDashedLine(cx0 + gut - cw * 0.5, top, cx0 + gut - cw * 0.5, bot, 1, 2);
+  }
+  let tx = cx0 + gut + (gut ? cw * 0.4 : 0), tw = cxw - gut - (gut ? cw * 0.4 : 0);
+  let typed = termAnimated && animCtx ? anim.sweep(animCtx.frameIndex, animCtx.frameCount, animCtx.frameCount, animCtx.speedMul, 0) : undefined;
+  let opt = { cursor: cursorVisible, typed, animOut: termAnimated, progress: _compBus ? _compBus.globalProgress : undefined };
+
+  // Highlighted line (moves when animated)
+  if (detailActive('internalDetail', s) && nLines > 3) {
+    let hl = Math.floor(highlightPick * (nLines - 1));
+    if (termAnimated && animCtx) hl = (hl + anim.step(animCtx.frameIndex, animCtx.frameCount, 3, animCtx.frameCount, animCtx.speedMul, (seedLines % 1000) / 1000)) % (nLines - 1);
+    kitWeight('fine');
+    svgRect(tx - cw * 0.3, cy0 + lineH * hl + lineH * 0.05, tw + cw * 0.3, lineH * 0.95);
+  }
+
+  if (variant === 'monitor') {
+    // Meters: per-core CPU bars in one or two columns, MEM / SWP, task summary
+    let cores = Math.max(2, Math.min(16, Math.floor(nLines * 0.25) * (tw > cw * 70 ? 2 : 1)));
+    let twoColM = tw > cw * 70;
+    let colW = twoColM ? tw / 2 - cw : tw;
+    let mRows = twoColM ? Math.ceil(cores / 2) : cores;
+    let L = 0;
+    let drawMeter = (mx, base, label, v, txt) => {
+      kitWeight('secondary');
+      _txText(label, mx, base, size);
+      let bx = mx + cw * 5.4, bw = colW - cw * 5.4 - cw * 7.5;
+      _txText('[', bx - cw * 0.9, base, size);
+      _txText(']', bx + bw + cw * 0.2, base, size);
+      kitWeight('fine');
+      let ticks = Math.max(4, Math.floor(bw / (cw * 0.5)));
+      for (let k = 0; k < ticks * v; k++) svgLine(bx + k * bw / ticks + 1, base - size * 0.85, bx + k * bw / ticks + 1, base - size * 0.05);
+      kitWeight('secondary');
+      _txText(txt, bx + bw + cw * 1.4, base, size);
+    };
+    for (let i = 0; i < cores && L < nLines; i++) {
+      let col = twoColM ? Math.floor(i / mRows) : 0, rr = twoColM ? i % mRows : i;
+      let v = rp.nextFloat();
+      if (termAnimated && _compBus && i % 3 === 0) v = Math.min(1, v * 0.5 + _compBus.meterValue * 0.5);
+      drawMeter(tx + col * (colW + cw * 2), cy0 + lineH * (rr + 1) - lineH * 0.3, String(i).padStart(2, ' '), v, (v * 100).toFixed(1) + '%');
+    }
+    L = mRows;
+    for (let lbl of ['MEM', 'SWP']) {
+      if (L >= nLines) break;
+      let v = rp.nextFloat();
+      drawMeter(tx, cy0 + lineH * (L + 1) - lineH * 0.3, lbl, v, (v * 32).toFixed(1) + 'G');
+      L++;
+    }
+    if (L < nLines) {
+      kitWeight('secondary');
+      _txText(_txFit('TASKS: ' + rp.nextInt(80, 400) + ', ' + rp.nextInt(1, 9) + ' RUNNING   LOAD AVG: ' + rp.nextFloat().toFixed(2) + ' ' + rp.nextFloat().toFixed(2) + ' ' + rp.nextFloat().toFixed(2) + '   UP ' + rp.nextInt(1, 99) + ' DAYS', size, tw, 0), tx, cy0 + lineH * (L + 1) - lineH * 0.3, size, 'left', seedLines, 'counter');
+      L += 2;
+    }
+    // Process table
+    let keysOn = nLines - L > 6;
+    let rowsLeft = nLines - L - (keysOn ? 1 : 0);
+    if (rowsLeft > 1) {
+      let colsDef = [['PID', 6], ['USER', 6], ['PR', 4], ['NI', 4], ['VIRT', 7], ['RES', 7], ['S', 3], ['CPU%', 6], ['MEM%', 6], ['TIME+', 9], ['COMMAND', 0]];
+      let hb = cy0 + lineH * (L + 1) - lineH * 0.3;
+      kitWeight('secondary');
+      svgRect(tx - cw * 0.3, cy0 + lineH * L + lineH * 0.05, tw + cw * 0.3, lineH * 0.95);
+      let cx = tx;
+      let colX = [];
+      for (let c of colsDef) {
+        colX.push(cx);
+        if (cx - tx + (c[1] || 8) * cw <= tw) _txText(c[0], cx, hb, size);
+        cx += c[1] * cw;
+      }
+      for (let r = 1; r < rowsLeft; r++) {
+        let base = cy0 + lineH * (L + r + 1) - lineH * 0.3;
+        let cells = [String(rp.nextInt(1, 32000)), rp.pick(['root', 'op', 'sys', 'tech', 'dmn']), String(rp.nextInt(0, 39)), String(rp.nextInt(-5, 5)),
+          rp.nextInt(10, 999) + 'M', rp.nextInt(1, 512) + 'M', rp.pick(['S', 'R', 'S', 'D', 'S']), (rp.nextFloat() * 99 / r).toFixed(1), (rp.nextFloat() * 20).toFixed(1),
+          rp.nextInt(0, 99) + ':' + String(rp.nextInt(0, 59)).padStart(2, '0') + '.' + String(rp.nextInt(0, 99)).padStart(2, '0'),
+          rp.pick(['coreD', 'relayd', 'telem --live', 'scan.sh', 'kworker/0:1', 'sshd: op', 'decode -f', 'zsh', 'netmon'])];
+        for (let c = 0; c < cells.length; c++) {
+          if (colX[c] - tx >= tw - cw * 3) break;
+          let room = (c === cells.length - 1 ? tw - (colX[c] - tx) : colsDef[c][1] * cw - cw);
+          let t = _txFit(cells[c], size, room, 1);
+          kitWeight(c === 7 && +cells[7] > 50 ? 'primary' : 'secondary');
+          if (t) _txText(t, colX[c], base, size, 'left', c === 7 ? (seedLines + r * 13) >>> 0 : 0, 'counter');
+        }
+      }
+      L += rowsLeft;
+    }
+    // Function-key bar
+    if (keysOn) {
+      let base = cy0 + lineH * (L + 1) - lineH * 0.3, kx = tx;
+      for (let k of [['F1', 'HELP'], ['F2', 'SETUP'], ['F3', 'SEARCH'], ['F4', 'FILTER'], ['F5', 'TREE'], ['F6', 'SORT'], ['F9', 'KILL'], ['F10', 'QUIT']]) {
+        let kw = _txW(k[0], size), lw = _txW(k[1], size);
+        if (kx + kw + lw + cw * 2 > tx + tw) break;
+        kitWeight('secondary');
+        _txText(k[0], kx, base, size);
+        kitWeight('fine');
+        svgRect(kx + kw + cw * 0.2, base - size * 1.0, lw + cw * 0.8, size * 1.3);
+        _txText(k[1], kx + kw + cw * 0.6, base, size);
+        kx += kw + lw + cw * 2.2;
       }
     }
+  } else if (variant === 'split' && tw > cw * 44) {
+    // Two panes side by side: shell left, log tail with chart right
+    let lw = Math.floor(tw * 0.55);
+    kitWeight('secondary');
+    svgLine(tx + lw + cw * 0.5, top, tx + lw + cw * 0.5, bot);
+    let rowsL = _txShellRows(rp, nLines, prompt, chartKind);
+    _txDrawRows(rowsL, tx, cy0, lw - cw * 0.5, lineH, size, micro, cw, s, seedLines, opt);
+    let rowsR = _txBootRows(rp, nLines);
+    _txDrawRows(rowsR, tx + lw + cw * 1.5, cy0, tw - lw - cw * 1.5, lineH, size, micro, cw, s, seedLines + 999, { cursor: false, animOut: termAnimated });
+  } else if (variant === 'boot') {
+    _txDrawRows(_txBootRows(rp, nLines), tx, cy0, tw, lineH, size, micro, cw, s, seedLines, opt);
+  } else {
+    _txDrawRows(_txShellRows(rp, nLines, prompt, chartKind), tx, cy0, tw, lineH, size, micro, cw, s, seedLines, opt);
   }
 
-  // Window dots
-  for (let i = 0; i < 3; i++) {
-    svgCircle(ix + iw - pad - 5 - i * 10, iy + titleH * 0.5, 4);
-  }
-  let titleText = textGen.systemPath(prng);
-  let showLineNums = detailActive('annotationTexture', s) && prng.nextFloat() < 0.6;
-  let textStartX = ix + pad + (showLineNums ? lineNumW + 4 : 0);
-
-  drawFallbackText(titleText, ix + pad + 40, iy + titleH * 0.7, fontSize * 0.8);
-
-  // Line number gutter divider
-  if (showLineNums) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.3);
-    svgLine(ix + pad + lineNumW, iy + titleH, ix + pad + lineNumW, iy + ih);
-    svgSetStrokeWeight(state.geometry.strokeWeight);
-  }
-
-  // Terminal lines
-  let maxLines = Math.min(12, Math.floor((ih - titleH - lineH * 2) / lineH));
-  let lines = textGen.terminalBlock(prng, maxLines);
-  let curY = iy + titleH + lineH;
-  let highlightIdx = prng.nextInt(0, lines.length - 1);
-
-  svgSetStrokeWeight(state.geometry.strokeWeight * 0.7);
-  // Animation: highlighted line position oscillates between lines
-  let animHighlight = highlightIdx;
-  if (termAnimated && animCtx) {
-    animHighlight = (highlightIdx + anim.step(animCtx.frameIndex, animCtx.frameCount, 3, animCtx.frameCount, animCtx.speedMul, (seedLines % 1000) / 1000)) % Math.max(1, lines.length);
-  }
-
-  for (let li = 0; li < lines.length; li++) {
-    if (curY + lineH > iy + ih - lineH * 1.5) break;
-
-    // Line numbers — animated counter
-    if (showLineNums) {
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-      let baseNum = li + 1;
-      let num;
-      if (termAnimated && animCtx) {
-        let scrollOffset = anim.step(animCtx.frameIndex, animCtx.frameCount, 20, animCtx.frameCount, animCtx.speedMul, 0);
-        num = (baseNum + scrollOffset).toString().padStart(2, '0');
-      } else {
-        num = baseNum.toString().padStart(2, '0');
-      }
-      drawFallbackText(num, ix + pad, curY, tinyFont);
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.7);
-    }
-
-    // Highlighted line — animated position
-    if (li === animHighlight && detailActive('internalDetail', s)) {
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.3);
-      svgRect(textStartX - 2, curY - fontSize * 0.9, iw - (textStartX - ix) - pad, lineH * 0.9);
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.7);
-    }
-
-    // Terminal text — typewriter reveal with per-line stagger
-    if (termAnimated && animCtx) {
-      let lineDelay = li * 2; // each line starts 2 frames after previous
-      let revealProgress = anim.reveal(animCtx.frameIndex, lineDelay, Math.max(4, animCtx.frameCount * 0.3));
-      let visibleChars = Math.floor(revealProgress * (lines[li].length + 2));
-      let displayLine = lines[li].slice(0, Math.min(visibleChars, lines[li].length));
-      drawFallbackText(displayLine, textStartX, curY, fontSize);
-    } else {
-      drawFallbackText(lines[li], textStartX, curY, fontSize);
-    }
-    curY += lineH;
-  }
-
-  // Cursor block — animated blink (always animates when animation enabled)
-  let cursorVisible = true;
-  if (animCtx) cursorVisible = anim.blink(animCtx.frameIndex, 2, 1, 0);
-  if (cursorVisible) {
-    svgSetStrokeWeight(state.geometry.strokeWeight);
-    svgRect(textStartX, curY - fontSize * 0.2, fontSize * 0.6, fontSize * 0.8);
-  }
-
-  // Scrollbar (right edge)
-  if (detailActive('connectorLines', s)) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-    let scrollX = ix + iw - 4;
-    svgLine(scrollX, iy + titleH, scrollX, iy + ih);
-    // Scroll position indicator
-    let scrollPos = prng.nextFloat() * 0.6;
-    let scrollH = (ih - titleH) * 0.2;
-    svgRect(scrollX - 2, iy + titleH + (ih - titleH - scrollH) * scrollPos, 4, scrollH);
-  }
-
-  // Status bar at bottom
-  if (detailActive('versionStrings', s)) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-    let statusY = iy + ih - lineH * 0.8;
-    svgLine(ix, statusY - lineH * 0.2, ix + iw, statusY - lineH * 0.2);
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.5);
-    let modeLabel = prng.pick(['INSERT', 'NORMAL', 'VISUAL', 'CMD']);
-    drawAnimText(modeLabel, ix + pad, statusY, tinyFont, seedStatus, 'bus:status');
-    let posLabel = prng.nextInt(1, 99) + ':' + prng.nextInt(1, 80);
-    drawAnimText(posLabel, ix + iw - pad - measureFallbackText(posLabel, tinyFont) - 8, statusY, tinyFont, seedStatus + 1, 'counter');
-  }
-
-  // Terminal variant overlays
-  // Terminal variant overlays — no prng inside branches
-  let termVariant = prng.nextFloat();
-  let termVarSeed = prng.nextInt(0, 0xFFFFFF);
-  if (termVariant < 0.20 && ih > lineH * 6) {
-    // Boot sequence — use hash for fail/ok decision
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-    let bootFont = Math.max(4, tinyFont);
-    let checks = ['MEM...', 'CPU...', 'NET...', 'DSK...'];
-    let statuses = ['[OK]', '[OK]', '[OK]', _profileHash(termVarSeed, 140) < 0.3 ? '[FAIL]' : '[OK]'];
-    let bootY = iy + titleH + lineH * 0.5;
-    for (let bi = 0; bi < checks.length; bi++) {
-      let checkVisible = !animCtx || animCtx.frameIndex > bi * 3;
-      if (checkVisible) {
-        drawAnimText(checks[bi], textStartX, bootY + bi * lineH * 0.7, bootFont, termVarSeed + bi, 'typewriter');
-        let statusX = ix + iw - pad - measureFallbackText(statuses[bi], bootFont);
-        drawAnimText(statuses[bi], statusX, bootY + bi * lineH * 0.7, bootFont, termVarSeed + bi + 10, null);
-      }
-    }
-  } else if (termVariant < 0.32) {
-    // Retro CRT — dither glow from hash, not prng
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.06);
-    let scanSpacing = Math.max(3, Math.round(4 - s * 2));
-    for (let sy = iy; sy < iy + ih; sy += scanSpacing) {
-      svgLine(ix, sy, ix + iw, sy);
-    }
-    if (cursorVisible) {
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.2);
-      for (let gi = 0; gi < 5; gi++) {
-        let gx = textStartX + (_profileHash(termVarSeed + gi * 3, 141) - 0.3) * fontSize * 2;
-        let gy = curY + (_profileHash(termVarSeed + gi * 3 + 1, 142) - 0.5) * fontSize * 1.5;
-        svgPoint(gx, gy);
-      }
+  // CRT treatment: one scanline between text rows, phosphor double edge
+  if (crt && detailActive('annotationTexture', s)) {
+    kitWeight('fine');
+    for (let i = 1; i < nLines; i++) {
+      let ly = cy0 + lineH * i + lineH * 0.02;
+      drawDashedLine(tx, ly, tx + tw, ly, cw * 0.15, cw * 0.55);
     }
   }
 
-  svgSetStrokeWeight(state.geometry.strokeWeight);
+  kitWeight('primary');
+  _cellPRNG = fontSaved;
   svgRec.endGroup();
 }
 
