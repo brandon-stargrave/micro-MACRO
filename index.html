@@ -1276,9 +1276,9 @@ const VARIANT_DEFS = {
   globeSphere: ['orbital','groundStation','scanBands','polar'],
   standaloneGlyph: ['radial','rune','enclosed','sector','orbital','chevron','frames','star','hourglass'],
   sigil: ['petal','blade','flame','hook','arrow','scurve','thorn','lozenge','glyph'],
+  heroText: ['outline','echo','lined','shadow','slice'],
   statusPanel: null,
   nodeNetwork: null,
-  heroText: null,
   starChart: null,
   encodedData: null
 };
@@ -10379,27 +10379,154 @@ function composeTerminalBlock(rect, s, prng) {
 }
 
 // ---- Archetype: Hero Text ----
-function composeHeroText(rect, s, prng) {
-  let { x, y, w, h } = rect;
-  let cx = x + w / 2, cy = y + h / 2;
+// A Swiss technical poster: one macro-font word set flush to the grid, with
+// construction guides, dimension marks, kerning ticks, an index numeral, a
+// rule system and a micro caption block. The word is traced from its OTF
+// outlines so it can be echoed, sliced, line-filled or shadow-hatched for
+// plotter-safe weight.
 
+// Outline font for the hero word: the Type Engine's explicit macro font, else
+// this generation's macro pick, else any loaded OTF. Null when none loaded.
+function _heroFont() {
+  let otf = loadedFonts.macro.filter(f => f.otFont);
+  if (!otf.length) return null;
+  let te = state.typeEngine || {};
+  if (te.macroFont && te.macroFont !== 'auto') {
+    let f = otf.find(f2 => f2.name === te.macroFont);
+    if (f) return f;
+  }
+  if (_genFonts.macro && _genFonts.macro.otFont) return _genFonts.macro;
+  return otf[0];
+}
+
+// Flattened closed contours of `str` set at (x, y) baseline, with bboxes.
+function _heroOutline(font, str, x, y, size) {
+  let cmds = font.otFont.getPath(str, x, y, size).commands;
+  let qn = Math.max(3, Math.min(10, Math.round(size / 30))), cn = qn + 2;
+  let out = [], cur = null, px = 0, py = 0;
+  let close = () => { if (cur && cur.length > 2) out.push(cur); cur = null; };
+  for (let c of cmds) {
+    if (c.type === 'M') { close(); cur = [[c.x, c.y]]; }
+    else if (!cur) { if (c.type !== 'Z') cur = [[c.x, c.y]]; }
+    else if (c.type === 'L') cur.push([c.x, c.y]);
+    else if (c.type === 'Q') {
+      for (let i = 1; i <= qn; i++) { let t = i / qn, u = 1 - t; cur.push([u * u * px + 2 * u * t * c.x1 + t * t * c.x, u * u * py + 2 * u * t * c.y1 + t * t * c.y]); }
+    } else if (c.type === 'C') {
+      for (let i = 1; i <= cn; i++) {
+        let t = i / cn, u = 1 - t;
+        cur.push([u * u * u * px + 3 * u * u * t * c.x1 + 3 * u * t * t * c.x2 + t * t * t * c.x,
+                  u * u * u * py + 3 * u * u * t * c.y1 + 3 * u * t * t * c.y2 + t * t * t * c.y]);
+      }
+    }
+    if (c.type === 'Z') close(); else { px = c.x; py = c.y; }
+  }
+  close();
+  return out.map(pts => {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (let p of pts) { if (p[0] < x0) x0 = p[0]; if (p[0] > x1) x1 = p[0]; if (p[1] < y0) y0 = p[1]; if (p[1] > y1) y1 = p[1]; }
+    return { pts, x0, y0, x1, y1 };
+  });
+}
+
+// Even-odd point test against a shape translated by (ox, oy).
+function _heroInside(shape, px, py, ox, oy) {
+  px -= ox; py -= oy;
+  let inside = false;
+  for (let c of shape) {
+    if (py < c.y0 || py > c.y1 || px > c.x1) continue;
+    let p = c.pts;
+    for (let i = 0, j = p.length - 1; i < p.length; j = i++) {
+      let yi = p[i][1], yj = p[j][1];
+      if ((yi > py) !== (yj > py) && px < (p[j][0] - p[i][0]) * (py - yi) / (yj - yi) + p[i][0]) inside = !inside;
+    }
+  }
+  return inside;
+}
+
+// Trace a shape's contours translated by (ox, oy). With `hidden(x, y)`, the
+// outline is resampled and only the visible runs are drawn (hidden-line pass).
+// `band` = [y0, y1] keeps only the part of the outline inside that y range.
+function _heroTrace(shape, ox, oy, hidden, step, band) {
+  for (let c of shape) {
+    let pts = c.pts.concat([c.pts[0]]);
+    if (!hidden && !band) { svgPolyline(pts.map(p => [p[0] + ox, p[1] + oy])); continue; }
+    let run = [];
+    let flush = () => { if (run.length > 1) svgPolyline(run); run = []; };
+    for (let i = 0; i < pts.length - 1; i++) {
+      let a = pts[i], b = pts[i + 1];
+      let n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / step));
+      for (let k = i === 0 ? 0 : 1; k <= n; k++) {
+        let t = k / n, qx = a[0] + (b[0] - a[0]) * t, qy = a[1] + (b[1] - a[1]) * t;
+        let off = (band && (qy + oy < band[0] || qy + oy > band[1])) || (hidden && hidden(qx + ox, qy + oy));
+        if (off) flush(); else run.push([qx + ox, qy + oy]);
+      }
+    }
+    flush();
+  }
+}
+
+// Scanline spans of contours (already rotated) at height y, even-odd.
+function _heroSpans(rc, y) {
+  let xs = [];
+  for (let p of rc) {
+    for (let i = 0, j = p.length - 1; i < p.length; j = i++) {
+      let y1 = p[j][1], y2 = p[i][1];
+      if ((y1 <= y && y2 > y) || (y2 <= y && y1 > y)) xs.push(p[j][0] + (y - y1) / (y2 - y1) * (p[i][0] - p[j][0]));
+    }
+  }
+  xs.sort((a, b) => a - b);
+  let out = [];
+  for (let k = 0; k + 1 < xs.length; k += 2) out.push([xs[k], xs[k + 1]]);
+  return out;
+}
+
+// Parallel-line fill of `shape` (offset ox, oy) minus `sub` (offset sx, sy).
+// band = [y0, y1] limits a 0-degree fill to a horizontal slab; dx shifts it.
+function _heroFill(shape, ox, oy, sub, sx, sy, deg, spacing, band, dx) {
+  spacing = Math.max(spacing, unitToPx(state.plotter.hatch.penDiameter, 'mm', state.plotter.dpi) * 1.2, 0.8);
+  let a = deg * PI / 180, ca = Math.cos(-a), sa = Math.sin(-a), cb = Math.cos(a), sb = Math.sin(a);
+  let rot = (sh, tx, ty) => sh.map(c => c.pts.map(p => { let X = p[0] + tx, Y = p[1] + ty; return [X * ca - Y * sa, X * sa + Y * ca]; }));
+  let A = rot(shape, ox, oy), B = sub ? rot(sub, sx, sy) : null;
+  let yMin = Infinity, yMax = -Infinity;
+  for (let p of A) for (let v of p) { if (v[1] < yMin) yMin = v[1]; if (v[1] > yMax) yMax = v[1]; }
+  if (band) { yMin = Math.max(yMin, band[0]); yMax = Math.min(yMax, band[1]); }
+  dx = dx || 0;
+  let n = 0;
+  for (let y = yMin + spacing * 0.5; y < yMax && n < 1500; y += spacing, n++) {
+    let spans = _heroSpans(A, y);
+    if (B) {
+      let cut = _heroSpans(B, y), res = [];
+      for (let s of spans) {
+        let st = s[0];
+        for (let c of cut) {
+          if (c[1] <= st || c[0] >= s[1]) continue;
+          if (c[0] > st) res.push([st, c[0]]);
+          st = Math.max(st, c[1]);
+          if (st >= s[1]) break;
+        }
+        if (st < s[1]) res.push([st, s[1]]);
+      }
+      spans = res;
+    }
+    if (n % 2) spans = spans.reverse().map(s => [s[1], s[0]]);
+    for (let s of spans) {
+      if (Math.abs(s[1] - s[0]) < 0.6) continue;
+      svgLine(s[0] * cb - y * sb + dx, s[0] * sb + y * cb, s[1] * cb - y * sb + dx, s[1] * sb + y * cb);
+    }
+  }
+}
+
+function composeHeroText(rect, s, prng) {
   svgRec.beginGroup('hero-text-archetype');
 
-  // Animation setup — text scramble
+  // ---- Every PRNG draw happens here, before any branch on frame/visibility ----
   let elemSeed = prng.nextInt(0, 0xFFFFFF);
   let animated = shouldAnimate(elemSeed);
-  // Hero text is STRUCTURAL — enforce stability (no loopTarget, no bookend)
-  if (animated && animCtx) {
-    let heroProf = getAnimProfile(elemSeed, s);
-    if (heroProf.loopTarget) heroProf.loopTarget = null;
-  }
+  // Hero text is STRUCTURAL: no loop-target windows, no presence dropouts
+  let heroProf = animated && animCtx ? getAnimProfile(elemSeed, s) : null;
+  if (heroProf && heroProf.loopTarget) heroProf.loopTarget = null;
 
-  // Generous padding — scales with macro value for breathing room
-  let padFactor = 0.10 + s * 0.15;
-  let ix = x + w * padFactor, iy = y + h * padFactor;
-  let iw = w * (1 - padFactor * 2), ih = h * (1 - padFactor * 2);
-
-  // Generate hero text string — user macro text overrides random sources
+  // Hero string: user macro text overrides the random sources
   let str;
   let userMacro = state.typeEngine.userMacroText ? state.typeEngine.userMacroText.trim() : '';
   if (userMacro) {
@@ -10407,7 +10534,6 @@ function composeHeroText(rect, s, prng) {
   } else {
     let sources = [];
     if (state.typeEngine.heroSources.labels) {
-      // Only short status words to avoid ugly truncation
       let shortStatus = textGen._statusWords.filter(w => w.length <= 6);
       sources.push(() => prng.pick(shortStatus));
       sources.push(() => prng.pick(['HALT', 'INIT', 'SYNC', 'IDLE', 'SCAN', 'LOCK', 'DUMP', 'EXEC', 'FLUX', 'VOID']));
@@ -10418,7 +10544,7 @@ function composeHeroText(rect, s, prng) {
     }
     if (state.typeEngine.heroSources.hex) {
       sources.push(() => prng.nextInt(0, 0xFF).toString(16).toUpperCase().padStart(2, '0'));
-      sources.push(() => '0x' + prng.nextInt(0, 0xFFF).toString(16).toUpperCase());
+      sources.push(() => '0X' + prng.nextInt(0, 0xFFF).toString(16).toUpperCase());
     }
     if (state.typeEngine.heroSources.numbers) {
       sources.push(() => prng.nextInt(0, 999).toString().padStart(3, '0'));
@@ -10429,463 +10555,1204 @@ function composeHeroText(rect, s, prng) {
     if (str.length > 6) str = str.slice(0, 6);
   }
 
-  let spacing = state.typeEngine.charSpacing;
+  let rotRoll = prng.nextFloat();
+  let treatPick = prng.nextFloat();
+  let anchorPick = prng.nextFloat();
+  let echoAng = prng.pick([45, 60, 90, 120, 135]) * PI / 180;
+  let echoN = prng.nextInt(3, 5);
+  let sliceN = prng.nextInt(3, 5);
+  let sliceOff = [];
+  for (let i = 0; i < 6; i++) sliceOff.push(prng.nextFloat() * 2 - 1);
+  let indexNum = String(prng.nextInt(1, 99)).padStart(2, '0');
+  let capTitle = prng.pick(['TYPE SPECIMEN', 'DISPLAY SETTING', 'SIGNAL WORD', 'GLYPH STUDY', 'HEADLINE PROOF', 'MARK / WORD']);
+  let capId = textGen.identifier(prng), capVer = textGen.versionString(prng);
+  let capTs = textGen.timestamp(prng), capCoord = textGen.coordinate(prng);
+  let capPath = textGen.systemPath(prng), capStatus = textGen.statusLabel(prng);
+  let seedIdx = prng.nextInt(1, 0xFFFFFF), seedCap = prng.nextInt(1, 0xFFFFFF);
+  let fillStyle = kitFillStyle(s, prng);
+  let subRoll = prng.nextFloat(), greebleRoll = prng.nextFloat(), stampSeed = prng.nextInt(1, 0x7FFFFF);
+  let gridCols = prng.pick([6, 8, 12]);
+  let fieldPick = prng.nextFloat(), arcCorner = prng.nextFloat() < 0.5, arcSector = prng.nextInt(0, 3);
+  let gridHits = [];
+  for (let i = 0; i < 4; i++) gridHits.push([prng.nextFloat(), prng.nextFloat()]);
 
-  // Decide orientation: rare chance of 90° rotation when cell is tall enough
-  let rotated = false;
-  if (h > w * 1.3 && prng.nextFloat() < 0.2) rotated = true;
-  // Available dimensions for text (swap if rotated)
-  let textMaxW = rotated ? ih : iw;
-  let textMaxH = rotated ? iw : ih;
+  let treat = treatPick < 0.22 ? 'outline' : treatPick < 0.42 ? 'echo' : treatPick < 0.62 ? 'lined'
+            : treatPick < 0.80 ? 'shadow' : 'slice';
+  // Deep macro wants weight, not a bare outline
+  if (!detailActive('allInternal', s) && treat === 'outline' && !fillStyle) treat = 'lined';
+  if (_cellOverrideVariant && ['outline', 'echo', 'lined', 'shadow', 'slice'].includes(_cellOverrideVariant)) treat = _cellOverrideVariant;
+  _cellVariantInfo = treat;
 
-  // Size hero text to fit — leave room for sub-elements (use only 55% of height)
-  let fontSize = textMaxW / (str.length * spacing);
-  fontSize = Math.min(fontSize, textMaxH * 0.4);
-  fontSize = Math.max(fontSize, 14);
-
-  // Measure and verify text fits inside padded area
-  let tw = str.length * fontSize * spacing;
-  let th = fontSize; // approximate text height
-  // Clamp: if text still exceeds inner area, reduce fontSize
-  if (tw > textMaxW * 0.95) {
-    fontSize *= (textMaxW * 0.95) / tw;
-    tw = str.length * fontSize * spacing;
-    th = fontSize;
-  }
-
-  let heroX = cx - tw / 2;
-  let heroY = cy - th * 0.1;
-
-  // Boundary enforcement — clamp hero text position inside cell
-  heroX = Math.max(ix + 2, Math.min(heroX, ix + iw - tw - 2));
-  heroY = Math.max(iy + th + 2, Math.min(heroY, iy + ih - 4));
-
-  // Draw hero text (optionally rotated) — fast-resolving scramble, stable for most of loop
-  let displayStr = animated ? animatedText(str, 'heroScramble', elemSeed) : str;
-  svgSetStrokeWeight(state.geometry.strokeWeight * 1.1);
+  // Tall cells sometimes set the whole poster on its side
+  let cx = rect.x + rect.w / 2, cy = rect.y + rect.h / 2;
+  let rotated = rect.h > rect.w * 1.3 && rotRoll < 0.2;
+  let R = rotated ? { x: cx - rect.h / 2, y: cy - rect.w / 2, w: rect.h, h: rect.w } : rect;
   if (rotated) {
-    drawFallbackTextRotated(displayStr, cx, cy, fontSize, -90);
+    svgRec.beginGroupWithTransform('hero-rot', `rotate(-90, ${svgRec._r(cx)}, ${svgRec._r(cy)})`);
+    push(); translate(cx, cy); rotate(-HALF_PI); translate(-cx, -cy);
+  }
+
+  // Captions use the single-line micro fonts; the word bypasses the text renderer
+  let prevScale = _cellScale;
+  _cellScale = Math.min(_cellScale, 0.1);
+
+  let { x, y, w, h } = R;
+  let minSide = Math.min(w, h);
+  let m = Math.max(3, minSide * 0.05);
+  let ix = x + m, iy = y + m, iw = w - m * 2, ih = h - m * 2;
+  let micro = kitType(R, 'micro'), value = kitType(R, 'value');
+  let pen = unitToPx(state.plotter.hatch.penDiameter, 'mm', state.plotter.dpi);
+  let roomy = minSide > 170;
+
+  // Which layers of the poster survive at this scale
+  let showRules = detailActive('allInternal', s);
+  let showIndex = showRules && roomy && value > micro * 2.2;
+  let showGuides = detailActive('internalDetail', s);
+  let showDims = detailActive('secondaryRings', s) && roomy;
+  let showKern = detailActive('crosshairs', s) && minSide > 120;
+  let showCap = detailActive('primaryLabels', s) && state.typeEngine.subLabels &&
+                subRoll < 0.35 + 0.65 * state.typeEngine.subLabelDensity && minSide > 120;
+
+  // A free band above or below the word becomes a typographic field
+  let fieldKind = null;
+  if (roomy && showRules) {
+    fieldKind = fieldPick < 0.4 ? 'repeat' : fieldPick < 0.7 ? 'arcs' : 'grid';
+    if (fieldKind !== 'repeat' && !detailActive('secondaryRings', s)) fieldKind = 'repeat';
+  }
+
+  // ---- Zones: top band (index), word zone, bottom band (captions) ----
+  let lineH = micro * 1.45;
+  let tb = showIndex ? value * 1.45 + micro * 0.9 : 0;
+  let capLines = showCap ? Math.max(0, Math.min(detailActive('secondaryText', s) ? 5 : 4, Math.floor((ih * 0.24) / lineH))) : 0;
+  if (capLines < 2) { capLines = 0; showCap = false; }
+  let bb = capLines ? capLines * lineH + micro * 0.8 : (showRules && roomy ? micro * 1.2 : 0);
+  let gap = micro * 0.9;
+  let wz = { x: ix, y: iy + tb + (tb ? gap : 0), w: iw, h: ih - tb - bb - (tb ? gap : 0) - (bb ? gap : 0) };
+  let gut = showDims || showGuides && roomy ? Math.min(iw * 0.12, micro * 4.6) : 0;
+  let dimSpace = showDims ? micro * 2.6 : 0;
+  let kernSpace = showKern ? micro * (showCap ? 2.9 : 1.6) : 0;
+
+  // ---- Fit the word ----
+  let font = _heroFont();
+  let display = animated ? animatedText(str, 'heroScramble', elemSeed) : str;
+  let animT = heroProf && animCtx ? animCtx.t : 0;
+  let animPh = heroProf ? heroProf.phase : 0;
+  let osc = heroProf && animCtx ? Math.sin((animT + animPh) * TWO_PI) : 0;   // loops seamlessly
+
+  // How far each treatment pushes ink beyond the glyph box, as a fraction of size
+  let echoStep = 0.028, shadowOff = 0.055, sliceAmp = 0.035;
+  let exL = 0, exR = 0, exB = 0;
+  if (treat === 'echo') { let d = echoN * echoStep * 1.25; exB = Math.sin(echoAng) * d; if (Math.cos(echoAng) > 0) exR = Math.cos(echoAng) * d; else exL = -Math.cos(echoAng) * d; }
+  if (treat === 'shadow') { exR = shadowOff; exB = shadowOff; }
+  if (treat === 'slice') { exL = exR = sliceAmp * 1.2; }
+
+  let size, inkL, inkR, capY, baseY, inkBot, shape = null, bb100 = null, heroOriginX, twoLine = false;
+  let availW = wz.w - gut, availH = wz.h - dimSpace - kernSpace;
+  if (font) {
+    bb100 = font.otFont.getPath(str, 0, 0, 100).getBoundingBox();
+    let bw = Math.max(1, bb100.x2 - bb100.x1), bh = Math.max(1, bb100.y2 - bb100.y1);
+    let maxH = availH * (roomy ? 0.92 : 0.8);
+    size = 100 * Math.min(availW / (bw + (exL + exR) * 100), maxH / (bh + exB * 100));
+    size = Math.max(size, getMinTextSizePx());
+    let k = size / 100;
+    // Optical margin: round first letters hang a hair past the grid line
+    let hang = /^[OCGQS0368@]/.test(str) ? size * 0.012 : 0;
+    let originX = wz.x + exL * size - bb100.x1 * k - hang;
+    let inkH = bh * k + exB * size;
+    let room = availH - inkH;
+    let frac = fieldKind ? (anchorPick < 0.65 ? 1 : 0) : !showRules ? 0.5 : anchorPick < 0.4 ? 1 : anchorPick < 0.7 ? 0.5 : 0.08;
+    let top = wz.y + dimSpace + room * frac;
+    baseY = top - bb100.y1 * k;
+    capY = baseY + bb100.y1 * k;
+    inkBot = baseY + bb100.y2 * k;
+    inkL = originX + bb100.x1 * k; inkR = originX + bb100.x2 * k;
+    shape = _heroOutline(font, display, originX, baseY, size);
+    heroOriginX = originX;
+    // Deep macro: break a long word over two lines when that sets it much bigger
+    if (!showGuides && str.length >= 4) {
+      let sp = str.indexOf(' '), cut = sp > 0 ? sp : Math.ceil(str.length / 2);
+      let la = str.slice(0, cut).trim(), lb = str.slice(cut).trim();
+      let A = font.otFont.getPath(la, 0, 0, 100).getBoundingBox(), Bb = font.otFont.getPath(lb, 0, 0, 100).getBoundingBox();
+      let capA = Math.max(-A.y1, -Bb.y1, 1), desc = Math.max(A.y2, Bb.y2, 0);
+      let bw2 = Math.max(A.x2 - A.x1, Bb.x2 - Bb.x1, 1), pitch = capA * 1.16 + desc;
+      let size2 = 100 * Math.min(availW / (bw2 + (exL + exR) * 100), maxH / (pitch + capA + desc + exB * 100));
+      if (la && lb && size2 > size * 1.3) {
+        size = size2; k = size / 100;
+        let room2 = availH - (pitch + capA + desc) * k - exB * size;
+        let b1 = wz.y + dimSpace + room2 * 0.5 + capA * k, b2 = b1 + pitch * k;
+        let dA = display.slice(0, la.length), dB = display.slice(display.length - lb.length);
+        shape = _heroOutline(font, dA, wz.x + exL * size - A.x1 * k, b1, size).concat(_heroOutline(font, dB, wz.x + exL * size - Bb.x1 * k, b2, size));
+        capY = b1 - capA * k; baseY = b2; inkBot = b2 + desc * k;
+        inkL = wz.x + exL * size; inkR = inkL + bw2 * k;
+        heroOriginX = inkL;
+        twoLine = true;
+      }
+    }
   } else {
-    drawFallbackText(displayStr, heroX, heroY, fontSize);
+    // No outline fonts loaded: single-line fallback, sized by measurement
+    size = Math.max(getMinTextSizePx(), Math.min(availH * 0.8, availW / Math.max(1, str.length * state.typeEngine.charSpacing)));
+    let tw = measureFallbackText(str, size);
+    if (tw > availW) { size *= availW / tw; tw = availW; }
+    inkL = wz.x; inkR = wz.x + tw;
+    baseY = wz.y + dimSpace + (availH + size) / 2;
+    capY = baseY - size; inkBot = baseY;
+    heroOriginX = inkL;
+  }
+  let capH = baseY - capY;
+  let glyphH = twoLine ? capH * 0.45 : capH;   // one line's cap height, for fill spacing
+  let shapeBot = inkBot + exB * size;
+
+  // ---- Rule system: heavy top rule, grid ticks, bottom rule + accent ----
+  if (showRules && tb) {
+    let ry = iy + tb;
+    kitWeight('heavy');
+    svgLine(ix, ry, ix + iw, ry);
+    if (detailActive('crosshairs', s)) {
+      kitWeight('fine');
+      for (let c = 0; c <= gridCols; c++) {
+        let gx = ix + iw * c / gridCols;
+        svgLine(gx, ry, gx, ry + micro * (c % (gridCols / 2) === 0 ? 0.9 : 0.5));
+      }
+    }
+  }
+  if (showRules && bb) {
+    let ry = iy + ih - bb;
+    kitWeight('fine');
+    svgLine(ix, ry, ix + iw, ry);
+    kitWeight('heavy');
+    svgLine(ix, ry, ix + iw * (1 / gridCols) * Math.max(1, Math.round(gridCols / 4)), ry);
   }
 
-  // Supporting elements — all clamped inside cell boundaries
-  let subFont = Math.max(4, Math.min(fontSize * 0.12, 8));
-  let subWeight = state.geometry.strokeWeight * 0.4;
-
-  if (state.typeEngine.subLabels && prng.nextFloat() < state.typeEngine.subLabelDensity) {
-    svgSetStrokeWeight(subWeight);
-
-    let subStr = getMicroText(prng, () => textGen.identifier(prng));
-    let subTW = measureFallbackText(subStr, subFont);
-    // Clamp sub-label width to fit
-    if (subTW > iw * 0.8) subStr = subStr.slice(0, Math.floor(str.length * 0.6));
-    subTW = measureFallbackText(subStr, subFont);
-
-    let subVariant = prng.nextFloat();
-    if (rotated) {
-      // Sub-labels horizontal when hero is rotated
-      let subY = cy + fontSize * 0.6;
-      if (subY + subFont < iy + ih)
-        drawFallbackText(subStr, Math.max(ix, cx - subTW / 2), subY, subFont);
-    } else if (subVariant < 0.3) {
-      // Centered above
-      let aboveY = heroY - fontSize * 0.6;
-      if (aboveY - subFont > iy)
-        drawFallbackText(subStr, Math.max(ix, cx - subTW / 2), aboveY, subFont);
-    } else if (subVariant < 0.6) {
-      // Right-aligned below
-      let belowY = heroY + fontSize * 0.45;
-      if (belowY + subFont < iy + ih)
-        drawFallbackText(subStr, Math.min(heroX + tw - subTW, ix + iw - subTW - 2), belowY, subFont);
-    } else if (subVariant < 0.8) {
-      // Rotated 90° on left — only if room
-      if (heroX - subFont * 2 > ix)
-        drawFallbackTextRotated(subStr, heroX - subFont * 1.5, heroY, subFont, -90);
+  // ---- Index numeral (outline font) + top-right status block ----
+  if (showIndex) {
+    let iSize = value * 1.45;
+    let ny = iy + iSize * 0.82, indexW;
+    kitWeight('primary');
+    if (font) {
+      let ib = font.otFont.getPath(indexNum, 0, 0, iSize).getBoundingBox();
+      let ishape = _heroOutline(font, indexNum, ix - ib.x1, iy - ib.y1, iSize);
+      _heroTrace(ishape, 0, 0);
+      if (treat === 'lined' || treat === 'shadow') { kitWeight('fine'); _heroFill(ishape, 0, 0, null, 0, 0, 0, Math.max(pen * 1.6, iSize / 14)); }
+      ny = iy - ib.y1;
+      indexW = ib.x2 - ib.x1;
     } else {
-      // Rotated 90° on right — only if room
-      if (heroX + tw + subFont * 2 < ix + iw)
-        drawFallbackTextRotated(subStr, heroX + tw + subFont * 1.2, heroY, subFont, 90);
+      kitText(indexNum, ix, ny, iSize);
+      indexW = measureFallbackText(indexNum, iSize);
     }
-
-    // Divider line (clamped to inner area)
-    if (prng.nextFloat() < 0.5) {
-      svgSetStrokeWeight(subWeight * 0.5);
-      let divY = prng.nextFloat() < 0.5 ? heroY - fontSize * 0.5 : heroY + fontSize * 0.3;
-      divY = Math.max(iy + 2, Math.min(divY, iy + ih - 2));
-      let divX1 = Math.max(ix, heroX);
-      let divX2 = Math.min(ix + iw, heroX + tw);
-      svgLine(divX1, divY, divX2, divY);
+    kitWeight('fine');
+    if (indexW + micro * 12 < iw) {
+      kitText('INDEX', ix + indexW + micro * 0.8, iy + micro, micro);
+      kitText('/' + String(gridCols).padStart(2, '0'), ix + indexW + micro * 0.8, ny, micro);
     }
-
-    // Second sub-label (clamped)
-    if (prng.nextFloat() < 0.4) {
-      svgSetStrokeWeight(subWeight);
-      let sub2 = prng.nextFloat() < 0.5 ? textGen.valueReadout(prng) : textGen.versionString(prng);
-      let sub2TW = measureFallbackText(sub2, subFont);
-      let sub2Y = heroY + fontSize * 0.5;
-      if (sub2Y + subFont < iy + ih && heroX + sub2TW < ix + iw)
-        drawFallbackText(sub2, heroX, sub2Y, subFont);
+    let rx = ix + iw;
+    if (measureFallbackText(capStatus, micro) + indexW + micro * 16 < iw) {
+      kitWeight('secondary');
+      kitText(capStatus, rx, iy + micro, micro, 'right', seedCap, 'bus:status');
+      kitWeight('fine');
+      kitText(capTs, rx, iy + micro + lineH, micro, 'right', seedCap + 1, 'counter');
     }
   }
 
-  // Texture greeble accents — clamped inside cell
-  if (state.typeEngine.greebleText && prng.nextFloat() < 0.35) {
-    svgSetStrokeWeight(subWeight * 0.6);
-    let gs = Math.min(fontSize * 0.3, Math.min(iw, ih) * 0.1);
-    let gx, gy;
-    if (prng.nextFloat() < 0.5 && heroX - gs * 2 > ix) {
-      gx = heroX - gs * 1.5; gy = heroY - fontSize * 0.3;
-    } else if (heroX + tw + gs * 2 < ix + iw) {
-      gx = heroX + tw + gs * 0.8; gy = heroY - fontSize * 0.3;
+  // ---- Construction guides: baseline, cap line, half-cap, overshoot ----
+  if (showGuides && capH > micro * 2) {
+    let gx0 = roomy ? ix : inkL, gx1 = roomy ? ix + iw : inkR;
+    kitWeight('fine');
+    svgLine(gx0, baseY, gx1, baseY);
+    svgLine(gx0, capY, gx1, capY);
+    if (roomy) {
+      let dl = Math.max(2, micro * 0.35), dg = Math.max(2, micro * 0.45);
+      drawDashedLine(gx0, (baseY + capY) / 2, gx1, (baseY + capY) / 2, dl, dg * 2);
+      if (inkBot > baseY + pen * 2) drawDashedLine(gx0, inkBot, gx1, inkBot, dl, dg);
+      if (gut > micro * 3) {
+        let lx = ix + iw;
+        kitText('CAP', lx, capY - micro * 0.35, micro, 'right');
+        kitText('BL', lx, baseY - micro * 0.35, micro, 'right');
+        if (capH > micro * 5) kitText('1/2', lx, (baseY + capY) / 2 - micro * 0.35, micro, 'right');
+      }
+    }
+  }
+
+  // ---- The word ----
+  let step = Math.max(1.2, size / 160);
+  if (shape) {
+    let contours = shape.map(c => c.pts);
+    let mainHidden = (qx, qy) => _heroInside(shape, qx, qy, 0, 0);
+    if (treat === 'slice') {
+      // Horizontal slabs, each nudged sideways; cut edges drawn across the gaps
+      let cuts = [capY - size * 0.05];
+      for (let i = 1; i < sliceN; i++) cuts.push(capY + capH * (i / sliceN + sliceOff[i] * 0.3 / sliceN));
+      cuts.push(inkBot + size * 0.05);
+      for (let b = 0; b < sliceN; b++) {
+        let off = (b === 0 ? 0 : sliceOff[b + 1 < 6 ? b + 1 : 5]) * sliceAmp * size * (1 + 0.35 * osc);
+        let band = [cuts[b], cuts[b + 1]];
+        kitWeight('heavy');
+        _heroTrace(shape, off, 0, null, step, band);
+        // the slab's cut edges
+        kitWeight('primary');
+        for (let yy of [band[0], band[1]]) {
+          if (yy <= capY || yy >= inkBot) continue;
+          for (let sp of _heroSpans(contours, yy)) svgLine(sp[0] + off, yy, sp[1] + off, yy);
+        }
+        if (fillStyle || state.plotter.hatch.enabled) {
+          _heroFill(shape, 0, 0, null, 0, 0, 0, fillStyle ? fillStyle.spacing : getHatchSpacing(), band, off);
+        }
+      }
+      if (showGuides) {
+        kitWeight('fine');
+        for (let i = 1; i < sliceN; i++) drawDashedLine(inkL - micro, cuts[i], inkL - micro * 0.2, cuts[i], micro * 0.3, micro * 0.3);
+      }
     } else {
-      gx = ix + iw * 0.5; gy = iy + ih - gs * 1.5;
+      if (treat === 'echo') {
+        let d = echoStep * size * (1 + 0.25 * osc);
+        let ddx = Math.cos(echoAng) * d, ddy = Math.sin(echoAng) * d;
+        for (let k = echoN; k >= 1; k--) {
+          kitWeight(k === 1 ? 'primary' : k < echoN ? 'secondary' : 'fine');
+          _heroTrace(shape, ddx * k, ddy * k, (qx, qy) => {
+            for (let j = 0; j < k; j++) if (_heroInside(shape, qx, qy, ddx * j, ddy * j)) return true;
+            return false;
+          }, step);
+        }
+      } else if (treat === 'shadow') {
+        let d = shadowOff * size;
+        kitWeight('fine');
+        _heroFill(shape, d, d, shape, 0, 0, 45, Math.max(pen * 1.5, glyphH / 34));
+        kitWeight('secondary');
+        _heroTrace(shape, d, d, mainHidden, step);
+      } else if (treat === 'lined') {
+        kitWeight('fine');
+        _heroFill(shape, 0, 0, null, 0, 0, 0, Math.max(pen * 1.6, glyphH / 15));
+      } else {
+        // outline: an engraved inline inside each stroke
+        let d = Math.max(pen * 1.5, size * 0.014);
+        kitWeight('fine');
+        _heroTrace(shape, d, d, (qx, qy) => !_heroInside(shape, qx, qy, 0, 0), step);
+      }
+      kitWeight('heavy');
+      _heroTrace(shape, 0, 0);
+      if (treat !== 'lined') {
+        if (fillStyle) kitFillContours(contours, fillStyle);
+        else if (state.plotter.hatch.enabled && size > 16) {
+          kitWeight('fine');
+          hatchFillContours(contours, state.plotter.hatch.angle, getHatchSpacing(), state.plotter.hatch.gradient && size > 30 ? 1 : 0);
+        }
+      }
     }
-    drawTextureStamp(gx, gy, gs, prng);
+    if (!_drawingSuppressed && _cellTextLog) _cellTextLog.push({ x: inkL, y: baseY, fontSize: size, str: display });
+  } else {
+    kitWeight('heavy');
+    drawFallbackText(display, heroOriginX, baseY, size);
   }
 
-  // Corner accent (always inside)
-  if (detailActive('annotationTexture', s) && prng.nextFloat() < 0.25) {
-    svgSetStrokeWeight(subWeight * 0.5);
-    let cs = Math.min(iw, ih) * 0.07;
-    let corner = prng.nextInt(0, 3);
-    let gx = corner < 2 ? ix + iw - cs : ix + cs;
-    let gy = corner % 2 === 0 ? iy + cs : iy + ih - cs;
-    drawTextureStamp(gx, gy, cs, prng);
-  }
-
-  // Hero text variant overlays
-  let heroVariant = prng.nextFloat();
-  if (heroVariant < 0.20 && !rotated) {
-    // Underline-ruled — bold rule beneath hero text with tick marks
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.8);
-    let ruleY = heroY + fontSize * 0.3;
-    svgLine(heroX - 2, ruleY, heroX + tw + 2, ruleY);
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.25);
-    let tickCount = Math.max(3, Math.round(tw / 8));
-    for (let ti = 0; ti <= tickCount; ti++) {
-      let tx = heroX + (ti / tickCount) * tw;
-      svgLine(tx, ruleY + 1, tx, ruleY + 4);
+  // ---- Field: repeated word / Swiss arcs / modular grid in the free band ----
+  if (fieldKind) {
+    let upTop = wz.y, upBot = capY - dimSpace - gap;
+    let dnTop = Math.max(inkBot, shapeBot) + kernSpace + gap, dnBot = wz.y + wz.h;
+    let above = upBot - upTop >= dnBot - dnTop;
+    let F = above ? { x: ix, y: upTop, w: iw, h: upBot - upTop } : { x: ix, y: dnTop, w: iw, h: dnBot - dnTop };
+    let wordH = inkBot - capY;
+    if (fieldKind === 'repeat' && (!shape || F.h < wordH * 0.45)) fieldKind = 'grid';
+    if (F.h > micro * 6) {
+      if (fieldKind === 'repeat') {
+        // The word repeated toward the edge, each copy truncated a little more
+        let pitch = wordH + Math.max(micro, capH * 0.1);
+        for (let j = 1; j < 12; j++) {
+          let keep = Math.max(0.28, 1 - j * 0.17);
+          let dy = above ? (F.y + F.h - (j - 1) * pitch) - inkBot : (F.y + (j - 1) * pitch) - capY;
+          let t0 = capY + dy, t1 = inkBot + dy;
+          let band = above ? [t1 - wordH * keep, t1 + 1] : [t0 - 1, t0 + wordH * keep];
+          if (band[0] < F.y - 1 || band[1] > F.y + F.h + 1) break;
+          kitWeight(j === 1 ? 'secondary' : 'fine');
+          _heroTrace(shape, 0, dy, null, step, band);
+          kitWeight('fine');
+          let cutY = above ? band[0] : band[1];
+          for (let sp of _heroSpans(shape.map(c => c.pts), cutY - dy)) svgLine(sp[0], cutY, sp[1], cutY);
+          if (gut > micro * 2) kitText('R' + String(j).padStart(2, '0'), ix + iw, (above ? t1 : t0 + micro), micro, 'right');
+        }
+      } else if (fieldKind === 'arcs') {
+        // Concentric quarter arcs from a grid corner, one hatched sector
+        let ccx = arcCorner ? F.x : F.x + F.w, ccy = above ? F.y + F.h : F.y;
+        let a0 = above ? (arcCorner ? -HALF_PI : -PI) : (arcCorner ? 0 : HALF_PI), a1 = a0 + HALF_PI;
+        let Rmax = Math.min(F.h, F.w) * 0.97;
+        let n = Math.max(4, Math.min(14, Math.round(4 * kitDensity(F))));
+        for (let i = 1; i <= n; i++) {
+          kitWeight(i === n ? 'primary' : i % 2 ? 'fine' : 'secondary');
+          svgArc(ccx, ccy, Rmax * 2 * i / n, Rmax * 2 * i / n, a0, a1);
+        }
+        kitWeight('fine');
+        for (let k = 0; k <= 6; k++) {
+          let a = a0 + HALF_PI * k / 6;
+          svgLine(ccx + Math.cos(a) * Rmax / n, ccy + Math.sin(a) * Rmax / n, ccx + Math.cos(a) * Rmax, ccy + Math.sin(a) * Rmax);
+        }
+        if (Rmax > micro * 10) kitTickRing(ccx, ccy, Rmax, { count: 18, major: 3, len: micro * 0.9, a0, a1, labels: true, labelSize: micro,
+          labelFn: i => String(i * 5).padStart(2, '0') });
+        let ri = Math.max(1, Math.floor(n * 0.45)), ro = Math.min(n, ri + 2);
+        let s0 = a0 + HALF_PI * arcSector / 4, s1 = s0 + HALF_PI / 4, pts = [];
+        for (let k = 0; k <= 12; k++) { let a = s0 + (s1 - s0) * k / 12; pts.push([ccx + Math.cos(a) * Rmax * ro / n, ccy + Math.sin(a) * Rmax * ro / n]); }
+        for (let k = 12; k >= 0; k--) { let a = s0 + (s1 - s0) * k / 12; pts.push([ccx + Math.cos(a) * Rmax * ri / n, ccy + Math.sin(a) * Rmax * ri / n]); }
+        let sec = [{ pts, x0: Math.min(...pts.map(p => p[0])), x1: Math.max(...pts.map(p => p[0])), y0: Math.min(...pts.map(p => p[1])), y1: Math.max(...pts.map(p => p[1])) }];
+        kitWeight('secondary');
+        _heroTrace(sec, 0, 0);
+        kitWeight('fine');
+        _heroFill(sec, 0, 0, null, 0, 0, 45, Math.max(pen * 1.6, micro * 0.35));
+        let am = (s0 + s1) / 2, rm = Rmax * (ri + ro) / 2 / n;
+        let mx = ccx + Math.cos(am) * rm, my = ccy + Math.sin(am) * rm;
+        let lx = mx + (arcCorner ? 1 : -1) * Math.max(micro * 5, Rmax * 0.18);
+        let ly = Math.max(F.y + micro * 1.5, Math.min(F.y + F.h - micro * 2, my + (above ? -1 : 1) * Math.max(micro * 3, Rmax * 0.1)));
+        if (Rmax > micro * 12) kitCallout(mx, my, lx, ly, 'SEC.' + String(arcSector + 1).padStart(2, '0'), (arcSector * 22.5).toFixed(1) + '-' + ((arcSector + 1) * 22.5).toFixed(1), micro);
+      } else {
+        // Modular grid: crosses at the intersections, a few modules hatched
+        let cw = F.w / gridCols, rows = Math.max(1, Math.round(F.h / cw)), chh = F.h / rows;
+        let cs = Math.min(cw, chh) * 0.08;
+        kitWeight('fine');
+        for (let r = 0; r <= rows; r++) for (let c = 0; c <= gridCols; c++) {
+          let gx = F.x + c * cw, gy = F.y + r * chh;
+          svgLine(gx - cs, gy, gx + cs, gy); svgLine(gx, gy - cs, gx, gy + cs);
+        }
+        let used = {};
+        gridHits.forEach((hit, hi) => {
+          let c = Math.min(gridCols - 1, Math.floor(hit[0] * gridCols)), r = Math.min(rows - 1, Math.floor(hit[1] * rows));
+          if (used[c + ',' + r]) return;
+          used[c + ',' + r] = 1;
+          let mx = F.x + c * cw, my = F.y + r * chh;
+          kitWeight('secondary');
+          if (hi === 0) {
+            let rr = Math.min(cw, chh) * 0.42;
+            svgCircle(mx + cw / 2, my + chh / 2, rr * 2);
+            kitWeight('fine');
+            drawCrosshair(mx + cw / 2, my + chh / 2, rr * 2.6, rr * 0.5);
+          } else {
+            svgRect(mx, my, cw, chh);
+            kitWeight('fine');
+            _heroFill([{ pts: [[mx, my], [mx + cw, my], [mx + cw, my + chh], [mx, my + chh]], x0: mx, y0: my, x1: mx + cw, y1: my + chh }], 0, 0, null, 0, 0, hi % 2 ? 45 : 0, Math.max(pen * 1.6, micro * 0.32));
+          }
+          let lbl = String.fromCharCode(65 + c) + (r + 1);
+          if (cw > micro * 3) kitText(lbl, mx + micro * 0.3, my - micro * 0.35, micro);
+        });
+      }
     }
-  } else if (heroVariant < 0.35 && !rotated) {
-    // Bracketed/framed — tight frame around hero text
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.5);
-    let framePad = fontSize * 0.3;
-    svgRect(heroX - framePad, heroY - fontSize - framePad, tw + framePad * 2, fontSize + framePad * 2);
-    // Corner dots
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.3);
-    svgPoint(heroX - framePad + 2, heroY - fontSize - framePad + 2);
-    svgPoint(heroX + tw + framePad - 2, heroY + framePad - 2);
   }
 
+  // ---- Kerning ticks + glyph index numerals under the word ----
+  if (showKern && font && str.length > 1 && !twoLine) {
+    let k = size / 100;
+    let ty = Math.max(inkBot, shapeBot) + micro * 0.45;
+    let edges = [];
+    for (let i = 0; i <= str.length; i++) edges.push(heroOriginX + font.otFont.getAdvanceWidth(str.slice(0, i), size));
+    kitWeight('fine');
+    for (let i = 0; i < edges.length; i++) {
+      let ex = Math.min(Math.max(edges[i], ix), ix + iw);
+      svgLine(ex, ty, ex, ty + micro * (i === 0 || i === edges.length - 1 ? 1.0 : 0.7));
+    }
+    svgLine(Math.max(edges[0], ix), ty + micro * 0.35, Math.min(edges[edges.length - 1], ix + iw), ty + micro * 0.35);
+    if (showCap) {
+      for (let i = 0; i < str.length; i++) {
+        let gw = edges[i + 1] - edges[i];
+        let lbl = String(i + 1).padStart(2, '0');
+        if (gw > measureFallbackText(lbl, micro) + micro) kitText(lbl, (edges[i] + edges[i + 1]) / 2, ty + micro * 1.9, micro, 'center');
+      }
+    }
+  }
+
+  // ---- Dimension marks: word width above, cap height at the right gutter ----
+  if (showDims && capH > micro * 3) {
+    kitWeight('fine');
+    kitDimension(inkL, capY, inkR, capY, -(dimSpace * 0.55), `W ${(inkR - inkL).toFixed(1)}`, micro);
+    if (gut > micro * 2.5) {
+      let vx = ix + iw - gut * 0.42;
+      let t = micro * 0.4;
+      svgLine(Math.min(inkR + exR * size + micro * 0.4, vx - micro), capY, vx + t * 1.5, capY);
+      svgLine(Math.min(inkR + exR * size + micro * 0.4, vx - micro), baseY, vx + t * 1.5, baseY);
+      svgLine(vx, capY, vx, baseY);
+      svgLine(vx - t, capY + t, vx + t, capY - t);
+      svgLine(vx - t, baseY + t, vx + t, baseY - t);
+      let lbl = 'H ' + capH.toFixed(1);
+      let lw = measureFallbackText(lbl, micro);
+      if (lw < capH - micro * 2) drawFallbackTextRotated(lbl, vx + micro * 1.15, (capY + baseY) / 2 + lw / 2, micro, -90);
+    }
+  }
+
+  // ---- Caption block + registration mark ----
+  if (showCap) {
+    let fontName = font ? String(font.name).toUpperCase().replace(/[^A-Z0-9 .-]/g, '').slice(0, 18) : 'BUILTIN';
+    let lines = [capTitle, fontName + ' ' + Math.round(size) + 'PX', 'CAP ' + capH.toFixed(1) + ' / TRK 0.00', capId, capVer];
+    let by = iy + ih - bb + micro * 0.6;
+    let colW = iw * 0.62;
+    for (let i = 0; i < capLines; i++) {
+      let str2 = lines[i];
+      while (str2.length > 3 && measureFallbackText(str2, micro) > colW) str2 = str2.slice(0, -1);
+      kitWeight(i === 0 ? 'secondary' : 'fine');
+      kitText(str2, ix, by + lineH * (i + 0.75), micro, 'left', i === capLines - 1 ? seedCap + 2 : 0, 'counter');
+    }
+    // registration mark + coordinate, flush right
+    if (detailActive('crosshairs', s) && iw > micro * 30) {
+      let rr = Math.min(micro * 1.4, bb * 0.32);
+      let rcx = ix + iw - rr * 1.6, rcy = iy + ih - bb * 0.5 + micro * 0.3;
+      kitWeight('fine');
+      svgCircle(rcx, rcy, rr * 2);
+      drawCrosshair(rcx, rcy, rr * 3.2, 0);
+      svgCircle(rcx, rcy, rr * 0.7);
+      kitText(capCoord, rcx - rr * 2.4, rcy + micro * 0.35, micro, 'right');
+    }
+  }
+
+  // ---- Margin furniture: rotated path text, greeble punctuation ----
+  if (showCap && m > micro * 1.7 && ih > measureFallbackText(capPath, micro) * 1.6) {
+    kitWeight('fine');
+    drawFallbackTextRotated(capPath, ix - m * 0.3, iy + ih, micro, -90);
+  }
+  if (showIndex && state.typeEngine.greebleText && greebleRoll < 0.35 && iw > micro * 40) {
+    kitWeight('fine');
+    let gs = Math.min(tb * 0.6, micro * 2.6);
+    drawTextureStamp(ix + iw * 0.42, iy + tb * 0.45, gs, new PRNG(stampSeed));
+  }
+
+  _cellScale = prevScale;
+  if (rotated) { pop(); svgRec.endGroup(); }
+  kitWeight('primary');
   svgSetStrokeWeight(state.geometry.strokeWeight);
   svgRec.endGroup();
 }
 
-// ---- Archetype: ASCII Art Pattern Fill ----
+// ---- Archetype: ASCII Art ----
+// Each variant renders a recognisable image (a lit sphere, a torus, a maze, a
+// contour map...) as a tone field on a character grid. Tones map through a
+// ramp of plotter glyphs ('ascii' style) or through line-density "scanline"
+// blocks ('block' style) whose lines join across cells into engraving-like
+// shading. Large cells get a box-drawn frame with a caption, row/column
+// indices and a ramp legend; macro cells drop to a few huge, bold blocks.
+
+const _ASC_NAMES = ['checker','altPairs','hStripes','diagStripes','zigzag','gradient','rings','cross','seq2','seq3','scatter','blockCols','maze','terrain','binaryRain','conway','spiralGalaxy'];
+const _ASC_TITLES = ['CHECKER.FLOOR','LENS.FIELD','SOL.HORIZON','ISO.CUBE','RIDGE.LINES','SPHERE.SHADE','RIPPLE.TANK','TARGET.LOCK','TORUS.RENDER','HELIX.SEQ','DEEP.FIELD','SKYLINE','MAZE.SOLVE','TOPO.SURVEY','BIN.RAIN','LIFE.GEN','SPIRAL.GXY'];
+// Tone ramp, light to dark, ordered by measured ink of the stroke glyphs
+const _ASC_RAMP = [' ', '.', ':', '-', '=', '+', '%', '*', '#', '█'];
+// Box-drawing glyphs span the whole cell (unit coords, y down) so they join up
+const _ASC_BOX = {
+  '─': [[0, .5, 1, .5]], '│': [[.5, 0, .5, 1]],
+  '┌': [[.5, 1, .5, .5], [.5, .5, 1, .5]], '┐': [[0, .5, .5, .5], [.5, .5, .5, 1]],
+  '└': [[.5, 0, .5, .5], [.5, .5, 1, .5]], '┘': [[0, .5, .5, .5], [.5, .5, .5, 0]],
+  '├': [[.5, 0, .5, 1], [.5, .5, 1, .5]], '┤': [[.5, 0, .5, 1], [0, .5, .5, .5]],
+  '┬': [[0, .5, 1, .5], [.5, .5, .5, 1]], '┴': [[0, .5, 1, .5], [.5, .5, .5, 0]],
+  '┼': [[0, .5, 1, .5], [.5, 0, .5, 1]]
+};
+const _ASC_WALL = ['┼', '│', '─', '└', '│', '│', '┌', '├', '─', '┘', '─', '┴', '┐', '┤', '┬', '┼'];
+
+function _ascHash(a, b, s) {
+  let h = (Math.imul(a | 0, 374761393) + Math.imul(b | 0, 668265263) + Math.imul(s | 0, 1274126177)) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+function _ascNoise(x, y, s) {
+  let xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi;
+  fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy);
+  let a = _ascHash(xi, yi, s), b = _ascHash(xi + 1, yi, s), c = _ascHash(xi, yi + 1, s), d = _ascHash(xi + 1, yi + 1, s);
+  return a + (b - a) * fx + (c - a) * fy + (a - b - c + d) * fx * fy;
+}
+function _ascFbm(x, y, s, oct) {
+  let v = 0, amp = 0.5, f = 1, tot = 0;
+  for (let o = 0; o < oct; o++) { v += amp * _ascNoise(x * f, y * f, s + o * 101); tot += amp; amp *= 0.5; f *= 2; }
+  return v / tot;
+}
+
+// Segment batcher: collinear horizontal / vertical pieces that touch are
+// merged into one stroke, so block shading and box borders plot as long lines.
+function _ascBatch() { return { h: new Map(), v: new Map(), o: [] }; }
+function _ascSeg(B, x1, y1, x2, y2) {
+  if (Math.abs(y1 - y2) < 1e-6) {
+    let k = Math.round(y1 * 50);
+    if (!B.h.has(k)) B.h.set(k, []);
+    B.h.get(k).push([Math.min(x1, x2), Math.max(x1, x2), y1]);
+  } else if (Math.abs(x1 - x2) < 1e-6) {
+    let k = Math.round(x1 * 50);
+    if (!B.v.has(k)) B.v.set(k, []);
+    B.v.get(k).push([Math.min(y1, y2), Math.max(y1, y2), x1]);
+  } else B.o.push([x1, y1, x2, y2]);
+}
+function _ascFlush(B) {
+  for (let [, list] of B.h) {
+    list.sort((a, b) => a[0] - b[0]);
+    let cur = list[0].slice();
+    for (let i = 1; i <= list.length; i++) {
+      let n = list[i];
+      if (n && n[0] <= cur[1] + 0.02) { cur[1] = Math.max(cur[1], n[1]); continue; }
+      svgLine(cur[0], cur[2], cur[1], cur[2]);
+      if (n) cur = n.slice();
+    }
+  }
+  for (let [, list] of B.v) {
+    list.sort((a, b) => a[0] - b[0]);
+    let cur = list[0].slice();
+    for (let i = 1; i <= list.length; i++) {
+      let n = list[i];
+      if (n && n[0] <= cur[1] + 0.02) { cur[1] = Math.max(cur[1], n[1]); continue; }
+      svgLine(cur[2], cur[0], cur[2], cur[1]);
+      if (n) cur = n.slice();
+    }
+  }
+  for (let s of B.o) svgLine(s[0], s[1], s[2], s[3]);
+}
+
+// One character cell. `v` is a tone level (number 0..9) or a character.
+function _ascCell(B, v, x, y, cw, ch, style, slots) {
+  if (typeof v === 'number') {
+    if (v <= 0) return;
+    if (style === 'block' || v >= 9) {
+      let n = Math.round(v / 9 * slots.length);
+      for (let i = 0; i < n; i++) { let ly = y + ch * (slots[i] + 0.5) / slots.length; _ascSeg(B, x, ly, x + cw, ly); }
+      return;
+    }
+    v = _ASC_RAMP[v];
+  }
+  if (v === ' ' || v === '') return;
+  if (v === '█') { for (let i = 0; i < slots.length; i++) { let ly = y + ch * (i + 0.5) / slots.length; _ascSeg(B, x, ly, x + cw, ly); } return; }
+  let box = _ASC_BOX[v];
+  if (box) { for (let s of box) _ascSeg(B, x + s[0] * cw, y + s[1] * ch, x + s[2] * cw, y + s[3] * ch); return; }
+  let g = FALLBACK_GLYPHS[v] || FALLBACK_GLYPHS[v.toUpperCase()] || FALLBACK_GLYPHS['?'];
+  let gx = x + cw * 0.12, gy = y + ch * 0.12, gw = cw * 0.76 / 5, gh = ch * 0.76 / 7;
+  for (let s of g) _ascSeg(B, gx + s[0] * gw, gy + s[1] * gh, gx + s[2] * gw, gy + s[3] * gh);
+}
+
 function composeAsciiArt(rect, s, prng) {
   let { x, y, w, h } = rect;
   svgRec.beginGroup('ascii-art');
 
-  // Scale-driven parameters
-  let baseFontSize = s < 0.2 ? 5 + prng.nextFloat() * 2 :
-                     s < 0.5 ? 7 + prng.nextFloat() * 4 :
-                     s < 0.8 ? 10 + prng.nextFloat() * 8 :
-                     16 + prng.nextFloat() * 12;
-  let spacing = state.typeEngine.charSpacing;
-  let charW = baseFontSize * spacing;
-  let charH = baseFontSize * 1.15;
-  let cols = Math.max(2, Math.floor(w / charW));
-  let rows = Math.max(2, Math.floor(h / charH));
-  // Cap for performance
-  cols = Math.min(cols, 60); rows = Math.min(rows, 40);
-
-  // Recalc font size to exactly fill the cell
-  let fitFontW = w / (cols * spacing);
-  let fitFontH = h / (rows * 1.15);
-  let fontSize = Math.min(fitFontW, fitFontH);
-  charW = fontSize * spacing;
-  charH = fontSize * 1.15;
-
-  // Stroke weight: lighter at micro, bolder at macro
-  svgSetStrokeWeight(state.geometry.strokeWeight * (0.2 + s * 0.6));
-
-  // ---- Character palette selection (scale-dependent) ----
-  // Micro: light characters (dots, dashes, thin marks)
-  // Macro: bold characters (blocks, hashes, slashes)
-  let lightChars = ['.', '-', ':', '+', '~', '_', '|'];
-  let medChars = ['/', '\\', '#', 'o', 'O', '*', '=', '+', '-', '.'];
-  let boldChars = ['#', '/', '\\', 'X', 'O', '=', '|', '-', '+'];
-
-  let palette;
-  if (s < 0.25) palette = lightChars;
-  else if (s < 0.6) palette = medChars;
-  else palette = boldChars;
-
-  // ---- Pattern generation ----
-  // Choose a pattern algorithm
+  // ---- Every PRNG draw happens here; nothing below depends on the frame ----
   let patternType = prng.nextInt(0, 16);
   if (_cellOverrideVariant) {
-    let asciiVars = ['checker','altPairs','hStripes','diagStripes','zigzag','gradient','rings','cross','seq2','seq3','scatter','blockCols','maze','terrain','binaryRain','conway','spiralGalaxy'];
-    let oi = asciiVars.indexOf(_cellOverrideVariant);
+    let oi = _ASC_NAMES.indexOf(_cellOverrideVariant);
     if (oi >= 0) patternType = oi;
   }
-  _cellVariantInfo = ['checker','altPairs','hStripes','diagStripes','zigzag','gradient','rings','cross','seq2','seq3','scatter','blockCols','maze','terrain','binaryRain','conway','spiralGalaxy'][patternType] || '?';
-
-  // Pattern parameters (deeply randomized)
-  let phaseX = prng.nextFloat() * 10;
-  let phaseY = prng.nextFloat() * 10;
-  let freqX = 1 + prng.nextFloat() * 4;
-  let freqY = 1 + prng.nextFloat() * 4;
-  let char1 = prng.pick(palette);
-  let char2 = prng.pick(palette);
-  while (char2 === char1 && palette.length > 1) char2 = prng.pick(palette);
-  let char3 = prng.pick(palette);
-  let density = 0.3 + prng.nextFloat() * 0.5; // how much of cells are filled
-  // Spiral galaxy params: perspective tilt and animation rotation
-  let galaxyTilt = 0.3 + prng.nextFloat() * 0.6; // Y-axis squash: 0.3=very tilted, 0.9=nearly face-on
-  let galaxyRotBase = prng.nextFloat() * TWO_PI;  // base orientation angle
-  let galaxyRotAnim = 0; // per-frame rotation offset
-  if (animCtx && patternType === 16) {
-    galaxyRotAnim = anim.sweep(animCtx.frameIndex, animCtx.frameCount, animCtx.frameCount * 4, animCtx.speedMul, 0) * TWO_PI;
-  }
-  // Ring radiate animation: offset rings outward or inward over time
-  let ringRadiateDir = prng.nextFloat() < 0.5 ? 1 : -1; // outward or inward
-  let ringRadiateAnim = 0;
-  if (animCtx && patternType === 6) {
-    ringRadiateAnim = anim.sweep(animCtx.frameIndex, animCtx.frameCount, animCtx.frameCount * 2, animCtx.speedMul, 0) * ringRadiateDir;
-  }
-  let modPeriod = prng.nextInt(2, 5);
-  let waveAmp = prng.nextFloat() * 3;
-  let gradientDir = prng.nextFloat(); // 0=horizontal, 1=vertical
-
-  function getChar(col, row) {
-    switch (patternType) {
-      case 0: // Alternating checkerboard: char1 / char2
-        return (col + row) % 2 === 0 ? char1 : char2;
-
-      case 1: // Alternating pairs: ab ab ab / ba ba ba
-        return ((Math.floor(col / modPeriod) + row) % 2 === 0) ? char1 : char2;
-
-      case 2: // Horizontal stripes with alternating chars
-        return row % modPeriod < modPeriod / 2 ? char1 : char2;
-
-      case 3: // Diagonal stripes
-        return (col + row * 2) % (modPeriod * 2) < modPeriod ? char1 : char2;
-
-      case 4: // Zigzag / wave offset rows
-        let offset = Math.round(Math.sin(row * freqY + phaseY) * waveAmp);
-        return (col + offset) % modPeriod === 0 ? char1 : char2;
-
-      case 5: // Density gradient (horizontal or vertical)
-        let t = gradientDir < 0.5 ? col / cols : row / rows;
-        return prng.nextFloat() < t * density ? char1 : (prng.nextFloat() < 0.3 ? char2 : ' ');
-
-      case 6: { // Concentric rings (distance from center) — animated radiate
-        let dx = (col - cols / 2) / cols, dy = (row - rows / 2) / rows;
-        let dist = Math.sqrt(dx * dx + dy * dy);
-        let ring = Math.floor((dist + ringRadiateAnim) * freqX * 6) % 3;
-        return ring === 0 ? char1 : ring === 1 ? char2 : ' ';
-      }
-
-      case 7: // Cross/plus pattern
-        let centerX = cols / 2, centerY = rows / 2;
-        let onCrossH = Math.abs(row - centerY) < rows * 0.08;
-        let onCrossV = Math.abs(col - centerX) < cols * 0.08;
-        if (onCrossH || onCrossV) return char1;
-        return (col + row) % modPeriod === 0 ? char3 : ' ';
-
-      case 8: // Repeating 2-char sequence with row shift
-        let seq = [char1, char2];
-        return seq[(col + row) % seq.length];
-
-      case 9: // Repeating 3-char sequence
-        let seq3 = [char1, char2, char3];
-        return seq3[(col + row * (prng.nextFloat() < 0.5 ? 1 : 2)) % seq3.length];
-
-      case 10: // Sparse scatter with density modulation
-        let wave = Math.sin(col * freqX * 0.3 + phaseX) * Math.cos(row * freqY * 0.3 + phaseY);
-        if (wave > 0.2) return char1;
-        if (wave > -0.1 && prng.nextFloat() < 0.3) return char2;
-        return ' ';
-
-      case 11: // Block columns with varying fill
-        let colPhase = (col * freqX + phaseX) % 4;
-        if (colPhase < 1) return char1;
-        if (colPhase < 2 && row % 2 === 0) return char2;
-        return row % modPeriod === 0 ? char3 : ' ';
-
-      case 12: { // NEW: Maze corridors — binary tree maze using / and \
-        let mazeH = ((col * 7 + row * 13 + Math.floor(phaseX * 100)) >>> 0) % 2;
-        return mazeH === 0 ? '/' : '\\';
-      }
-      case 13: { // NEW: Terrain heightmap — elevation from layered sine
-        let elev = Math.sin(col * 0.4 + phaseX) * 0.3 + Math.sin(row * 0.3 + phaseY) * 0.3 + Math.sin((col + row) * 0.2) * 0.2;
-        let ramp = ' .:-=+*#%@';
-        let idx = Math.floor((elev + 0.8) / 1.6 * ramp.length);
-        return ramp[Math.max(0, Math.min(ramp.length - 1, idx))];
-      }
-      case 14: { // NEW: Binary rain — vertical columns at varying densities
-        let colDensity = Math.sin(col * freqX * 0.5 + phaseX) * 0.5 + 0.5;
-        if (row % modPeriod < modPeriod * colDensity) return col % 2 === 0 ? '|' : char1;
-        return ' ';
-      }
-      case 15: { // NEW: Conway-like frozen generation — cellular automaton look
-        let cellHash = ((col * 31 + row * 97 + Math.floor(phaseX * 1000)) >>> 0) % 100;
-        let neighborScore = Math.sin(col * 0.8) + Math.cos(row * 0.6) + Math.sin((col + row) * 0.5);
-        return neighborScore > 0.3 && cellHash < 45 ? char1 : (neighborScore > -0.2 && cellHash < 20 ? char2 : ' ');
-      }
-
-      case 16: { // NEW: Spiral galaxy with perspective tilt and rotation
-        let rawX = (col - cols / 2) / (cols * 0.4);
-        let rawY = (row - rows / 2) / (rows * 0.4);
-        // Apply rotation (base + animation)
-        let rot = galaxyRotBase + galaxyRotAnim;
-        let rx = rawX * Math.cos(rot) - rawY * Math.sin(rot);
-        let ry = rawX * Math.sin(rot) + rawY * Math.cos(rot);
-        // Apply perspective tilt (squash Y axis)
-        ry /= galaxyTilt;
-        let dist = Math.sqrt(rx * rx + ry * ry);
-        let angle = Math.atan2(ry, rx);
-        let spiral = angle + dist * freqX * 2 + phaseX;
-        let arm = Math.sin(spiral * 2) * 0.5 + 0.5;
-        // Core brightness near center
-        if (dist < 0.15) return char1;
-        if (arm > 0.5 && dist < 1.3 && dist > 0.1) return char1;
-        // Fainter inter-arm material
-        if (arm > 0.35 && dist < 1.0 && dist > 0.15) return char2;
-        // Scattered halo stars
-        if (dist < 1.6 && Math.sin(col * 2.3 + row * 3.7 + phaseY) > 0.88) return char2;
-        return ' ';
-      }
-
-      default:
-        return (col + row) % 2 === 0 ? char1 : char2;
-    }
-  }
-
-  // ---- Modulation layer (optional) ----
-  let hasModulation = prng.nextFloat() < 0.4;
-  let modType = prng.nextInt(0, 3);
-  let modFreq = 0.5 + prng.nextFloat() * 2;
-
-  function applyModulation(ch, col, row) {
-    if (!hasModulation) return ch;
-    let t;
-    switch (modType) {
-      case 0: // Fade out edges
-        let edgeDist = Math.min(col, cols - col - 1, row, rows - row - 1);
-        if (edgeDist < 2) return ' ';
-        break;
-      case 1: // Horizontal band mask
-        t = Math.sin(row * modFreq * 0.5);
-        if (t < -0.3) return ' ';
-        break;
-      case 2: // Circular mask
-        let cdx = (col - cols / 2) / (cols / 2), cdy = (row - rows / 2) / (rows / 2);
-        if (cdx * cdx + cdy * cdy > 0.85) return ' ';
-        break;
-      case 3: // Vertical stripe mask
-        if (col % Math.max(3, Math.round(cols * 0.15)) < 2) return ' ';
-        break;
-    }
-    return ch;
-  }
-
-  // ---- Animation behaviors for ASCII art ----
+  _cellVariantInfo = _ASC_NAMES[patternType] || '?';
+  let P = [];
+  for (let i = 0; i < 16; i++) P.push(prng.nextFloat());
+  let F = [];   // feature table (buildings, peaks, layers)
+  for (let i = 0; i < 64; i++) F.push(prng.nextFloat());
+  let hs = prng.nextInt(1, 0x7FFFFF);          // hash seed for noise and per-cell detail
+  let styleRoll = prng.nextFloat();
+  let figNo = String(prng.nextInt(1, 99)).padStart(2, '0');
   let asciiSeed = prng.nextInt(0, 0xFFFFFF);
+
+  // ---- Grid: cell count capped for the path budget, glyphs grow toward macro ----
+  let minFs = getMinTextSizePx() / 0.76;
+  let fs0 = Math.max(minFs, Math.sqrt(w * h / (4200 * 0.62)));
+  let fsMacro = Math.max(fs0, Math.min(w, h) / 16);
+  let fs = fs0 + (fsMacro - fs0) * Math.pow(s, 1.6);
+  let cols = Math.max(4, Math.floor(w / (fs * 0.62))), rows = Math.max(3, Math.floor(h / fs));
+  let cw = w / cols, ch = h / rows;
+  let style = s > 0.62 ? 'block' : s < 0.28 ? (styleRoll < 0.75 ? 'ascii' : 'block') : (styleRoll < 0.5 ? 'ascii' : 'block');
+  let pen = unitToPx(state.plotter.hatch.penDiameter, 'mm', state.plotter.dpi);
+  let nSlots = 2;
+  while (nSlots < 16 && ch / (nSlots * 2) >= Math.max(pen * 1.5, 1.6)) nSlots *= 2;
+  let slots = [];   // van der Corput order: each level adds lines evenly between the last
+  for (let i = 0; i < nSlots; i++) { let v = 0, f = 0.5, k = i; while (k) { if (k & 1) v += f; k >>= 1; f /= 2; } slots.push(Math.floor(v * nSlots)); }
+
+  // ---- Frame furniture by scale and room ----
+  let framed = detailActive('cornerBrackets', s) && cols >= 18 && rows >= 9;
+  let indexed = framed && detailActive('tickMarks', s) && cols >= 40 && rows >= 20;
+  let captioned = framed && detailActive('primaryLabels', s) && cols >= 22;
+  let legend = indexed && detailActive('secondaryText', s);
+  let f0c = framed ? (indexed ? 4 : 1) : 0, f1c = framed ? cols - 2 : cols - 1;
+  let f0r = framed ? (indexed ? 2 : 1) : 0, f1r = framed ? rows - (legend ? 3 : 2) : rows - 1;
+  let fc = f1c - f0c + 1, fr = f1r - f0r + 1;
+  let S = Math.min(fc * cw, fr * ch) / 2;           // normalised units: min half-extent = 1
+  let ax = fc * cw / (2 * S), ay = fr * ch / (2 * S);
+  let px = cw / S, py = ch / S;                      // one cell in normalised units
+  let thr = Math.max(px, py) * 0.62;
+  let dres = Math.min(1, Math.max(fc, fr) / 70);    // < 1 on coarse grids: features get broader
+
+  // ---- Animation: variant motion loops once per animation cycle ----
   let asciiAnimated = animCtx ? shouldAnimate(asciiSeed) : false;
   let asciiProf = asciiAnimated ? getAnimProfile(asciiSeed, s) : null;
+  let at = asciiAnimated ? animCtx.frameIndex / Math.max(1, animCtx.frameCount) : 0;
+  let moving = asciiAnimated && _profileHash(asciiSeed, 18) < 0.75;
+  let mt = moving ? at : 0;
 
-  // Determine which animation behaviors apply (each independent chance)
-  let hasFlow = asciiAnimated && _profileHash(asciiSeed, 10) < 0.60;
-  let hasDecay = asciiAnimated && _profileHash(asciiSeed, 11) < 0.45;
-  let hasWaveDisp = asciiAnimated && _profileHash(asciiSeed, 12) < 0.40;
-  let hasCharCycle = asciiAnimated && _profileHash(asciiSeed, 13) < 0.55;
-  let hasCorruption = asciiAnimated && _profileHash(asciiSeed, 14) < 0.30;
+  let G = [];
+  for (let r = 0; r < rows; r++) G.push(new Array(cols).fill(0));
+  let toX = c => ((c - f0c + 0.5) - fc / 2) * px, toY = r => ((r - f0r + 0.5) - fr / 2) * py;
+  let toC = X => Math.round(X / px + fc / 2 - 0.5) + f0c, toR = Y => Math.round(Y / py + fr / 2 - 0.5) + f0r;
+  // Each variant builds a tone function for the current field bounds. `mt` drives
+  // variant motion, `at` the animation clock; strips call it once per panel.
+  let build = (mt, at) => {
+    let rp = new PRNG(hs);                        // private stream for variable-length work (maze, rain, life)
+    let focal = null;     // { X, Y, label } annotated with a leader when there is room
+    let caption2 = '';
+    let tone = null;      // (X, Y, c, r) -> tone 0..1 or a character
 
-  // Flow direction and speed
-  let flowDirX = _profileHash(asciiSeed, 15) < 0.5 ? 1 : -1;
-  let flowDirY = _profileHash(asciiSeed, 16) < 0.5 ? 1 : 0;
-  let flowSpeed = 0.5 + _profileHash(asciiSeed, 17) * 1.5;
+    switch (patternType) {
+      case 0: { // Perspective checker floor with a lit sphere and its shadow
+        let hor = -ay * (0.2 + P[0] * 0.25), sr = 0.36 + P[2] * 0.16;
+        let sx = (P[1] - 0.5) * (ax - sr) * 1.4, sy = hor + (ay - hor) * (0.3 + P[3] * 0.15);
+        let la = -2.3 + P[4] * 1.2, L = [Math.cos(la) * 0.6, -0.55, 0.6];
+        let ln = Math.hypot(...L); L = L.map(v => v / ln);
+        let tile = 2.2 + P[5] * 2, zoff = mt * 2 / tile;
+        tone = (X, Y, c, r) => {
+          let dx = (X - sx) / sr, dy = (Y - sy) / sr, d2 = dx * dx + dy * dy;
+          if (d2 < 1) {
+            let nz = Math.sqrt(1 - d2), lam = Math.max(0, dx * L[0] + dy * L[1] + nz * L[2]);
+            return d2 > 0.8 ? 1 : 0.04 + 0.9 * Math.pow(1 - lam, 1.4);
+          }
+          if (Y <= hor) return _ascHash(c, r, hs) < 0.012 ? '.' : (Y > hor - py * 1.5 ? 0.35 : 0);
+          let z = 1.1 / (Y - hor), wx = X * z, wz = z + zoff;
+          let chk = (Math.floor(wx * tile) + Math.floor(wz * tile)) & 1;
+          let fog = Math.exp(-z * 0.16);
+          let t = 0.32 + ((chk ? 0.9 : 0.06) - 0.32) * fog;
+          let ex = (X - sx - sr * 0.45) / (sr * 1.2), ey = (Y - sy - sr * 0.95) / (sr * 0.22);
+          if (ex * ex + ey * ey < 1) t = Math.min(1, t + 0.5);
+          return t;
+        };
+        focal = { X: sx + sr * 0.7, Y: sy - sr * 0.7, label: 'OBJ.' + figNo };
+        caption2 = 'TILE ' + tile.toFixed(2);
+        break;
+      }
+      case 1: { // Vasarely lens: a checker field swelling into a shaded bulge
+        let lx = (P[0] - 0.5) * ax * 0.7, ly = (P[1] - 0.5) * ay * 0.6, lr = Math.min(ax, ay) * (0.55 + P[2] * 0.3);
+        let per = Math.max(0.1 + P[3] * 0.07, px * 2.6), pairs = P[4] < 0.5;
+        tone = (X, Y) => {
+          let dx = X - lx, dy = Y - ly, rr = Math.hypot(dx, dy) / lr;
+          let k = rr < 1 ? Math.sqrt(1 - rr * rr) : 0, sc = 1 / (1 + 1.3 * k);
+          let ux = lx + dx * sc, uy = ly + dy * sc;
+          let i = Math.floor(ux / per), j = Math.floor(uy / per);
+          let on = ((pairs ? i >> 1 : i) + j) & 1;
+          if (rr >= 1) return on ? 0.88 : 0.04;
+          let lam = Math.max(0, (-dx / lr * 0.5 - dy / lr * 0.6 + k * 0.62));
+          return on ? 0.98 - lam * 0.45 : 0.42 - lam * 0.4;
+        };
+        focal = { X: lx, Y: ly - lr * 0.9, label: 'LENS ' + (lr * 2).toFixed(2) };
+        caption2 = 'PER ' + per.toFixed(3);
+        break;
+      }
+      case 2: { // Striped sun over a perspective grid
+        let sr = Math.min(0.8, ay * 0.62) * (0.85 + P[1] * 0.15), sx = (P[0] - 0.5) * (ax - sr) * 0.9;
+        let hor = ay * (0.12 + P[2] * 0.18), sy = hor - sr * (0.45 + P[3] * 0.3);
+        let nS = 7 + Math.floor(P[4] * 5), zoff = mt * 2;
+        tone = (X, Y, c, r) => {
+          if (Math.abs(Y - hor) < py * 0.5) return 1;
+          if (Y < hor) {
+            let d = Math.hypot(X - sx, Y - sy);
+            if (d < sr) {
+              let v = (Y - (sy - sr)) / (2 * sr), band = v * nS, fr2 = band - Math.floor(band);
+              if (fr2 < Math.max(0, v - 0.3) * 0.85) return 0;
+              return 0.98 - v * 0.3;
+            }
+            if (d < sr + py * 1.2) return 0.25;
+            let hh = _ascHash(c, r, hs);
+            return hh < 0.01 ? '.' : hh < 0.013 ? '+' : 0;
+          }
+          let dy = Y - hor, z = 0.45 / dy;
+          let u = X * z * 2.2, du = Math.abs(u - Math.round(u)) / (z * 2.2);
+          let wz = z * 1.4 + zoff, dz = Math.abs(wz - Math.round(wz)) / (1.4 * 0.45 / (dy * dy));
+          if (du < px * 0.55 || dz < py * 0.55) return 0.62 + 0.3 * Math.min(1, dy / ay);
+          return 0.05;
+        };
+        focal = { X: sx + sr * 0.75, Y: sy - sr * 0.75, label: 'SOL ' + figNo };
+        caption2 = 'BANDS ' + nS;
+        break;
+      }
+      case 3: { // Isometric cube, each face hatched at its own density
+        let R = Math.min(ax, ay) * 0.86, cx0 = (P[0] - 0.5) * Math.max(0, ax - R) * 1.6, cy0 = (P[1] - 0.5) * Math.max(0, ay - R);
+        let per = 0.09 + P[2] * 0.06, ph = mt;
+        let V = [-90, -30, 30, 90, 150, 210].map(a => [cx0 + Math.cos(a * PI / 180) * R, cy0 + Math.sin(a * PI / 180) * R]);
+        let segD = (X, Y, a, b) => { let vx = b[0] - a[0], vy = b[1] - a[1], t = Math.max(0, Math.min(1, ((X - a[0]) * vx + (Y - a[1]) * vy) / (vx * vx + vy * vy))); return Math.hypot(X - a[0] - vx * t, Y - a[1] - vy * t); };
+        let C = [cx0, cy0];
+        tone = (X, Y) => {
+          let dx = X - cx0, dy = Y - cy0;
+          let inside = Math.abs(dx) <= R * 0.866 && Math.abs(dy) + Math.abs(dx) * 0.5774 <= R;
+          if (!inside) return ((X + Y) / (per * 4) - ph * 1 - Math.floor((X + Y) / (per * 4) - ph)) < 0.5 ? 0.12 : 0;
+          for (let i = 0; i < 6; i++) if (segD(X, Y, V[i], V[(i + 1) % 6]) < thr) return 1;
+          if (segD(X, Y, C, V[1]) < thr || segD(X, Y, C, V[3]) < thr || segD(X, Y, C, V[5]) < thr) return 1;
+          let a = Math.atan2(dy, dx) * 180 / PI;
+          let f1 = (X + Y) / per + ph * 2, f2 = (X - Y) / per - ph * 2;
+          let fr1 = f1 - Math.floor(f1), fr2 = f2 - Math.floor(f2);
+          if (a > -150 && a < -30) return fr1 < 0.22 ? 0.5 : 0.06;              // top: light
+          if (a >= -30 && a < 90) return fr2 < 0.5 ? 0.98 : 0.62;               // right: dark
+          return fr1 < 0.5 ? 0.78 : 0.28;                                       // left: mid
+        };
+        focal = { X: V[1][0], Y: V[1][1], label: 'FACE.C' };
+        caption2 = 'ISO 30/30';
+        break;
+      }
+      case 4: { // Layered zigzag ridgelines with a moon
+        let L = 4 + Math.floor(P[0] * 3);
+        let lay = [];
+        for (let l = 0; l < L; l++) {
+          lay.push({ base: -ay * 0.25 + (l + 1) * ay * 1.05 / L, amp: 0.1 + F[l * 4] * 0.18 + l * 0.03,
+                     f: 0.5 + F[l * 4 + 1] * 1.2, ph: F[l * 4 + 2] * 10 });
+        }
+        let zig = v => 2 * Math.abs(v - Math.floor(v) - 0.5);
+        let ridge = (l, X) => { let q = lay[l], u = (X + mt * (l + 1) / q.f) * q.f + q.ph; return q.base - q.amp * (zig(u) * 0.7 + zig(u * 2 + 0.3) * 0.3) * 2; };
+        let mx = (P[1] - 0.5) * ax * 1.2, my = -ay * 0.62, mr = 0.18 + P[2] * 0.1;
+        tone = (X, Y, c, r) => {
+          for (let l = L - 1; l >= 0; l--) {
+            let ry = ridge(l, X);
+            if (Y >= ry) {
+              if (Y - ry < py * 0.9) return 1;
+              return 0.18 + 0.72 * l / (L - 1) + Math.min(0.08, (Y - ry) * 0.05);
+            }
+          }
+          let d = Math.hypot(X - mx, Y - my);
+          if (Math.abs(d - mr) < thr * 0.8) return 0.9;
+          if (d < mr) return _ascNoise((X - mx) * 9, (Y - my) * 9, hs) > 0.62 ? 0.4 : 0.08;
+          let hh = _ascHash(c, r, hs);
+          return hh < 0.008 ? '.' : 0;
+        };
+        focal = { X: mx + mr * 0.7, Y: my + mr * 0.7, label: 'LUNA ' + (mr * 100).toFixed(0) };
+        caption2 = 'LAYERS ' + L;
+        break;
+      }
+      case 5: { // Lambert-shaded sphere on a graded ground
+        let sr = Math.min(ax, ay) * 0.74, sx = (P[0] - 0.5) * (ax - sr) * 1.2, sy = -0.08;
+        let la = P[1] * TWO_PI + mt * TWO_PI;
+        let L = [Math.cos(la) * 0.7, -0.45 + Math.sin(la) * 0.25, 0.62];
+        let ln = Math.hypot(...L); L = L.map(v => v / ln);
+        tone = (X, Y) => {
+          let dx = (X - sx) / sr, dy = (Y - sy) / sr, d2 = dx * dx + dy * dy;
+          if (d2 < 1) {
+            if (d2 > 0.94) return 1;
+            let nz = Math.sqrt(1 - d2), lam = dx * L[0] + dy * L[1] + nz * L[2];
+            let spec = Math.pow(Math.max(0, lam), 24);
+            return Math.max(0.02, Math.min(1, 0.96 - Math.max(0, lam) * 0.88 - spec * 0.4));
+          }
+          let ex = (X - sx + L[0] * sr * 0.6) / (sr * 1.05), ey = (Y - sy - sr * 0.98) / (sr * 0.2);
+          if (ex * ex + ey * ey < 1) return 0.7 + 0.25 * (1 - ex * ex - ey * ey);
+          return Y > sy + sr * 0.8 ? 0.16 + Math.min(0.2, (Y - sy - sr * 0.8) * 0.3) : 0.04 + Math.max(0, (Y + ay) / (2 * ay)) * 0.1;
+        };
+        focal = { X: sx + L[0] * sr * 0.55, Y: sy + L[1] * sr * 0.55, label: 'SPEC' };
+        caption2 = 'L ' + L.map(v => v.toFixed(1)).join(' ');
+        break;
+      }
+      case 6: { // Ripple tank: two damped sources interfering
+        let s1 = [(P[0] - 0.5) * ax, (P[1] - 0.5) * ay], s2 = [(P[2] - 0.5) * ax * 1.4, (P[3] - 0.5) * ay * 1.4];
+        let fq = (12 + P[4] * 10) * (0.4 + 0.6 * dres), ph = P[5] * TWO_PI + mt * TWO_PI;
+        tone = (X, Y) => {
+          let d1 = Math.hypot(X - s1[0], Y - s1[1]), d2 = Math.hypot(X - s2[0], Y - s2[1]);
+          if (d1 < py * 0.9) return 1;
+          let v = Math.sin(d1 * fq - ph) * Math.exp(-d1 * 0.7) + 0.45 * Math.sin(d2 * fq * 1.15 - ph) * Math.exp(-d2 * 1.1);
+          return Math.max(0, Math.min(1, 0.45 + v * 0.55));
+        };
+        focal = { X: s1[0], Y: s1[1], label: 'SRC.A' };
+        caption2 = 'F ' + fq.toFixed(1) + 'HZ';
+        break;
+      }
+      case 7: { // Target lock: glow, cross bars, rings, one hatched quadrant
+        let R1 = Math.min(ax, ay) * 0.86 * (1 + 0.035 * Math.sin(mt * TWO_PI)), R2 = R1 * 0.58, gap = R1 * 0.2, q = Math.floor(P[0] * 4);
+        let bw = Math.max(px, py) * 0.9;
+        tone = (X, Y) => {
+          let r = Math.hypot(X, Y), a = Math.atan2(Y, X);
+          if ((Math.abs(X) < bw * 0.6 || Math.abs(Y) < bw * 0.6) && r > gap && r < R1 * 1.12) return 1;
+          if (Math.abs(r - R1) < thr) return 0.95;
+          if (Math.abs(r - R2) < thr) return Math.sin(a * 12) > 0 ? 0.75 : 0;
+          if (r < gap * 0.35) return 0.9;
+          let tk = Math.abs(X) > Math.abs(Y) ? X : Y;
+          if ((Math.abs(X) < bw * 2.2 || Math.abs(Y) < bw * 2.2) && Math.abs(tk * 10 - Math.round(tk * 10)) < px * 4 && r > gap) return 0.6;
+          let qa = Math.floor(((a + TWO_PI) % TWO_PI) / HALF_PI);
+          if (qa === q && r > R2 && r < R1) return ((X - Y) / 0.08 - Math.floor((X - Y) / 0.08)) < 0.45 ? 0.55 : 0.05;
+          return Math.max(0, 0.42 * Math.exp(-r * r * 2.5) - 0.04);
+        };
+        focal = { X: R2 * 0.7, Y: -R2 * 0.7, label: 'TGT LOCK' };
+        caption2 = 'R ' + R1.toFixed(2);
+        break;
+      }
+      case 8: { // Torus, z-buffered and Lambert-lit (after donut.c)
+        let A = P[0] * TWO_PI + mt * TWO_PI, Bq = P[1] * TWO_PI + mt * TWO_PI;
+        let cA = Math.cos(A), sA = Math.sin(A), cB = Math.cos(Bq), sB = Math.sin(Bq);
+        let K2 = 5, K1 = Math.min(ax, ay) * 0.95 * (K2 - 2.3) / 3;
+        let zb = [], lum = [];
+        for (let r = 0; r < rows; r++) { zb.push(new Float32Array(cols)); lum.push(new Float32Array(cols).fill(-2)); }
+        let nT = Math.min(220, Math.max(90, Math.round(fc * 1.2))), nP = Math.min(700, Math.max(300, Math.round(fc * 4)));
+        for (let i = 0; i < nT; i++) {
+          let th = i / nT * TWO_PI, ct = Math.cos(th), st = Math.sin(th);
+          for (let j = 0; j < nP; j++) {
+            let phi = j / nP * TWO_PI, cp = Math.cos(phi), sp = Math.sin(phi);
+            let hx = 2 + ct, hy = st;
+            let X3 = hx * (cB * cp + sA * sB * sp) - hy * cA * sB;
+            let Y3 = hx * (sB * cp - sA * cB * sp) + hy * cA * cB;
+            let Z3 = K2 + cA * hx * sp + hy * sA, ooz = 1 / Z3;
+            let c = toC(K1 * ooz * X3), r = toR(-K1 * ooz * Y3);
+            if (c < f0c || c > f1c || r < f0r || r > f1r) continue;
+            if (ooz > zb[r][c]) {
+              zb[r][c] = ooz;
+              lum[r][c] = cp * ct * sB - cA * ct * sp - sA * st + cB * (cA * st - ct * sA * sp);
+            }
+          }
+        }
+        tone = (X, Y, c, r) => { let l = lum[r][c]; return l < -1.5 ? 0 : l <= 0 ? 0.14 : 0.22 + 0.78 * Math.min(1, l / 1.4142); };
+        focal = { X: Math.min(ax, ay) * 0.62, Y: -Math.min(ax, ay) * 0.5, label: 'R1 1 R2 2' };
+        caption2 = 'A ' + (A % TWO_PI).toFixed(2) + ' B ' + (Bq % TWO_PI).toFixed(2);
+        break;
+      }
+      case 9: { // Double helix with base-pair rungs
+        let vert = fr * ch >= fc * cw;
+        let half = vert ? ax : ay, A = half * 0.62, k = TWO_PI / (0.9 + P[0] * 0.5), ph = P[1] * TWO_PI + mt * TWO_PI;
+        let du = 0.11 + P[2] * 0.05;
+        tone = (X, Y) => {
+          let u = vert ? Y : X, v = vert ? X : Y, sw = vert ? px : py;
+          let a = k * u + ph, v1 = A * Math.sin(a), d1 = Math.cos(a);
+          let near1 = Math.abs(v - v1) < sw * 1.15, near2 = Math.abs(v + v1) < sw * 1.15;
+          if (near1 && d1 >= 0) return 1;
+          if (near2 && d1 < 0) return 1;
+          if (near1 || near2) return 0.45;
+          let ui = Math.round(u / du), uc = ui * du;
+          if (Math.abs(u - uc) < (vert ? py : px) * 0.55 && Math.abs(v) < Math.abs(A * Math.sin(k * uc + ph))) {
+            return Math.cos(k * uc + ph) * (v * Math.sign(Math.sin(k * uc + ph))) > 0 ? 0.62 : 0.32;
+          }
+          return Math.abs(v) < sw * 0.5 && Math.abs(u * 6 - Math.round(u * 6)) < 0.25 ? 0.12 : 0;
+        };
+        focal = vert ? { X: A, Y: -ay * 0.45, label: 'BP.' + figNo } : { X: -ax * 0.45, Y: -A, label: 'BP.' + figNo };
+        caption2 = 'PITCH ' + (TWO_PI / k).toFixed(2);
+        break;
+      }
+      case 10: { // Deep field: noise nebula, scattered stars, one spiked star
+        let nx = (P[0] - 0.5) * ax, ny = (P[1] - 0.5) * ay, bx = (P[2] - 0.5) * ax * 1.4, by = (P[3] - 0.5) * ay * 1.4;
+        tone = (X, Y, c, r) => {
+          let ddx = X - bx, ddy = Y - by;
+          if (Math.abs(ddx) < px * 0.6 && Math.abs(ddy) < 0.55) return Math.max(0.3, 1 - Math.abs(ddy) * 1.3);
+          if (Math.abs(ddy) < py * 0.6 && Math.abs(ddx) < 0.55) return Math.max(0.3, 1 - Math.abs(ddx) * 1.3);
+          if (Math.hypot(ddx, ddy) < py * 1.2) return 1;
+          let n = _ascFbm(X * 1.7 * (0.5 + 0.5 * dres) + P[4] * 20, Y * 1.7 * (0.5 + 0.5 * dres) + P[5] * 20, hs, dres < 0.6 ? 2 : 4);
+          let m = Math.exp(-((X - nx) ** 2 + (Y - ny) ** 2) / (0.9 + P[6]));
+          let t = Math.max(0, n - 0.34) * 3.4 * m;
+          let hh = _ascHash(c, r, hs);
+          if (t < 0.12 && hh < 0.02) return Math.sin((mt * 3 + hh * 50) * TWO_PI) > 0.4 ? '+' : '.';
+          if (t < 0.12 && hh < 0.024) return '*';
+          return Math.min(0.95, t);
+        };
+        focal = { X: bx, Y: by, label: 'HD-' + (hs % 9000 + 1000) };
+        caption2 = 'MAG 4.2';
+        break;
+      }
+      case 11: { // Skyline with lit windows, reflected in water
+        let gY = ay * (0.22 + P[0] * 0.2), bld = [], xx = -ax;
+        for (let i = 0; xx < ax && i < 30; i++) {
+          let bw = 0.12 + F[i] * 0.22, bh = 0.25 + F[(i + 31) % 64] * F[(i + 7) % 64] * 1.4 + 0.15;
+          bld.push({ x0: xx, x1: xx + bw, top: gY - bh });
+          xx += bw + (F[(i + 13) % 64] < 0.3 ? 0.03 : 0);
+        }
+        let tall = bld.reduce((a, b) => (b.top < a.top ? b : a), bld[0]);
+        let back = [];
+        xx = -ax - 0.1;
+        for (let i = 0; xx < ax && i < 30; i++) { let bw = 0.15 + F[(i + 20) % 64] * 0.25; back.push({ x0: xx, x1: xx + bw, top: gY - 0.35 - F[(i + 40) % 64] * 0.9 }); xx += bw; }
+        let mx = (P[1] - 0.5) * ax * 1.4, my = -ay * 0.7, mr = 0.12;
+        let wstep = Math.floor(mt * 8);
+        let scene = (X, Y) => {
+          let bi = bld.findIndex(b => X >= b.x0 && X < b.x1);
+          let b = bi >= 0 ? bld[bi] : null;
+          if (b && Y >= b.top) {
+            if (X - b.x0 < px * 0.7 || b.x1 - X < px * 0.7 || Y - b.top < py * 0.7) return 1;
+            let wi = Math.floor((X - b.x0) / 0.055), wj = Math.floor((Y - b.top) / 0.075);
+            let fx = (X - b.x0) / 0.055 - wi, fy = (Y - b.top) / 0.075 - wj;
+            if (fx > 0.3 && fx < 0.8 && fy > 0.35 && fy < 0.8) return _ascHash(bi * 97 + wi, wj + wstep * (bi % 3 === 0 ? 1 : 0), hs) < 0.45 ? 0.05 : 0.85;
+            return 0.85;
+          }
+          if (Math.abs(X - (tall.x0 + tall.x1) / 2) < px * 0.6 && Y < tall.top && Y > tall.top - 0.25) return 1;
+          let k = back.find(q => X >= q.x0 && X < q.x1);
+          if (k && Y >= k.top) return 0.38;
+          let d = Math.hypot(X - mx, Y - my);
+          if (d < mr) return 0.12; if (Math.abs(d - mr) < thr) return 0.8;
+          return 0.02 + Math.max(0, (Y - my) * 0.05);
+        };
+        tone = (X, Y, c, r) => {
+          if (Math.abs(Y - gY) < py * 0.5) return 1;
+          if (Y < gY) return scene(X, Y);
+          let ry = 2 * gY - Y, rx = X + Math.sin(Y * 40) * 0.025;
+          let t = scene(rx, ry) * 0.55;
+          return ((Y - gY) * 9 - Math.floor((Y - gY) * 9)) < 0.3 ? t * 0.3 : t;
+        };
+        focal = { X: (tall.x0 + tall.x1) / 2, Y: tall.top - 0.22, label: 'TWR ' + Math.round((gY - tall.top) * 400) + 'M' };
+        caption2 = 'BLDG ' + bld.length;
+        break;
+      }
+      case 12: { // Perfect maze (recursive backtracker) with the solved path
+        let mc = Math.max(2, Math.floor((fc - 1) / 2)), mr = Math.max(2, Math.floor((fr - 1) / 2));
+        let gw = mc * 2 + 1, gh = mr * 2 + 1, oc = f0c + Math.floor((fc - gw) / 2), orr = f0r + Math.floor((fr - gh) / 2);
+        let wall = [];
+        for (let j = 0; j < gh; j++) wall.push(new Array(gw).fill(true));
+        let seen = new Uint8Array(mc * mr), stack = [[0, 0]];
+        seen[0] = 1; wall[1][1] = false;
+        while (stack.length) {
+          let [ci, cj] = stack[stack.length - 1];
+          let nb = [[1, 0], [-1, 0], [0, 1], [0, -1]].filter(([di, dj]) => { let ni = ci + di, nj = cj + dj; return ni >= 0 && nj >= 0 && ni < mc && nj < mr && !seen[nj * mc + ni]; });
+          if (!nb.length) { stack.pop(); continue; }
+          let [di, dj] = nb[Math.floor(rp.nextFloat() * nb.length)];
+          let ni = ci + di, nj = cj + dj;
+          seen[nj * mc + ni] = 1;
+          wall[cj * 2 + 1 + dj][ci * 2 + 1 + di] = false;
+          wall[nj * 2 + 1][ni * 2 + 1] = false;
+          stack.push([ni, nj]);
+        }
+        wall[1][0] = false; wall[gh - 2][gw - 1] = false;   // entrance and exit
+        // breadth-first solve from IN to OUT
+        let prev = new Int32Array(gw * gh).fill(-1), q = [1 * gw + 0], qi = 0;
+        prev[gw] = gw;
+        while (qi < q.length) {
+          let id = q[qi++], i = id % gw, j = (id - i) / gw;
+          if (i === gw - 1 && j === gh - 2) break;
+          for (let [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            let ni = i + di, nj = j + dj;
+            if (ni < 0 || nj < 0 || ni >= gw || nj >= gh || wall[nj][ni] || prev[nj * gw + ni] >= 0) continue;
+            prev[nj * gw + ni] = id; q.push(nj * gw + ni);
+          }
+        }
+        let path = new Set(), pl = [], cur = (gh - 2) * gw + gw - 1;
+        if (prev[cur] >= 0) while (true) { path.add(cur); pl.push(cur); if (cur === gw) break; cur = prev[cur]; }
+        pl.reverse();
+        let runner = moving && pl.length ? pl[Math.floor(at * pl.length) % pl.length] : -1;
+        tone = (X, Y, c, r) => {
+          let i = c - oc, j = r - orr;
+          if (i < 0 || j < 0 || i >= gw || j >= gh) return 0;
+          if (wall[j][i]) {
+            let m = (j > 0 && wall[j - 1][i] ? 1 : 0) | (i < gw - 1 && wall[j][i + 1] ? 2 : 0) | (j < gh - 1 && wall[j + 1][i] ? 4 : 0) | (i > 0 && wall[j][i - 1] ? 8 : 0);
+            return _ASC_WALL[m];
+          }
+          let id = j * gw + i;
+          if (id === runner) return '@';
+          return path.has(id) ? 0.5 : 0;
+        };
+        focal = { X: toX(oc + gw - 1), Y: toY(orr + gh - 2), label: 'OUT' };
+        caption2 = mc + 'X' + mr + ' PATH ' + pl.length;
+        break;
+      }
+      case 13: { // Topographic survey: hill field, contours, index contours, water
+        let pk = [];
+        for (let i = 0; i < 6; i++) pk.push([(F[i * 4] - 0.5) * ax * 1.8, (F[i * 4 + 1] - 0.5) * ay * 1.8, 0.35 + F[i * 4 + 2] * 0.7, 0.25 + F[i * 4 + 3] * 0.45]);
+        let hf = (X, Y) => { let v = 0; for (let p of pk) v += p[2] * Math.exp(-((X - p[0]) ** 2 + (Y - p[1]) ** 2) / (p[3] * p[3])); return v + (_ascFbm(X * 2.2, Y * 2.2, hs, 3) - 0.5) * 0.14 * dres; };
+        let H = [];
+        for (let r = 0; r < rows; r++) { H.push(new Float32Array(cols)); for (let c = f0c; c <= f1c; c++) if (r >= f0r && r <= f1r) H[r][c] = hf(toX(c), toY(r)); }
+        let sea = 0.12 + P[1] * 0.1, best = -1, bc = 0, br = 0;
+        for (let r = f0r; r <= f1r; r++) for (let c = f0c; c <= f1c; c++) if (H[r][c] > best) { best = H[r][c]; bc = c; br = r; }
+        let dl = Math.max(0.04, (best - sea) / Math.max(4, Math.min(10, fr / (5 - P[0] * 1.5))));
+        tone = (X, Y, c, r) => {
+          let v = H[r][c];
+          if (c === bc && r === br) return '^';
+          if (v < sea) return (c + r * 2) % 4 === 0 ? '~' : 0;
+          let lv = Math.floor((v - sea) / dl);
+          let lr2 = c < f1c ? Math.floor((H[r][c + 1] - sea) / dl) : lv, ld = r < f1r ? Math.floor((H[r + 1][c] - sea) / dl) : lv;
+          if (lr2 !== lv || ld !== lv) {
+            // contour glyph follows the line: perpendicular to the height gradient
+            let gx = (H[r][Math.min(f1c, c + 1)] - H[r][Math.max(f0c, c - 1)]) / cw, gy = (H[Math.min(f1r, r + 1)][c] - H[Math.max(f0r, r - 1)][c]) / ch;
+            let a = ((Math.atan2(gy, gx) * 180 / PI) + 360) % 180;   // gradient angle, 0 = rising to the right
+            if (Math.max(lv, lr2, ld) % 5 === 0) return style === 'block' ? 1 : (a < 30 || a > 150 ? '\u2502' : a > 60 && a < 120 ? '\u2500' : a < 90 ? '/' : '\\');
+            return a < 22.5 || a > 157.5 ? '|' : a < 67.5 ? '/' : a < 112.5 ? '-' : '\\';
+          }
+          return style === 'block' ? Math.min(0.22, 0.02 + lv * 0.02) : (lv % 2 ? 0 : 0.11);
+        };
+        focal = { X: toX(bc), Y: toY(br), label: Math.round(best * 1800 + 200) + 'M' };
+        caption2 = 'CI ' + Math.round(dl * 1800) + 'M';
+        break;
+      }
+      case 14: { // Binary rain: fixed glyphs, light falling through them
+        let colsInfo = [];
+        for (let c = 0; c < fc; c++) colsInfo.push([rp.nextFloat(), 1 + Math.floor(rp.nextFloat() * 3), 0.25 + rp.nextFloat() * 0.5, rp.nextFloat()]);
+        tone = (X, Y, c, r) => {
+          let ci = colsInfo[c - f0c];
+          if (!ci || ci[3] < 0.18) return 0;
+          let len = Math.max(3, Math.round(fr * ci[2])), per = fr + len;
+          let head = Math.floor(ci[0] * per + at * ci[1] * per) % per;
+          let d = (head - (r - f0r) + per) % per;
+          if (d >= len) return _ascHash(c, r, hs) < 0.04 ? '.' : 0;
+          if (d === 0) return '█';
+          if (d < len * 0.55) return _ascHash(c, r, hs) < 0.5 ? '0' : '1';
+          return d < len * 0.8 ? ':' : '.';
+        };
+        caption2 = 'STREAMS ' + colsInfo.filter(q => q[3] >= 0.18).length;
+        break;
+      }
+      case 15: { // Game of Life: a seeded soup run forward, with fading trails
+        let gw = fc, gh = fr, cur = new Uint8Array(gw * gh), last = new Int16Array(gw * gh).fill(-999);
+        let ex = gw * (0.36 + P[0] * 0.12), ey = gh * (0.36 + P[1] * 0.12);
+        for (let j = 0; j < gh; j++) for (let i = 0; i < gw; i++) {
+          let dx = (i - gw / 2) / ex, dy = (j - gh / 2) / ey;
+          cur[j * gw + i] = (dx * dx + dy * dy < 1 && rp.nextFloat() < 0.38) ? 1 : 0;
+        }
+        let gens = Math.round((4 + P[2] * 8) + dres * (6 + P[2] * 16));
+        for (let g = 0; g < gens; g++) {
+          let nxt = new Uint8Array(gw * gh);
+          for (let j = 0; j < gh; j++) for (let i = 0; i < gw; i++) {
+            let n = 0;
+            for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) if (di || dj) n += cur[((j + dj + gh) % gh) * gw + (i + di + gw) % gw];
+            let a = cur[j * gw + i];
+            nxt[j * gw + i] = (n === 3 || (a && n === 2)) ? 1 : 0;
+            if (a) last[j * gw + i] = g;
+          }
+          cur = nxt;
+        }
+        let pop = 0;
+        for (let k = 0; k < cur.length; k++) pop += cur[k];
+        tone = (X, Y, c, r) => {
+          let k = (r - f0r) * gw + (c - f0c);
+          if (cur[k]) return 1;
+          let age = gens - last[k];
+          return age < 2 ? 0.5 : age < 6 ? 0.25 : 0;
+        };
+        caption2 = 'GEN ' + gens + ' POP ' + pop;
+        break;
+      }
+      default: { // Spiral galaxy: log-spiral arms, bulge, dust and halo stars
+        let tilt = 0.35 + P[0] * 0.5, rot = P[1] * TWO_PI + mt * PI, wind = 2 + P[2] * 1.6;
+        let sc = 1 / (Math.min(ax, ay / tilt) * 0.95);
+        tone = (X, Y, c, r) => {
+          let rx = X * Math.cos(rot) + Y * Math.sin(rot), ry = (-X * Math.sin(rot) + Y * Math.cos(rot)) / tilt;
+          rx *= sc; ry *= sc;
+          let rr = Math.hypot(rx, ry), th = Math.atan2(ry, rx);
+          let arm = Math.cos(2 * (th - wind * Math.log(rr + 0.06)));
+          let dust = _ascFbm(rx * 3 + 5, ry * 3 + 5, hs, 3);
+          let t = Math.exp(-rr * rr * 10) * 1.2 + Math.pow(Math.max(0, arm), 1.6) * Math.exp(-rr * 1.1) * (0.5 + 0.9 * dust) * 1.15 + 0.1 * Math.exp(-rr * 2.2);
+          if (t < 0.08) { let hh = _ascHash(c, r, hs); if (hh < 0.012) return hh < 0.004 ? '*' : '.'; }
+          return Math.min(1, t);
+        };
+        focal = { X: 0, Y: 0, label: 'CORE' };
+        caption2 = 'TILT ' + Math.round(Math.acos(tilt) * 180 / PI) + 'DEG';
+        break;
+      }
+    }
+    return { tone, focal, caption2 };
+  };
 
-  // Decay gradient for density characters
-  let decayGradient = ' .:-=+*#%@';
+  // ---- Fill the field. Very wide or tall fields become a strip of square
+  // panels, each a later moment of the same loop (a contact strip) ----
+  let F0c = f0c, F1c = f1c, F0r = f0r, F1r = f1r;
+  let aspect = (fc * cw) / (fr * ch);
+  let np = aspect > 2.2 ? Math.min(6, Math.round(aspect)) : aspect < 1 / 2.2 ? Math.min(6, Math.round(1 / aspect)) : 1;
+  let horiz = aspect > 1;
+  let panels = [], seps = [];
+  if (np > 1) {
+    let span = horiz ? fc : fr, pw = Math.floor((span - (np - 1)) / np);
+    if (pw < 4) np = 1;
+    for (let p = 0; p < np && np > 1; p++) {
+      let a0 = (horiz ? F0c : F0r) + p * (pw + 1), a1 = p === np - 1 ? (horiz ? F1c : F1r) : a0 + pw - 1;
+      panels.push(horiz ? [a0, a1, F0r, F1r] : [F0c, F1c, a0, a1]);
+      if (p < np - 1) seps.push(a1 + 1);
+    }
+  }
+  if (np <= 1) panels = [[F0c, F1c, F0r, F1r]];
+  let setBounds = b => {
+    f0c = b[0]; f1c = b[1]; f0r = b[2]; f1r = b[3];
+    fc = f1c - f0c + 1; fr = f1r - f0r + 1;
+    S = Math.min(fc * cw, fr * ch) / 2;
+    ax = fc * cw / (2 * S); ay = fr * ch / (2 * S);
+    px = cw / S; py = ch / S;
+    thr = Math.max(px, py) * 0.62;
+    dres = Math.min(1, Math.max(fc, fr) / 70);
+  };
+  let focal = null, caption2 = '';
+  panels.forEach((pn, p) => {
+    setBounds(pn);
+    let built = build(panels.length > 1 ? (mt + p / panels.length) % 1 : mt, panels.length > 1 ? (at + p / panels.length) % 1 : at);
+    if (p === 0) { focal = panels.length > 1 ? null : built.focal; caption2 = panels.length > 1 ? 'SEQ ' + panels.length + 'F' : built.caption2; }
+    for (let r = f0r; r <= f1r; r++) for (let c = f0c; c <= f1c; c++) {
+      let v = built.tone(toX(c), toY(r), c, r);
+      G[r][c] = typeof v === 'number' ? Math.max(0, Math.min(9, Math.round(v * 9))) : v;
+      // Macro: posterise to bold silhouette levels
+      if (typeof G[r][c] === 'number' && s > 0.6) {
+        let q = G[r][c];
+        G[r][c] = s > 0.8 ? (q < 4 ? 0 : 9) : (q < 2 ? 0 : q < 6 ? 4 : 9);
+      }
+    }
+  });
+  setBounds([F0c, F1c, F0r, F1r]);
+  for (let sp of seps) {
+    if (horiz) for (let r = f0r; r <= f1r; r++) G[r][sp] = '│';
+    else for (let c = f0c; c <= f1c; c++) G[sp][c] = '─';
+  }
 
-  // ---- Pre-generate grid (PRNG consumed identically every frame) ----
-  let grid = [];
-  for (let row = 0; row < rows; row++) {
-    grid[row] = [];
-    for (let col = 0; col < cols; col++) {
-      let ch = getChar(col, row);
-      ch = applyModulation(ch, col, row);
-      grid[row][col] = ch;
+  // ---- Generic ASCII animation (hash-driven, never touches the PRNG) ----
+  let hasFlow = asciiAnimated && panels.length === 1 && [6, 10, 13, 15].includes(patternType) && _profileHash(asciiSeed, 10) < 0.6;
+  let hasDecay = asciiAnimated && _profileHash(asciiSeed, 11) < 0.3;
+  let hasWaveDisp = asciiAnimated && _profileHash(asciiSeed, 12) < 0.3;
+  let hasCharCycle = asciiAnimated && _profileHash(asciiSeed, 13) < 0.45;
+  let hasCorruption = asciiAnimated && _profileHash(asciiSeed, 14) < 0.3;
+  if (asciiAnimated) {
+    let src = G.map(row => row.slice());
+    let flowDirX = _profileHash(asciiSeed, 15) < 0.5 ? 1 : -1, flowDirY = _profileHash(asciiSeed, 16) < 0.5 ? 1 : 0;
+    let decayT = hasDecay ? animEnvelope(animCtx.t, 'rampUp', ease.inExpo) : 0;
+    let corrX = Math.floor(_profileHash(asciiSeed + animCtx.frameIndex * 3, 22) * fc * 0.7) + f0c;
+    let corrY = Math.floor(_profileHash(asciiSeed + animCtx.frameIndex * 7, 23) * fr * 0.7) + f0r;
+    let corrW = 3 + Math.floor(_profileHash(asciiSeed, 24) * 8), corrH = 2 + Math.floor(_profileHash(asciiSeed, 25) * 4);
+    let noiseChars = '!@#$%^&*()[]{}<>?/\\|~';
+    for (let r = f0r; r <= f1r; r++) for (let c = f0c; c <= f1c; c++) {
+      let sc2 = c, sr2 = r;
+      if (hasFlow) {
+        let off = Math.round(at * (flowDirY ? fr : fc));
+        sc2 = f0c + ((c - f0c + off * flowDirX) % fc + fc) % fc;
+        sr2 = f0r + ((r - f0r + off * flowDirY) % fr + fr) % fr;
+      }
+      let v = src[sr2][sc2];
+      if (typeof v === 'number' && v > 0) {
+        if (hasDecay) { let hh = _profileHash(asciiSeed + c * 31 + r * 97, 20); if (hh < decayT * 0.8) v = Math.max(0, v - 1 - Math.floor((1 - hh / (decayT * 0.8 + 1e-6)) * 4)); }
+        if (hasCharCycle) { let hh = _profileHash(asciiSeed + c * 7 + r * 13, 21); v = Math.max(1, Math.min(9, v + Math.round(Math.sin((at * (1 + Math.floor(hh * 3)) + hh) * TWO_PI)))); }
+      }
+      if (hasCorruption && c >= corrX && c < corrX + corrW && r >= corrY && r < corrY + corrH) v = noiseChars[((c * 31 + r * 17 + animCtx.frameIndex * 7) >>> 0) % noiseChars.length];
+      G[r][c] = v;
     }
   }
 
-  // ---- Render grid with animation (no PRNG consumed here) ----
-  for (let row = 0; row < rows; row++) {
-    let ty = y + row * charH + charH;
-    for (let col = 0; col < cols; col++) {
-      // Flow: look up from shifted grid position
-      let sampleCol = col, sampleRow = row;
-      if (hasFlow && animCtx) {
-        let flowOffset = animCtx.frameIndex * flowSpeed;
-        let rowShear = Math.sin(row * 0.3) * 0.5;
-        sampleCol = Math.round((col + flowOffset * flowDirX + flowOffset * rowShear) % cols + cols) % cols;
-        sampleRow = Math.round((row + flowOffset * flowDirY) % rows + rows) % rows;
-      }
-
-      let ch = grid[sampleRow][sampleCol];
-      if (ch === ' ' || ch === '') continue;
-
-      // Decay: characters degrade over the loop cycle (uses _profileHash, not PRNG)
-      if (hasDecay && animCtx) {
-        let decayT = animEnvelope(animCtx.t, 'rampUp', ease.inExpo);
-        let cellHash = _profileHash(asciiSeed + col * 31 + row * 97, 20);
-        if (cellHash < decayT * 0.8) {
-          let gradIdx = Math.floor((1 - cellHash / (decayT * 0.8)) * (decayGradient.length - 1));
-          ch = decayGradient[Math.max(0, gradIdx)] || ' ';
-          if (ch === ' ') continue;
-        }
-      }
-
-      // Character cycling (uses _profileHash, not PRNG)
-      if (hasCharCycle && animCtx) {
-        let cellPhaseHash = _profileHash(asciiSeed + col * 7 + row * 13, 21);
-        let cycleSpeed = 0.5 + cellPhaseHash * 2;
-        let cyclePos = (animCtx.t * cycleSpeed + cellPhaseHash) % 1;
-        let gradIdx = Math.floor(cyclePos * decayGradient.length);
-        ch = decayGradient[gradIdx % decayGradient.length];
-        if (ch === ' ') continue;
-      }
-
-      // Corruption (uses _profileHash, not PRNG)
-      if (hasCorruption && animCtx) {
-        let corrHash = _profileHash(asciiSeed + animCtx.frameIndex * 3, 22);
-        let corrX = Math.floor(corrHash * cols * 0.6);
-        let corrY = Math.floor(_profileHash(asciiSeed + animCtx.frameIndex * 7, 23) * rows * 0.6);
-        let corrW = 3 + Math.floor(_profileHash(asciiSeed, 24) * 6);
-        let corrH = 2 + Math.floor(_profileHash(asciiSeed, 25) * 4);
-        if (col >= corrX && col < corrX + corrW && row >= corrY && row < corrY + corrH) {
-          let noiseChars = '!@#$%^&*()[]{}<>?/\\|~';
-          ch = noiseChars[((col * 31 + row * 17 + animCtx.frameIndex * 7) >>> 0) % noiseChars.length];
-        }
-      }
-
-      // Wave displacement (pure math, no PRNG)
-      let dispX = 0, dispY = 0;
-      if (hasWaveDisp && animCtx) {
-        let waveT = animCtx.t * TWO_PI;
-        dispX = Math.sin(row * 0.4 + waveT) * charW * 0.3 * animCtx.motionAmount;
-        dispY = Math.cos(col * 0.3 + waveT * 0.7) * charH * 0.15 * animCtx.motionAmount;
-      }
-
-      let tx = x + col * charW + dispX;
-      _drawBuiltinText(ch, tx, ty + dispY, fontSize);
+  // ---- Focal annotation: a leader arrow and label written into the grid ----
+  if (focal && framed && detailActive('secondaryText', s) && fc >= 30 && fr >= 12) {
+    let fcol = Math.max(f0c, Math.min(f1c, toC(focal.X))), frow = Math.max(f0r + 1, Math.min(f1r - 1, toR(focal.Y)));
+    let lab = focal.label.toUpperCase(), right = '<-' + lab, left = lab + '->';
+    let txt = null, c0 = 0;
+    if (fcol + 2 + right.length + 1 <= f1c) { txt = right; c0 = fcol + 2; }
+    else if (fcol - 2 - left.length - 1 >= f0c) { txt = left; c0 = fcol - 1 - left.length; }
+    if (txt) {
+      for (let i = -1; i <= txt.length; i++) if (c0 + i >= f0c && c0 + i <= f1c) G[frow][c0 + i] = ' ';
+      for (let i = 0; i < txt.length; i++) G[frow][c0 + i] = txt[i];
     }
   }
 
+  // ---- Frame, caption, indices and legend (static, box-drawn) ----
+  let put = (r, c, str) => { for (let i = 0; i < str.length; i++) if (r >= 0 && r < rows && c + i >= 0 && c + i < cols) G[r][c + i] = str[i]; };
+  if (framed) {
+    let L = f0c - 1, R = f1c + 1, T = f0r - 1, Bm = f1r + 1;
+    for (let c = L + 1; c < R; c++) { G[T][c] = '─'; G[Bm][c] = '─'; }
+    for (let r = T + 1; r < Bm; r++) { G[r][L] = '│'; G[r][R] = '│'; }
+    G[T][L] = '┌'; G[T][R] = '┐'; G[Bm][L] = '└'; G[Bm][R] = '┘';
+    if (indexed) {
+      for (let k = 5; k < fc; k += 5) { G[T][f0c + k] = '┴'; G[Bm][f0c + k] = '┬'; }
+      for (let k = 5; k < fr; k += 5) { G[f0r + k][L] = '┤'; G[f0r + k][R] = '├'; }
+      for (let k = 0; k < fc - 2; k += 10) put(T - 1, f0c + k, String(k));
+      for (let k = 0; k < fr; k += 5) put(f0r + k, 0, String(k).padStart(2, '0'));
+    }
+    for (let sp of seps) {
+      if (horiz) { G[T][sp] = '\u252C'; G[Bm][sp] = '\u2534'; } else { G[sp][L] = '\u251C'; G[sp][R] = '\u2524'; }
+    }
+    if (captioned) {
+      let cap = 'FIG.' + figNo + ' ' + _ASC_TITLES[patternType];
+      if (cap.length > fc - 6) cap = cap.slice(0, Math.max(0, fc - 6));
+      if (cap.length > 2) put(T, f0c + 1, '┤' + cap + '├');
+      if (indexed && caption2 && caption2.length + cap.length + 10 < fc) put(T, f1c - caption2.length - 1, '┤' + caption2 + '├');
+    }
+    if (legend) {
+      let lr = Bm + 1;
+      put(lr, f0c, 'RAMP');
+      for (let i = 0; i < 10; i++) G[lr][f0c + 5 + i] = style === 'block' ? i : _ASC_RAMP[i];
+      let stats = 'RES ' + fc + 'X' + fr + ' ' + style.toUpperCase();
+      if (stats.length + 18 < fc) put(lr, f1c + 1 - stats.length, stats);
+    }
+  }
+
+  // ---- Render: segments batched per pass so runs join into long strokes ----
+  let B = _ascBatch(), BF = _ascBatch();
+  for (let r = 0; r < rows; r++) {
+    let dispY0 = 0;
+    for (let c = 0; c < cols; c++) {
+      let v = G[r][c];
+      if (v === 0 || v === ' ') continue;
+      let inField = r >= f0r && r <= f1r && c >= f0c && c <= f1c;
+      let dx = 0, dy = dispY0;
+      if (hasWaveDisp && inField) {
+        let wt = at * TWO_PI;
+        dx = Math.sin(r * 0.4 + wt) * cw * 0.3 * animCtx.motionAmount;
+        dy = Math.cos(c * 0.3 + wt) * ch * 0.15 * animCtx.motionAmount;
+      }
+      _ascCell(inField ? B : BF, v, x + c * cw + dx, y + r * ch + dy, cw, ch, style, slots);
+    }
+  }
+  kitWeight(s > 0.6 ? 'primary' : 'secondary');
+  _ascFlush(B);
+  kitWeight('fine');
+  _ascFlush(BF);
+
+  kitWeight('primary');
   svgSetStrokeWeight(state.geometry.strokeWeight);
   svgRec.endGroup();
 }
@@ -12468,162 +13335,470 @@ function composeGlobeSpherePanel(rect, s, prng) {
 }
 
 // ---- New Archetype: Encoded Data Block ----
-function composeEncodedDataBlock(rect, s, prng) {
-  let { x, y, w, h } = rect;
-  let pad = Math.min(w, h) * 0.06;
-  let ix = x + pad, iy = y + pad, iw = w - pad * 2, ih = h - pad * 2;
-  let fontSize = Math.max(5, Math.min(ih * 0.07, 10));
-  let tinyFont = fontSize * 0.55;
+// A machine-readable spec sheet.
+// A QR symbol with real structure (finders, separators, timing, alignment,
+// format strips, quiet zone), an EAN-13 with a correct check digit and its
+// human-readable digits, a checksum table, a payload hex dump, a scan line and
+// a corruption region drawn as a designed glitch. Toward macro the sheet sheds
+// its text until only bold code fragments remain.
 
+const _EAN_L = ['0001101', '0011001', '0010011', '0111101', '0100011', '0110001', '0101111', '0111011', '0110111', '0001011'];
+const _EAN_PAR = ['LLLLLL', 'LLGLGG', 'LLGGLG', 'LLGGGL', 'LGLLGG', 'LGGLLG', 'LGGGLL', 'LGLGLG', 'LGLGGL', 'LGGLGL'];
+
+// EAN-13 from 12 digits: the check digit, the 95-module bit string and which
+// modules are guard bars (drawn long).
+function _encEAN13(d12) {
+  let sum = 0;
+  for (let i = 0; i < 12; i++) sum += d12[i] * (i % 2 ? 3 : 1);
+  let d = d12.concat([(10 - sum % 10) % 10]);
+  let inv = c => c.split('').map(b => (b === '1' ? '0' : '1')).join('');
+  let bits = '101', guard = '111';
+  for (let i = 1; i <= 6; i++) {
+    let L = _EAN_L[d[i]];
+    bits += _EAN_PAR[d[0]][i - 1] === 'L' ? L : inv(L).split('').reverse().join('');
+    guard += '0000000';
+  }
+  bits += '01010'; guard += '11111';
+  for (let i = 7; i <= 12; i++) { bits += inv(_EAN_L[d[i]]); guard += '0000000'; }
+  bits += '101'; guard += '111';
+  return { d, bits, guard };
+}
+
+// QR-style module matrix: M = dark modules, F = function-pattern modules.
+function _encQRMatrix(n, rnd) {
+  let M = [], F = [];
+  for (let j = 0; j < n; j++) { M.push(new Uint8Array(n)); F.push(new Uint8Array(n)); }
+  let finder = (ox, oy) => {
+    for (let j = -1; j <= 7; j++) for (let i = -1; i <= 7; i++) {
+      let px = ox + i, py = oy + j;
+      if (px < 0 || py < 0 || px >= n || py >= n) continue;
+      F[py][px] = 1;
+      let ring = i >= 0 && i <= 6 && j >= 0 && j <= 6 && (i === 0 || i === 6 || j === 0 || j === 6);
+      M[py][px] = ring || (i >= 2 && i <= 4 && j >= 2 && j <= 4) ? 1 : 0;
+    }
+  };
+  finder(0, 0); finder(n - 7, 0); finder(0, n - 7);
+  for (let i = 8; i < n - 8; i++) { F[6][i] = F[i][6] = 1; M[6][i] = M[i][6] = i % 2 === 0 ? 1 : 0; }
+  if (n >= 25) {
+    let a = n - 7;
+    for (let j = -2; j <= 2; j++) for (let i = -2; i <= 2; i++) { F[a + j][a + i] = 1; M[a + j][a + i] = Math.max(Math.abs(i), Math.abs(j)) !== 1 ? 1 : 0; }
+  }
+  for (let i = 0; i <= 8; i++) if (i !== 6) {
+    F[8][i] = 1; M[8][i] = rnd() < 0.5 ? 1 : 0;
+    F[i][8] = 1; M[i][8] = rnd() < 0.5 ? 1 : 0;
+  }
+  for (let i = 0; i < 8; i++) {
+    F[8][n - 1 - i] = 1; M[8][n - 1 - i] = rnd() < 0.5 ? 1 : 0;
+    F[n - 1 - i][8] = 1; M[n - 1 - i][8] = rnd() < 0.5 ? 1 : 0;
+  }
+  M[n - 8][8] = 1;
+  for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) if (!F[j][i]) M[j][i] = rnd() < 0.47 ? 1 : 0;
+  return { M, F };
+}
+
+// Dark modules as plotter-solid runs: each horizontal run of dark modules is
+// k parallel strokes. `get(i, j)` returns whether module (i, j) is drawn dark.
+function _encModules(n, get, qx, qy, m, gap) {
+  let k = Math.max(1, Math.min(12, Math.round(m / gap)));
+  for (let j = 0; j < n; j++) {
+    let i = 0;
+    while (i < n) {
+      if (!get(i, j)) { i++; continue; }
+      let i0 = i;
+      while (i < n && get(i, j)) i++;
+      for (let t = 0; t < k; t++) {
+        let ly = qy + j * m + m * (t + 0.5) / k;
+        if (t % 2) svgLine(qx + i * m, ly, qx + i0 * m, ly); else svgLine(qx + i0 * m, ly, qx + i * m, ly);
+      }
+    }
+  }
+}
+
+// Vertical solid bar (barcode) drawn as close vertical strokes.
+function _encBar(x, y, w, h, gap) {
+  let k = Math.max(1, Math.round(w / gap));
+  for (let t = 0; t < k; t++) {
+    let lx = x + w * (k === 1 ? 0.5 : t / (k - 1) * 0.9 + 0.05);
+    if (t % 2) svgLine(lx, y + h, lx, y); else svgLine(lx, y, lx, y + h);
+  }
+}
+
+function composeEncodedDataBlock(rect, s, prng) {
   svgRec.beginGroup('encoded-data');
 
-  // Animation seeds
+  // ---- Every PRNG draw up front: the stream never depends on the frame ----
   let encSeedLabel = prng.nextInt(0, 0xFFFFFF);
   let encSeedHex = prng.nextInt(0, 0xFFFFFF);
   let encSeedHash = prng.nextInt(0, 0xFFFFFF);
   let encSeedFooter = prng.nextInt(0, 0xFFFFFF);
+  let codeSeed = prng.nextInt(1, 0x7FFFFF);
+  let verPick = prng.nextFloat(), scanPos = prng.nextFloat(), orient = prng.nextFloat(), modPick = prng.nextFloat();
+  let corr = [prng.nextFloat(), prng.nextFloat(), prng.nextFloat(), prng.nextFloat()];
+  let d12 = [];
+  for (let i = 0; i < 12; i++) d12.push(prng.nextInt(0, 9));
+  let label = prng.pick(['SCAN', 'VERIFIED', 'UNREADABLE', 'ENCODED', 'PENDING', 'DECRYPTED', 'PARSING', 'CACHED']);
+  let ident = textGen.identifier(prng), ver = textGen.versionString(prng), stamp = textGen.timestamp(prng);
+  let crcAll = prng.nextInt(0, 0xFFFF).toString(16).toUpperCase().padStart(4, '0');
+  let tbl = [];
+  for (let i = 0; i < 8; i++) tbl.push([prng.nextInt(0, 0xFFFF), prng.nextFloat()]);
+  let rp = new PRNG(codeSeed);
+  let rnd = () => rp.nextFloat();
+  // Spec-sheet typography stays in the single-line micro fonts at every scale
+  let prevScale = _cellScale;
+  _cellScale = Math.min(_cellScale, 0.1);
 
-  // Frame — choose between brackets and full border
-  if (prng.nextFloat() < 0.6) {
-    drawCornerBrackets(ix, iy, iw, ih, Math.min(iw, ih) * 0.1);
-  } else {
-    svgRect(ix, iy, iw, ih);
-  }
+  // Big micro cells become a panel: HUD strips around the sheet
+  let lay = kitLayout(rect, s, prng, { side: rect.w > rect.h * 1.25 });
+  kitFillLayout(lay, s, prng);
+  let R = lay.main;
+  let minSide = Math.min(R.w, R.h);
+  let pad = Math.max(3, minSide * 0.035);
+  let ix = R.x + pad, iy = R.y + pad, iw = R.w - pad * 2, ih = R.h - pad * 2;
+  let micro = kitType(R, 'micro'), body = kitType(R, 'body');
+  let pen = unitToPx(state.plotter.hatch.penDiameter, 'mm', state.plotter.dpi);
+  let gap = Math.max(pen * 1.35, 1.4);
 
-  // Layout variant: stacked (barcode above text) or side-by-side
-  let layout = prng.nextFloat();
-  let barcodeH, barcodeW, barcodeX, barcodeY, textStartY;
+  // Scale tiers: full spec sheet -> codes only -> bold fragment
+  let tier = s < 0.35 && minSide > 150 ? 'sheet' : s < 0.5 ? 'codes' : 'fragment';
+  _cellVariantInfo = tier;
 
-  if (layout < 0.65 || iw < ih) {
-    // Stacked layout
-    barcodeH = ih * (s < 0.3 ? 0.5 : 0.35);
-    barcodeW = iw - pad * 2;
-    barcodeX = ix + pad;
-    barcodeY = iy + pad;
-    textStartY = iy + pad + barcodeH + fontSize;
-  } else {
-    // Side-by-side
-    barcodeW = iw * 0.45;
-    barcodeH = ih - pad * 2;
-    barcodeX = ix + pad;
-    barcodeY = iy + pad;
-    textStartY = iy + pad + fontSize;
-  }
+  // Code geometry (shared by every tier)
+  let n = verPick < 0.3 ? 21 : verPick < 0.65 ? 25 : verPick < 0.9 ? 29 : 33;
+  if (s > 0.25) n = Math.min(n, 25);
+  let qr = _encQRMatrix(n, rnd);
+  let ean = _encEAN13(d12);
+  // Corruption region: a block of data modules clear of the finders
+  let cw0 = 3 + Math.floor(corr[0] * (n * 0.25)), ch0 = 2 + Math.floor(corr[1] * (n * 0.18));
+  let cx0 = 9 + Math.floor(corr[2] * Math.max(1, n - 18 - cw0)), cy0 = 9 + Math.floor(corr[3] * Math.max(1, n - 18 - ch0));
+  let cshift = 1 + Math.floor(corr[0] * 3);
+  let errBlk = Math.floor(corr[2] * 6);
+  let animScan = animCtx && _cellAnim ? anim.sweep(animCtx.frameIndex, animCtx.frameCount, animCtx.frameCount, animCtx.speedMul, _cellAnim.phaseOffset) : -1;
+  let scanT = animScan >= 0 ? animScan : 0.2 + scanPos * 0.6;
+  let fi = animCtx ? animCtx.frameIndex : 0;
 
-  generateBarcodeElement(barcodeX, barcodeY, barcodeW, barcodeH, s, prng);
+  // Draw the QR symbol with quiet zone, rulers, corruption and scan line
+  let drawQR = (bx, by, side, opts) => {
+    let rule = opts.rulers ? micro * 2.4 : 0;
+    let m = (side - rule) / (n + 8);
+    let qx = bx + rule + m * 4, qy = by + rule + m * 4;
+    let inCorr = (i, j) => i >= cx0 && i < cx0 + cw0 && j >= cy0 && j < cy0 + ch0;
+    let get = (i, j) => {
+      if (opts.corrupt && inCorr(i, j)) {
+        let si = cx0 + ((i - cx0 - cshift) % cw0 + cw0) % cw0;     // slice displaced inside the region
+        if (_ascHash(i, j, codeSeed) < 0.28) return 0;            // knocked-out modules
+        return qr.M[j][si];
+      }
+      if (animScan >= 0 && !qr.F[j][i] && Math.abs((j + 0.5) / n - scanT) < 0.06) return _profileHash(i * 31 + j * 97 + fi * 13, 50) < 0.5 ? 1 : 0;
+      return qr.M[j][i];
+    };
+    kitWeight('secondary');
+    let modStyle = opts.style || (modPick < 0.68 ? 'solid' : modPick < 0.86 ? 'dots' : 'blocks');
+    if (modStyle === 'solid') _encModules(n, get, qx, qy, m, gap);
+    else {
+      // function patterns stay solid; data modules become dots or open blocks
+      _encModules(n, (i, j) => qr.F[j][i] && get(i, j), qx, qy, m, gap);
+      for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+        if (qr.F[j][i] || !get(i, j)) continue;
+        if (modStyle === 'dots') svgCircle(qx + (i + 0.5) * m, qy + (j + 0.5) * m, m * 0.78);
+        else { svgRect(qx + i * m + m * 0.12, qy + j * m + m * 0.12, m * 0.76, m * 0.76); if (m > 5) svgLine(qx + i * m + m * 0.3, qy + (j + 0.5) * m, qx + i * m + m * 0.7, qy + (j + 0.5) * m); }
+      }
+    }
+    // finder outlines keep the corners crisp
+    kitWeight('primary');
+    for (let [fx, fy] of [[0, 0], [n - 7, 0], [0, n - 7]]) svgRect(qx + fx * m, qy + fy * m, m * 7, m * 7);
+    if (opts.corrupt) {
+      kitWeight('fine');
+      let rx = qx + cx0 * m, ry = qy + cy0 * m, rw = cw0 * m, rh = ch0 * m;
+      let dl = Math.max(2, m * 0.45);
+      drawDashedLine(rx - m * 0.3, ry - m * 0.3, rx + rw + m * 0.3, ry - m * 0.3, dl, dl);
+      drawDashedLine(rx - m * 0.3, ry + rh + m * 0.3, rx + rw + m * 0.3, ry + rh + m * 0.3, dl, dl);
+      drawDashedLine(rx - m * 0.3, ry - m * 0.3, rx - m * 0.3, ry + rh + m * 0.3, dl, dl);
+      drawDashedLine(rx + rw + m * 0.3, ry - m * 0.3, rx + rw + m * 0.3, ry + rh + m * 0.3, dl, dl);
+      // knocked-out modules shown as crossed empties; they flicker when animated
+      for (let j = cy0; j < cy0 + ch0; j++) for (let i = cx0; i < cx0 + cw0; i++) {
+        if (_ascHash(i, j, codeSeed) >= 0.28 || _ascHash(i, j, codeSeed + 1) > 0.5) continue;
+        if (animCtx && !anim.blink(fi + i + j, 3, 2, 0)) continue;
+        let mx = qx + i * m, my = qy + j * m;
+        svgRect(mx + m * 0.15, my + m * 0.15, m * 0.7, m * 0.7);
+        if (m > 4) svgLine(mx + m * 0.15, my + m * 0.15, mx + m * 0.85, my + m * 0.85);
+      }
+      // callout leader runs up into the top quiet zone so the label sits on clear paper
+      let lbl = 'ERR 0x' + (cx0 * 16 + cy0).toString(16).toUpperCase().padStart(2, '0');
+      let lw = measureFallbackText(lbl, micro) + micro;
+      if (opts.labels && m * 4 > micro * 2.2) {
+        let px2 = rx + rw * 0.5, ly = qy - m * 1.4;
+        let lx = px2 + m * 2 + lw <= qx + (n + 4) * m ? px2 + m * 2 : px2 - m * 2;
+        kitCallout(px2, ry + m * 0.5, lx, ly, lbl, null, micro);
+      }
+    }
+    // quiet zone: crop marks at its corners, a dimension on one side
+    kitWeight('fine');
+    let z0x = qx - m * 4, z0y = qy - m * 4, zs = (n + 8) * m, cl = Math.min(m * 2, micro * 1.2);
+    for (let [cx2, cy2, sx, sy] of [[z0x, z0y, 1, 1], [z0x + zs, z0y, -1, 1], [z0x, z0y + zs, 1, -1], [z0x + zs, z0y + zs, -1, -1]]) {
+      svgLine(cx2, cy2, cx2 + cl * sx, cy2); svgLine(cx2, cy2, cx2, cy2 + cl * sy);
+    }
+    if (opts.rulers) {
+      kitRuler(qx, by + rule * 0.45, n * m, { divisions: n, major: 5, len: micro * 0.6, labels: m * 5 > micro * 2.2, from: 0, to: n, side: 1, labelSize: micro, baseline: true });
+      kitRuler(bx + rule * 0.45, qy, n * m, { vertical: true, divisions: n, major: 5, len: micro * 0.6, labels: false, side: 1 });
+      if (m * 4 > micro * 2.4) kitDimension(z0x, qy + n * m + m * 2, qx, qy + n * m + m * 2, 0, null, micro);
+    }
+    // scan line with arrowheads
+    if (opts.scan) {
+      let sy = qy + scanT * n * m;
+      kitWeight('heavy');
+      svgLine(z0x - m, sy, z0x + zs + m, sy);
+      kitWeight('fine');
+      svgLine(z0x - m, sy - m * 0.6, z0x + zs + m, sy - m * 0.6);
+      svgLine(z0x - m, sy + m * 0.6, z0x + zs + m, sy + m * 0.6);
+      drawTriangle(z0x - m * 1.6, sy, Math.max(2.5, m * 0.6), 0);
+      drawTriangle(z0x + zs + m * 1.6, sy, Math.max(2.5, m * 0.6), PI);
+    }
+    return { qx, qy, m, foot: (n + 8) * m + rule };
+  };
 
-  // Divider line between barcode and text
-  if (detailActive('connectorLines', s)) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.3);
-    if (layout < 0.65 || iw < ih) {
-      svgLine(ix + pad, textStartY - fontSize * 0.3, ix + iw * 0.6, textStartY - fontSize * 0.3);
+  // Draw the EAN-13 with guard bars and human-readable digits
+  let drawEAN = (bx, by, bw, bh, opts) => {
+    let mw = bw / (95 + 18);
+    let digit = opts.digits ? Math.max(getMinTextSizePx(), Math.min(body * 1.3, mw * 8, bh * 0.22)) : 0;
+    let x0 = bx + mw * 9;
+    let barH = bh - digit * 1.25, guardH = bh - digit * 0.55;
+    if (mw * 7 < getMinTextSizePx() * 0.9) digit = 0;
+    if (!digit) { barH = bh; guardH = bh; }
+    kitWeight('secondary');
+    let i = 0;
+    while (i < 95) {
+      if (ean.bits[i] !== '1') { i++; continue; }
+      let i0 = i;
+      while (i < 95 && ean.bits[i] === '1') i++;
+      let isGuard = ean.guard[i0] === '1';
+      if (opts.dropout && !isGuard && animCtx && _profileHash(i0 * 7 + fi, 52) < 0.06) continue;
+      _encBar(x0 + i0 * mw, by, (i - i0) * mw, isGuard ? guardH : barH, gap);
+    }
+    if (digit) {
+      kitWeight('fine');
+      let ty = by + bh - digit * 0.08;
+      let ds = ean.d.map(String);
+      kitText(ds[0], bx + mw * 4.5, ty, digit, 'center');
+      for (let k = 0; k < 6; k++) kitText(ds[1 + k], x0 + (3 + k * 7 + 3.5) * mw, ty, digit, 'center');
+      for (let k = 0; k < 6; k++) kitText(ds[7 + k], x0 + (50 + k * 7 + 3.5) * mw, ty, digit, 'center');
+    }
+    return mw;
+  };
+
+  // Stacked (PDF417-style) block: start pattern, codeword rows, stop pattern
+  let drawStacked = (bx, by, bw, bh) => {
+    let rowsN = Math.max(3, Math.min(12, Math.floor(bh / Math.max(micro * 1.1, 6))));
+    let k = Math.max(2, Math.min(6, Math.floor((bw / Math.max(pen * 1.6, 1.5) - 35) / 17)));
+    let mw = bw / (35 + 17 * k), rh = bh / rowsN;
+    let start = '11111111010101000', stop = '111111101000101001';
+    kitWeight('secondary');
+    for (let r = 0; r < rowsN; r++) {
+      let bits = start;
+      for (let c = 0; c < k; c++) {
+        let wds = [1, 1, 1, 1, 1, 1, 1, 1], left = 9;
+        for (let it = 0; left > 0 && it < 64; it++) { let e = Math.floor(_ascHash(r * 13 + c, it, codeSeed + 3) * 8); if (wds[e] < 6) { wds[e]++; left--; } }
+        wds.forEach((wd, e) => { bits += (e % 2 ? '0' : '1').repeat(wd); });
+      }
+      bits += stop;
+      let i = 0;
+      while (i < bits.length) {
+        if (bits[i] !== '1') { i++; continue; }
+        let i0 = i;
+        while (i < bits.length && bits[i] === '1') i++;
+        _encBar(bx + i0 * mw, by + r * rh + rh * 0.08, (i - i0) * mw, rh * 0.84, gap);
+      }
+    }
+    return { rowsN, k };
+  };
+
+  if (tier === 'sheet') {
+    // ---- Header: status, symbol format, identifier ----
+    let hh = body * 2.4;
+    kitWeight('primary');
+    kitText(label, ix, iy + body * 1.3, body * 1.25, 'left', encSeedLabel, 'bus:status');
+    kitWeight('fine');
+    let fmt = 'ISO/IEC 18004 V' + ((n - 17) / 4) + '-M ' + n + 'X' + n;
+    if (measureFallbackText(fmt, micro) + measureFallbackText(label, body * 1.25) + micro * 4 < iw) kitText(fmt, ix + iw, iy + micro * 1.1, micro, 'right');
+    if (measureFallbackText(ident, micro) + measureFallbackText(label, body * 1.25) + micro * 4 < iw) kitText(ident, ix + iw, iy + micro * 2.5, micro, 'right', encSeedFooter, 'scramble');
+    svgLine(ix, iy + hh, ix + iw, iy + hh);
+    // ---- Footer: version, CRC, timestamp ----
+    let fh = micro * 2;
+    let fy = iy + ih;
+    svgLine(ix, fy - fh + micro * 0.3, ix + iw, fy - fh + micro * 0.3);
+    kitText(ver, ix, fy - micro * 0.2, micro, 'left', encSeedFooter + 1, 'counter');
+    if (iw > micro * 30) kitText('CRC:' + crcAll, ix + iw * 0.5, fy - micro * 0.2, micro, 'center', encSeedHash, 'counter');
+    kitText(stamp, ix + iw, fy - micro * 0.2, micro, 'right');
+
+    let C = { x: ix, y: iy + hh + micro, w: iw, h: ih - hh - fh - micro * 1.6 };
+    let land = C.w >= C.h * 1.1;
+    let g = Math.max(micro * 1.5, minSide * 0.03);
+    let mode = !land ? 'stack' : orient < 0.38 ? 'left' : orient < 0.66 ? 'right' : 'band';
+    let qrOpts = q => ({ rulers: detailActive('tickMarks', s) && q > 160, corrupt: true, labels: true, scan: true });
+    let stackedUnder = (qx, top, q, room) => {
+      if (room <= micro * 6 || !detailActive('dotMatrixTextures', s)) return;
+      let sh = Math.min(room - g * 0.6 - micro * 1.6, q * 0.42);
+      if (sh <= micro * 3.5) return;
+      let st2 = drawStacked(qx, top + g * 0.6 + micro * 1.6, q, sh);
+      kitWeight('fine');
+      kitText('PDF417 ' + st2.rowsN + 'R X ' + st2.k + 'C', qx, top + g * 0.6 + micro, micro);
+    };
+    // Barcode / checksum table / payload dump stacked down a column
+    let column = (Rc, withBarcode) => {
+      let cury = Rc.y;
+      let bh = Math.min(Rc.h * 0.36, Rc.w * 0.42);
+      if (withBarcode && bh > micro * 3 && Rc.w > micro * 10) {
+        kitWeight('fine');
+        kitText('EAN-13', Rc.x, cury + micro, micro);
+        kitText('CHK ' + ean.d[12], Rc.x + Rc.w, cury + micro, micro, 'right');
+        drawEAN(Rc.x, cury + micro * 1.8, Rc.w, bh, { digits: detailActive('secondaryText', s), dropout: true });
+        cury += bh + micro * 3.2;
+      }
+      let rowH = micro * 1.6;
+      let nRows = Math.max(0, Math.min(6, Math.floor((Rc.y + Rc.h - cury) * 0.5 / rowH) - 1));
+      if (nRows >= 2 && detailActive('secondaryText', s) && Rc.w > micro * 18) {
+        let heads = ['BLK', 'OFFSET', 'CRC16', 'ST'];
+        let colX = [0, 0.18, 0.5, 0.82].map(f => Rc.x + f * Rc.w);
+        kitWeight('secondary');
+        heads.forEach((hd, k) => kitText(hd, colX[k] + micro * 0.3, cury + micro * 1.1, micro));
+        svgLine(Rc.x, cury + rowH * 1.05, Rc.x + Rc.w, cury + rowH * 1.05);
+        kitWeight('fine');
+        for (let r = 0; r < nRows; r++) {
+          let ry = cury + rowH * (r + 1) + micro * 1.2;
+          let bad = r === errBlk % nRows;
+          let cells = [String(r).padStart(2, '0'), '0x' + (r * 0x200 + 0x40).toString(16).toUpperCase().padStart(4, '0'),
+                       tbl[r][0].toString(16).toUpperCase().padStart(4, '0'), bad ? 'ERR' : tbl[r][1] < 0.15 ? 'FIX' : 'OK'];
+          cells.forEach((cv, k) => kitText(cv, colX[k] + micro * 0.3, ry, micro, 'left', k === 2 ? (encSeedHash + r * 17) >>> 0 : 0, 'counter'));
+          if (bad) { kitWeight('secondary'); svgRect(colX[3] + micro * 0.05, ry - micro * 1.05, Rc.x + Rc.w - colX[3] - micro * 0.1, micro * 1.4); kitWeight('fine'); }
+          svgLine(Rc.x, ry + micro * 0.5, Rc.x + Rc.w, ry + micro * 0.5);
+        }
+        for (let k = 1; k < 4; k++) svgLine(colX[k], cury, colX[k], cury + rowH * (nRows + 1) + micro * 0.5);
+        cury += rowH * (nRows + 1) + micro * 1.8;
+      }
+      if (detailActive('secondaryText', s)) {
+        let lh = micro * 1.4;
+        let lines2 = Math.floor((Rc.y + Rc.h - cury) / lh);
+        let bytesPer = 8;
+        while (bytesPer > 2 && measureFallbackText('0000 ' + '00 '.repeat(bytesPer) + ' ' + '.'.repeat(bytesPer), micro) > Rc.w) bytesPer -= 2;
+        if (lines2 >= 1) {
+          kitWeight('secondary');
+          kitText('PAYLOAD', Rc.x, cury + micro, micro);
+          kitWeight('fine');
+          if (Rc.w > micro * 16) kitText('SYNC 4F2A9C', Rc.x + Rc.w, cury + micro, micro, 'right', encSeedHex, 'bus:hex');
+        }
+        kitWeight('fine');
+        for (let l = 1; l < lines2; l++) {
+          let bytes = [], asc = '';
+          for (let b = 0; b < bytesPer; b++) {
+            let v = Math.floor(_ascHash(l, b, codeSeed + 7) * 256);
+            bytes.push(v.toString(16).toUpperCase().padStart(2, '0'));
+            asc += v >= 48 && v < 91 && !(v > 57 && v < 65) ? String.fromCharCode(v) : '.';
+          }
+          let line = (l * bytesPer * 16).toString(16).toUpperCase().padStart(4, '0') + ' ' + bytes.join(' ') + ' ' + asc;
+          kitText(line, Rc.x, cury + micro + l * lh, micro, 'left', (encSeedHex + l * 31) >>> 0, 'scramble');
+        }
+      }
+    };
+
+    if (mode === 'band') {
+      // EAN band across the top with a lot/serial block, QR and data below
+      let eh = Math.min(C.h * 0.24, C.w * 0.2), ew = Math.min(C.w * 0.62, eh * 3.4);
+      kitWeight('fine');
+      kitText('EAN-13  CHK ' + ean.d[12], C.x, C.y + micro, micro);
+      drawEAN(C.x, C.y + micro * 1.8, ew, eh, { digits: detailActive('secondaryText', s), dropout: true });
+      let kx = C.x + ew + g, kw = C.x + C.w - kx;
+      if (kw > micro * 14 && detailActive('secondaryText', s)) {
+        let kv = [['LOT', ident], ['SER', String(Math.floor(_ascHash(1, 2, codeSeed) * 9e6) + 1e6)], ['MFG', stamp], ['FMT', 'GS1-128'], ['ECC', 'M 15%'], ['MASK', '0' + (codeSeed % 8).toString(2).padStart(3, '0')]];
+        let rows2 = Math.min(kv.length, Math.floor((eh + micro) / (micro * 1.55)));
+        for (let r = 0; r < rows2; r++) {
+          let ky = C.y + micro * 1.8 + micro + r * micro * 1.55;
+          kitWeight('fine');
+          kitText(kv[r][0], kx, ky, micro);
+          kitText(kv[r][1], C.x + C.w, ky, micro, 'right');
+          let a1 = measureFallbackText(kv[r][0], micro), a2 = measureFallbackText(kv[r][1], micro);
+          if (kw - a1 - a2 > micro * 2) drawDashedLine(kx + a1 + micro * 0.4, ky - micro * 0.3, C.x + C.w - a2 - micro * 0.4, ky - micro * 0.3, micro * 0.15, micro * 0.45);
+        }
+      }
+      let top = C.y + micro * 1.8 + eh + g;
+      let q = Math.min(C.y + C.h - top, C.w * 0.46);
+      drawQR(C.x, top, q, qrOpts(q));
+      stackedUnder(C.x, top + q, q, C.y + C.h - top - q);
+      column({ x: C.x + q + g, y: top, w: C.w - q - g, h: C.y + C.h - top }, false);
+    } else if (mode === 'stack') {
+      let q = Math.min(C.w, C.h * 0.52);
+      drawQR(C.x + (C.w - q) / 2, C.y, q, qrOpts(q));
+      column({ x: C.x, y: C.y + q + g, w: C.w, h: C.h - q - g }, true);
     } else {
-      let divX = barcodeX + barcodeW + pad;
-      svgLine(divX, iy + pad, divX, iy + ih - pad);
+      let q = Math.min(C.h, C.w * 0.5);
+      let qx = mode === 'left' ? C.x : C.x + C.w - q;
+      drawQR(qx, C.y, q, qrOpts(q));
+      stackedUnder(qx, C.y + q, q, C.h - q);
+      column(mode === 'left' ? { x: C.x + q + g, y: C.y, w: C.w - q - g, h: C.h } : { x: C.x, y: C.y, w: C.w - q - g, h: C.h }, true);
     }
-    svgSetStrokeWeight(state.geometry.strokeWeight);
-  }
-
-  // Status label
-  let labelX = layout >= 0.65 && iw >= ih ? barcodeX + barcodeW + pad * 2 : ix + pad;
-  if (detailActive('primaryLabels', s)) {
-    let label = prng.pick(['SCAN', 'VERIFIED', 'UNREADABLE', 'ENCODED', 'PENDING', 'DECRYPTED', 'PARSING', 'CACHED']);
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.9);
-    drawAnimText(label, labelX, textStartY, fontSize, encSeedLabel, 'bus:status');
-    textStartY += fontSize * 1.5;
-  }
-
-  // Numeric code string
-  if (detailActive('secondaryText', s)) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.6);
-    drawAnimText(textGen.hexDump(prng, 6), labelX, textStartY, fontSize * 0.8, encSeedHex, 'bus:hex');
-    textStartY += fontSize * 1.2;
-    // Second hex line
-    if (prng.nextFloat() < 0.5) {
-      drawAnimText(textGen.hexDump(prng, 6), labelX, textStartY, fontSize * 0.8, encSeedHex + 1, 'bus:hex');
-      textStartY += fontSize * 1.2;
+  } else if (tier === 'codes') {
+    // ---- Codes only: QR beside (or over) the barcode, status label while it lasts ----
+    let top = iy;
+    if (detailActive('primaryLabels', s) && minSide > 90) {
+      kitWeight('primary');
+      kitText(label, ix, iy + body * 1.1, body * 1.1, 'left', encSeedLabel, 'bus:status');
+      top += body * 2;
+    }
+    let C = { x: ix, y: top, w: iw, h: iy + ih - top };
+    let g = Math.max(micro, minSide * 0.04);
+    if (C.w > C.h * 1.5) {
+      let q = Math.min(C.h, C.w * 0.45);
+      drawQR(C.x, C.y + (C.h - q) / 2, q, { corrupt: s < 0.45, scan: true });
+      let bh = Math.min(C.h * 0.8, (C.w - q - g) * 0.6);
+      drawEAN(C.x + q + g, C.y + (C.h - bh) / 2, C.w - q - g, bh, { digits: false, dropout: true });
+    } else if (C.h > C.w * 1.4) {
+      let q = Math.min(C.w, C.h * 0.55);
+      drawQR(C.x + (C.w - q) / 2, C.y, q, { corrupt: s < 0.45, scan: true });
+      drawEAN(C.x, C.y + q + g, C.w, Math.min(C.h - q - g, C.w * 0.5), { digits: false });
+    } else {
+      let q = Math.min(C.w, C.h);
+      drawQR(C.x + (C.w - q) / 2, C.y + (C.h - q) / 2, q, { corrupt: true, scan: true });
+    }
+  } else {
+    // ---- Fragment: one bold finder pattern and a slab of fat bars ----
+    let showLabel = detailActive('primaryLabels', s) && ih > micro * 8;
+    if (showLabel) {
+      kitWeight('fine');
+      kitText(label, ix, iy + micro, micro, 'left', encSeedLabel, 'bus:status');
+      iy += micro * 1.8; ih -= micro * 1.8;
+    }
+    let fsz = Math.min(ih, iw * (iw > ih ? 0.42 : 1)) * (s < 0.56 ? 0.92 : 0.7);
+    let showFinder = s < 0.58;
+    let fx = ix, fy = iy + (ih - fsz) / 2;
+    if (!(iw > ih) && showFinder) { fsz = Math.min(iw, ih * 0.45); fx = ix + (iw - fsz) / 2; fy = iy; }
+    if (showFinder) {
+      let fm = fsz / 7;
+      kitWeight('primary');
+      _encModules(7, (i, j) => qr.M[j][i], fx, fy, fm, gap);
+      svgRect(fx, fy, fsz, fsz);
+    }
+    // bars: a cropped slice of the EAN rhythm, scaled up
+    let bx = showFinder && iw > ih ? fx + fsz + Math.max(micro, fsz * 0.12) : ix;
+    let by = showFinder && !(iw > ih) ? fy + fsz + Math.max(micro, fsz * 0.12) : iy;
+    let bw = ix + iw - bx, bh = iy + ih - by;
+    let span = Math.max(9, Math.round(13 + (0.6 - s) * 30));
+    let start = 3 + Math.floor(corr[0] * (95 - span - 6));
+    let mw = bw / span;
+    let cut = by + bh * (0.35 + corr[1] * 0.3), slip = mw * (1 + Math.floor(corr[2] * 2));
+    kitWeight('primary');
+    let i = 0;
+    while (i < span) {
+      if (ean.bits[start + i] !== '1') { i++; continue; }
+      let i0 = i;
+      while (i < span && ean.bits[start + i] === '1') i++;
+      let x0 = bx + i0 * mw, w0 = (i - i0) * mw;
+      // corruption slice: the lower part of the bars slips sideways
+      _encBar(x0, by, w0, cut - by, gap * 1.1);
+      let lx = Math.min(bx + bw - w0, x0 + slip);
+      _encBar(lx, cut + mw * 0.3, w0, by + bh - cut - mw * 0.3, gap * 1.1);
     }
   }
 
-  // Checksum or hash annotation
-  if (detailActive('annotationTexture', s) && prng.nextFloat() < 0.5) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-    let hash = 'CRC:' + prng.nextInt(0, 0xFFFF).toString(16).toUpperCase().padStart(4, '0');
-    drawAnimText(hash, labelX, textStartY, tinyFont, encSeedHash, 'counter');
-    textStartY += tinyFont * 1.4;
-  }
-
-  // Secondary barcode (small, different style)
-  if (s < 0.4 && textStartY + fontSize * 3 < iy + ih && prng.nextFloat() < 0.5) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.6);
-    let miniH = Math.min(ih * 0.12, fontSize * 2);
-    drawBarcodeLines(labelX, textStartY + fontSize * 0.5, iw * 0.4, miniH, prng.nextInt(8, 15), prng);
-  }
-
-  // Mini sparkline
-  if (detailActive('connectorLines', s) && prng.nextFloat() < 0.3 && textStartY + fontSize * 2 < iy + ih) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-    drawMiniSparkline(labelX, textStartY, iw * 0.35, fontSize * 1.5, prng.nextInt(6, 12), prng);
-  }
-
-  // Footer: identifier + version
-  svgSetStrokeWeight(state.geometry.strokeWeight * 0.5);
-  if (detailActive('versionStrings', s)) {
-    let id = textGen.identifier(prng);
-    drawAnimText(id, ix + iw - pad - measureFallbackText(id, tinyFont), iy + ih - pad, tinyFont, encSeedFooter, 'scramble');
-    let ver = textGen.versionString(prng);
-    drawAnimText(ver, ix + pad, iy + ih - pad, tinyFont, encSeedFooter + 1, 'counter');
-  }
-
-  // Rotated side label
-  if (detailActive('annotationTexture', s) && prng.nextFloat() < 0.3 && iw > fontSize * 8) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.35);
-    drawFallbackTextRotated(textGen.systemPath(prng), ix + iw - tinyFont * 0.3, iy + ih * 0.25, tinyFont, 90);
-  }
-
-  // Encoded data variant overlays — no prng inside branches (use hash)
-  let encVariant = prng.nextFloat();
-  let encVarSeed = prng.nextInt(0, 0xFFFFFF);
-  if (encVariant < 0.15 && iw > fontSize * 6) {
-    // Transmission strip — barcode from hash, not prng
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.3);
-    let stripY = iy + ih * 0.45;
-    let stripH = fontSize * 0.6;
-    let barCount = 15 + Math.round(_profileHash(encVarSeed, 160) * 15);
-    let pos = 0;
-    for (let bi = 0; bi < barCount; bi++) {
-      let barW = _profileHash(encVarSeed + bi * 3, 161) * 3 + 0.5;
-      let gap = _profileHash(encVarSeed + bi * 3 + 1, 162) * 2 + 0.5;
-      if (pos + barW > iw - pad * 2) break;
-      svgLine(ix + pad + pos + barW / 2, stripY, ix + pad + pos + barW / 2, stripY + stripH);
-      pos += barW + gap;
-    }
-    if (animCtx && _cellAnim) {
-      let scanX = ix + pad + anim.sweep(animCtx.frameIndex, animCtx.frameCount, animCtx.frameCount, animCtx.speedMul, _cellAnim.phaseOffset) * (iw - pad * 2);
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.7);
-      svgLine(scanX, stripY - 2, scanX, stripY + stripH + 2);
-    }
-  } else if (encVariant < 0.28 && ih > fontSize * 6) {
-    // Fractal encoding — all branch params from hash, no prng
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.35);
-    let fracX = ix + iw * 0.5, fracY = iy + ih * 0.7;
-    let fracSize = Math.min(iw, ih) * 0.25;
-    let fracNodeIdx = 0;
-    function fractalBranch(bx, by, len, angle, depth) {
-      if (depth <= 0 || len < 2) return;
-      let ni = fracNodeIdx++;
-      let ex = bx + len * Math.cos(angle), ey = by + len * Math.sin(angle);
-      svgLine(bx, by, ex, ey);
-      let branchAngle = 0.4 + _profileHash(encVarSeed + ni * 11, 163) * 0.5;
-      let lenScale1 = 0.55 + _profileHash(encVarSeed + ni * 11 + 1, 164) * 0.2;
-      let lenScale2 = 0.55 + _profileHash(encVarSeed + ni * 11 + 2, 165) * 0.2;
-      fractalBranch(ex, ey, len * lenScale1, angle + branchAngle, depth - 1);
-      fractalBranch(ex, ey, len * lenScale2, angle - branchAngle, depth - 1);
-    }
-    let fracDepth = 3 + Math.floor(_profileHash(encVarSeed, 166) * 2);
-    fractalBranch(fracX, fracY, fracSize, -HALF_PI, fracDepth);
-  }
-
+  _cellScale = prevScale;
+  kitWeight('primary');
   svgSetStrokeWeight(state.geometry.strokeWeight);
   svgRec.endGroup();
 }
