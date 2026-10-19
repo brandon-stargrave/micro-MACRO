@@ -701,6 +701,10 @@
     <!-- ===== COMPOSITION ===== -->
     <details class="collapsible" open>
       <summary>Composition <label class="rand-toggle"><input type="checkbox" id="rand-composition" checked> rand</label></summary>
+      <div class="check-row" data-tip="Grid ticks in the margin on the layout grid, and a colophon line (seed, scale, cells, format) in the bottom margin.">
+        <input type="checkbox" id="page-frame" checked onchange="updateState('pageFrame', this.checked); doGenerateKeepSeed()">
+        <label for="page-frame">Page Frame</label>
+      </div>
       <div id="panel-multi" class="mode-panel">
         <div class="control-group">
           <label data-tip="How many times the canvas is recursively split into cells. Higher = more, smaller cells.">Subdivision Depth</label>
@@ -1094,15 +1098,19 @@
         <label for="plotter-reg-marks">Registration / Crop Marks</label>
       </div>
       <div class="check-row">
-        <input type="checkbox" id="plotter-layers" onchange="updateState('plotter.layers.enabled', this.checked)">
+        <input type="checkbox" id="plotter-layers" onchange="updateState('plotter.layers.enabled', this.checked); refreshPlotView()">
         <label for="plotter-layers">Enable Layers</label>
+      </div>
+      <div class="check-row" data-tip="With layers on, hairline strokes in the main and detail content go to '7 - Fine Lines' so a finer pen can keep the line-weight hierarchy.">
+        <input type="checkbox" id="plotter-split-fine" checked onchange="updateState('plotter.layers.splitFine', this.checked); refreshPlotView()">
+        <label for="plotter-split-fine">Fine Lines Layer</label>
       </div>
       <div class="check-row" data-tip="SVG export flattens curves, clips to the clip box, joins connected strokes, drops duplicates and leaves out the background rect (plotters trace it as a frame). Off = raw export.">
         <input type="checkbox" id="plotter-plot-safe" checked onchange="updateState('plotter.plotSafe', this.checked)">
         <label for="plotter-plot-safe">Plot-Safe SVG</label>
       </div>
       <div class="check-row" data-tip="Plot-safe clip box: on = inside the margins, off = the page edge. Cell borders may use the inner half of the margin; registration marks clip to the page edge.">
-        <input type="checkbox" id="plotter-clip-margins" checked onchange="updateState('plotter.clipToMargins', this.checked)">
+        <input type="checkbox" id="plotter-clip-margins" checked onchange="updateState('plotter.clipToMargins', this.checked); refreshPlotView()">
         <label for="plotter-clip-margins">Clip to Margins</label>
       </div>
       <hr class="divider">
@@ -1509,10 +1517,22 @@ function dimInputToState(key, inputVal) {
 // PRNG (xorshift128)
 // ========================================================
 
+// Seed string -> 32-bit number. All-hex seeds keep the original reading
+// (first 8 hex digits); any other string is hashed (FNV-1a).
+function seedNumber(str) {
+  if (/^[0-9a-f]+$/i.test(str)) return parseInt(str.slice(0, 8), 16);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return h >>> 0;
+}
+
 class PRNG {
   constructor(seed) {
     if (typeof seed === 'string') {
-      seed = parseInt(seed.replace(/[^0-9a-f]/gi, '').slice(0, 8) || '0', 16);
+      // Hex seeds (what the app generates) parse as before. Anything else is
+      // hashed (FNV-1a): stripping non-hex characters made "q0" and "q1"
+      // both read as 0 - the same picture.
+      seed = seedNumber(seed);
     }
     seed = seed || 1;
     this.s = new Uint32Array(4);
@@ -2641,13 +2661,17 @@ function plotSafeStrokes(rec) {
   let content = p.clipToMargins ? [m.left, m.top, W - m.right, H - m.bottom] : page;
   let borderBox = p.clipToMargins ? [m.left / 2, m.top / 2, W - m.right / 2, H - m.bottom / 2] : page;
   let layered = p.layers.enabled;
-  let order = ['mainContent', 'borders', 'macroText', 'microText', 'details', 'registration'];
+  let order = ['mainContent', 'borders', 'macroText', 'microText', 'details', 'registration', 'fine'];
+  // With one pen the kit's weight hierarchy (heavy 1.7x .. fine 0.35x) flattens;
+  // hairline content strokes on their own layer can take a finer pen.
+  let fineCut = state.geometry.strokeWeight * 0.5;
+  let splitFine = layered && p.layers.splitFine !== false;
   let buckets = new Map();
   let seen = new Set();
   let r = rec._r;
 
   const classify = ids => {
-    if (ids.some(id => id === 'registration-marks' || id === 'pen-reference')) return 'registration';
+    if (ids.some(id => id === 'registration-marks' || id === 'pen-reference' || id === 'page-frame')) return 'registration';
     if (ids.includes('otf-text')) return 'macroText';
     if (ids.some(id => id === 'font-text' || id === 'micro-text')) return 'microText';
     if (ids.some(id => id === 'border' || id === 'anim-border')) return 'borders';
@@ -2670,6 +2694,7 @@ function plotSafeStrokes(rec) {
       } else if (n.d && n.stroke && n.stroke !== 'none') {
         let layer = classify(ids);
         let rect = layer === 'registration' ? page : layer === 'borders' ? borderBox : content;
+        if (splitFine && (layer === 'mainContent' || layer === 'details') && n.strokeWidth < fineCut) layer = 'fine';
         for (let poly of parsePathToPolylines(n.d)) {
           let pts = poly.map(q => [M[0]*q[0] + M[2]*q[1] + M[4], M[1]*q[0] + M[3]*q[1] + M[5]])
                         .filter(q => Number.isFinite(q[0]) && Number.isFinite(q[1]));
@@ -3783,7 +3808,9 @@ const state = {
       macroText: '3 - Macro Text',
       microText: '4 - Micro Text',
       details: '5 - Details',
-      registration: '6 - Registration'
+      registration: '6 - Registration',
+      fine: '7 - Fine Lines',
+      splitFine: true    // layers on: hairline main/detail strokes get their own pen layer
     }
   },
   animation: {
@@ -3801,7 +3828,8 @@ const state = {
   },
   cellOverrides: {},
   manualLayout: null,
-  exportTransparent: false
+  exportTransparent: false,
+  pageFrame: true   // margin grid ticks + colophon line
 };
 
 // Initialize archetype state
@@ -17689,6 +17717,38 @@ function getArchetypeFamily(archetype) {
 // GENERATION PIPELINE
 // ========================================================
 
+function drawPageFrame(content, cellCount) {
+  let m = state.margin;
+  let mMin = Math.min(m.top, m.right, m.bottom, m.left);
+  if (mMin < 6) return;
+  svgRec.beginGroup('page-frame');
+  svgSetStroke(state.fgColor);
+  svgSetStrokeWeight(state.geometry.strokeWeight * 0.35);
+  let tick = Math.min(mMin * 0.22, 8), off = Math.min(mMin * 0.12, 4);
+  let { x, y, w, h } = content;
+  for (let k = 1; k < 12; k++) {
+    let len = k % 3 === 0 ? tick * 1.6 : tick; // quarters marked longer
+    let tx = x + w * k / 12, ty = y + h * k / 12;
+    svgLine(tx, y - off, tx, y - off - len);
+    svgLine(tx, y + h + off, tx, y + h + off + len);
+    svgLine(x - off, ty, x - off - len, ty);
+    svgLine(x + w + off, ty, x + w + off + len, ty);
+  }
+  // Colophon, bottom-left, if the bottom margin can hold a line of type
+  let size = getMinTextSizePx();
+  if (m.bottom >= size + tick * 1.6 + off + 4) {
+    let p = state.plotter;
+    let fmt = p.paperPreset && p.paperPreset !== 'custom' ? p.paperPreset.toUpperCase()
+      : p.unit !== 'px' ? `${formatUnitVal(state.width, p.unit, p.dpi)}x${formatUnitVal(state.height, p.unit, p.dpi)}${p.unit.toUpperCase()}`
+      : `${state.width}x${state.height}PX`;
+    let label = `MICRO-MACRO  ${String(state.seed).toUpperCase()}  S${state.scale.toFixed(2)}  ${cellCount} CELL${cellCount === 1 ? '' : 'S'}  ${fmt}`;
+    let baseY = y + h + off + tick * 1.6 + size + 2;
+    _drawBuiltinText(label, x, Math.min(baseY, state.height - 2), size);
+  }
+  svgSetStrokeWeight(state.geometry.strokeWeight);
+  svgRec.endGroup();
+}
+
 // Backing-store density: the display's (up to 2x) for crisp lines on Retina
 // screens, but 1x while animating (the GIF / MP4 / MOV exporters read canvas
 // pixels at page size) and for pages whose 2x store would exceed ~48M pixels.
@@ -17701,7 +17761,7 @@ function canvasDensity() {
 function generate(frameIndex) {
   // Animation context setup
   if (frameIndex !== undefined && state.animation.enabled) {
-    let seedNum = parseInt(state.seed.replace(/[^0-9a-f]/gi, '').slice(0, 8) || '0', 16);
+    let seedNum = seedNumber(state.seed);
     let frameSeedNum = (seedNum ^ (state.animation.seedOffset * 7919 + frameIndex * 104729)) >>> 0;
     animCtx = {
       frameIndex: frameIndex,
@@ -18214,6 +18274,11 @@ function generate(frameIndex) {
     }
     svgRec.endGroup();
   }
+
+  // Page frame: grid ticks in the margin on the 12-unit layout grid (the
+  // gutters snap to it), and a colophon line in the bottom margin. Ties the
+  // cells into one designed sheet. Registration pen layer; deterministic.
+  if (state.pageFrame) drawPageFrame(contentRect, cells.length);
 
   // Pen width reference (when physical units active, and only if the bottom
   // margin can hold its label without touching the paper edge)
@@ -21150,6 +21215,8 @@ function syncAllUI() {
   document.getElementById('plotter-min-text-unit').value = state.plotter.minTextSizeUnit;
   document.getElementById('plotter-reg-marks').checked = state.plotter.registrationMarks;
   document.getElementById('plotter-layers').checked = state.plotter.layers.enabled;
+  document.getElementById('page-frame').checked = state.pageFrame !== false;
+  document.getElementById('plotter-split-fine').checked = state.plotter.layers.splitFine !== false;
   syncMarginLinkUI();
   document.getElementById('plotter-plot-safe').checked = !!state.plotter.plotSafe;
   document.getElementById('plotter-preview').checked = !!state.plotter.previewPlot;
