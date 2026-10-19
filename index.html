@@ -3214,7 +3214,7 @@ function drawFallbackText(str, x, y, fontSize) {
   if (loadedFonts.ready && _cellPRNG) {
     // CRITICAL: Always call getTextRenderer to consume PRNG for font selection,
     // even when drawing is suppressed. This keeps the PRNG stream stable.
-    let renderer = getTextRenderer(_cellScale, state.geometry.fontBias, _cellPRNG);
+    let renderer = getTextRenderer(_cellScale, state.geometry.fontBias, _cellPRNG, fontSize);
     if (!_drawingSuppressed) renderer.draw(str, x, y, fontSize);
   } else {
     if (!_drawingSuppressed) _drawBuiltinText(str, x, y, fontSize);
@@ -3229,7 +3229,7 @@ function drawFallbackText(str, x, y, fontSize) {
 function measureFallbackText(str, fontSize) {
   fontSize = Math.max(fontSize, getMinTextSizePx());
   if (loadedFonts.ready && _cellPRNG) {
-    let renderer = getTextRenderer(_cellScale, state.geometry.fontBias, _cellPRNG);
+    let renderer = getTextRenderer(_cellScale, state.geometry.fontBias, _cellPRNG, fontSize);
     return renderer.measure(str, fontSize);
   }
   return _measureBuiltinText(str, fontSize);
@@ -3459,7 +3459,7 @@ function rerollCellFonts(prng) {
   if (loadedFonts.macro.length > 0) _genFonts.macro = prng.pick(loadedFonts.macro);
 }
 
-function getTextRenderer(s, fontBias, prng) {
+function getTextRenderer(s, fontBias, prng, fontSize) {
   if (!loadedFonts.ready) return { draw: _drawBuiltinText, measure: _measureBuiltinText };
 
   let font = null;
@@ -3474,12 +3474,15 @@ function getTextRenderer(s, fontBias, prng) {
   }
 
   if (!font) {
-    // Auto selection — probability-based crossfade between micro and macro
-    // Micro: 100% at s<0.3, tapers to 0% by s=0.75
-    // Macro: 0% at s<0.3, enters at s=0.3, 100% by s=0.75
-    let microProb = s < 0.3 ? 1.0 : s > 0.75 ? 0.0 : 1.0 - (s - 0.3) / 0.45;
-    let roll = prng ? prng.nextFloat() : 0.5;
-    if (roll < microProb && _genFonts.micro) {
+    // Auto selection — micro (single-line) below s=0.3, macro (outline) above
+    // s=0.75. In between, type at least `macroMin` px tall goes macro, and the
+    // threshold falls from ~6x to ~2x min text size as s rises. Deciding by size
+    // instead of a per-call roll means a string is measured and drawn in the same
+    // face, and big headings turn macro before small labels do.
+    let roll = prng ? prng.nextFloat() : 0.5; // still drawn: keeps the cell PRNG stream length
+    let macroMin = getMinTextSizePx() * (2 + Math.max(0, 0.75 - s) / 0.45 * 4);
+    let useMicro = s < 0.3 || (s <= 0.75 && (fontSize ? fontSize < macroMin : roll < 1 - (s - 0.3) / 0.45));
+    if (useMicro && _genFonts.micro) {
       font = _genFonts.micro;
     } else if (_genFonts.macro) {
       font = _genFonts.macro;
