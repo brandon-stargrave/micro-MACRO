@@ -12932,10 +12932,17 @@ function generateBorder(rect, s, style, weight, padding, prng) {
       break;
     }
     case 'hexagonal': {
-      // Hexagonal border frame
-      let hcx = bx + bw / 2, hcy = by + bh / 2;
-      let hr = Math.min(bw, bh) / 2;
-      drawHexagon(hcx, hcy, hr);
+      // Chamfered frame: the rectangle with 45-degree cut corners. (An inscribed
+      // regular hexagon cut across rectangular cell content.)
+      let c = Math.min(bw, bh) * 0.07;
+      svgPolyline([[bx + c, by], [bx + bw - c, by], [bx + bw, by + c], [bx + bw, by + bh - c],
+                   [bx + bw - c, by + bh], [bx + c, by + bh], [bx, by + bh - c], [bx, by + c], [bx + c, by]]);
+      // Small tick at each chamfer midpoint
+      let k = c * 0.35;
+      for (let [mx, my, dx, dy] of [[bx + c / 2, by + c / 2, -1, -1], [bx + bw - c / 2, by + c / 2, 1, -1],
+                                    [bx + bw - c / 2, by + bh - c / 2, 1, 1], [bx + c / 2, by + bh - c / 2, -1, 1]]) {
+        svgLine(mx, my, mx + dx * k, my + dy * k);
+      }
       break;
     }
     case 'double-line': {
