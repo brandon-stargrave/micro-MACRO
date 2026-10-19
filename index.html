@@ -1334,12 +1334,6 @@ const DETAIL_SHEDDING = [
   { layer: 'allInternal',        threshold: 0.80 }
 ];
 
-const RENDER_MODE_ZONES = [
-  { max: 0.30, mode: 'line' },
-  { max: 0.55, mode: 'hybrid' },
-  { max: 0.75, mode: 'solidTransition' },
-  { max: 1.00, mode: 'solid' }
-];
 
 const BORDER_STYLES_BY_SCALE = {
   'corner-bracket':    [0.00, 0.75],
@@ -1368,7 +1362,6 @@ const ACCENT_CHARS = [
   { chars: '┼├┤┬┴', weight: 0.3 }
 ];
 
-const SCALE_ZONE_NAMES = ['DEEP MICRO','MICRO','MID','MACRO','DEEP MACRO'];
 
 // Font manifest — update when adding fonts to directories
 const FONT_MANIFEST = {
@@ -1825,14 +1818,6 @@ function animEnvelope(t, shape, easeFn) {
   }
 }
 
-// Windowed envelope: active only within [startT, endT] of the loop
-function animEnvelopeWindowed(t, startT, endT, easeFn) {
-  if (t < startT || t > endT) return 0;
-  let localT = (t - startT) / (endT - startT);
-  let ef = easeFn || ease.linear;
-  return ef(Math.sin(localT * PI)); // swell shape within window
-}
-
 // Presence: strobe on/off at ratchet rates
 function animStrobe(fi, rate, dutyCycle, phase) {
   let pos = (fi + Math.floor(phase * rate * 2)) % (rate * 2);
@@ -1860,16 +1845,6 @@ function animScalePresence(t, mode, durationFrac, easeFn) {
     default: return 1;
   }
 }
-
-// Progressive draw-on: returns 0-1 representing how many segments to draw
-function animDrawOn(fi, fc, phase) {
-  if (!animCtx) return 1;
-  let t = ((fi / fc) + phase) % 1;
-  return t;
-}
-
-// Modulate: multiply motion value by envelope intensity
-function animModulate(motionVal, envelopeVal) { return motionVal * envelopeVal; }
 
 // ========================================================
 // ANIMATION PROFILE SYSTEM
@@ -2033,13 +2008,6 @@ function applyPresence(prof, fi, fc, t) {
   return { visible, scale };
 }
 
-// Compute animation value with envelope modulation
-function animWithEnvelope(rawMotion, prof, t) {
-  if (!prof || !prof.active || !prof.envelope) return rawMotion;
-  let env = animEnvelope(t, prof.envelope, prof.envelopeFn);
-  return rawMotion * env * prof.intensity;
-}
-
 // ========================================================
 // COMPOSITION BUS & CELL ANIMATION
 // ========================================================
@@ -2058,7 +2026,6 @@ let _selectedCell = null;   // cell index (not an index into _cellMeta, which sk
 let _lastCellRects = [];    // every cell's rect from the last generate, by cell index
 // Metadata for a cell index; _cellMeta has no entry for cells that drew nothing.
 function _metaForCell(i) { return i === null ? null : _cellMeta.find(c => c.index === i) || null; }
-let _dragEdge = null;       // active edge drag info
 let _undoStack = [];
 let _redoStack = [];
 let _cellClipboard = null;  // { archetype, variant, scale }
@@ -3090,17 +3057,9 @@ function svgSetStrokeWeight(w) {
   strokeWeight(w);
   svgRec.setStrokeWeight(w);
 }
-function svgSetFill(c) {
-  fill(c);
-  svgRec.setFill(c);
-}
 function svgNoFill() {
   noFill();
   svgRec.setNoFill();
-}
-function svgNoStroke() {
-  noStroke();
-  svgRec.setStroke('none');
 }
 
 // ========================================================
@@ -3425,11 +3384,6 @@ function drawFallbackTextRotated(str, x, y, fontSize, angleDeg) {
   drawFallbackText(str, x, y, fontSize);
   pop();
   svgRec.endGroup();
-}
-
-// Convenience: 90° clockwise rotation (text reads bottom-to-top on right edges)
-function drawFallbackTextVertical(str, x, y, fontSize) {
-  drawFallbackTextRotated(str, x, y, fontSize, -90);
 }
 
 // Wrap drawing functions in a named SVG group so plot-safe export can sort
@@ -3778,10 +3732,6 @@ let animCtx = null;       // Animation context — set per-frame when animating,
 let _animInterval = null;  // Playback interval handle
 let _onionFrame = null;    // Previous frame capture for onion skinning
 
-// These are now redundant since drawFallbackText is font-aware, but kept for clarity
-function drawText(str, x, y, fontSize) { drawFallbackText(str, x, y, fontSize); }
-function measureText(str, fontSize) { return measureFallbackText(str, fontSize); }
-
 // ========================================================
 // GLOBAL STATE
 // ========================================================
@@ -4054,47 +4004,6 @@ function drawStar(cx, cy, outerR, innerR, points) {
   svgEndShape(true);
 }
 
-function drawAsterisk(cx, cy, radius, arms) {
-  for (let i = 0; i < arms; i++) {
-    let a = (i / arms) * TWO_PI;
-    svgLine(cx, cy, cx + radius * cos(a), cy + radius * sin(a));
-  }
-}
-
-function drawStarburst(cx, cy, outerR, innerR, points) {
-  for (let i = 0; i < points; i++) {
-    let a = (i / points) * TWO_PI - HALF_PI;
-    svgLine(cx + innerR * cos(a), cy + innerR * sin(a), cx + outerR * cos(a), cy + outerR * sin(a));
-  }
-}
-
-function drawGearWheel(cx, cy, outerR, innerR, teeth, toothDepth) {
-  svgBeginShape();
-  for (let i = 0; i < teeth; i++) {
-    let a1 = (i / teeth) * TWO_PI;
-    let a2 = ((i + 0.3) / teeth) * TWO_PI;
-    let a3 = ((i + 0.7) / teeth) * TWO_PI;
-    let a4 = ((i + 1) / teeth) * TWO_PI;
-    let r1 = outerR - toothDepth;
-    svgVertex(cx + r1 * cos(a1), cy + r1 * sin(a1));
-    svgVertex(cx + outerR * cos(a2), cy + outerR * sin(a2));
-    svgVertex(cx + outerR * cos(a3), cy + outerR * sin(a3));
-    svgVertex(cx + r1 * cos(a4), cy + r1 * sin(a4));
-  }
-  svgEndShape(true);
-  if (innerR > 0) svgCircle(cx, cy, innerR * 2);
-}
-
-function drawSerratedBadge(cx, cy, outerR, innerR, points) {
-  svgBeginShape();
-  for (let i = 0; i < points * 2; i++) {
-    let a = (i / (points * 2)) * TWO_PI;
-    let r = i % 2 === 0 ? outerR : innerR;
-    svgVertex(cx + r * cos(a), cy + r * sin(a));
-  }
-  svgEndShape(true);
-}
-
 function drawDotGrid(x, y, w, h, cols, rows) {
   let stepX = w / (cols - 1 || 1);
   let stepY = h / (rows - 1 || 1);
@@ -4118,21 +4027,6 @@ function drawDashedLine(x1, y1, x2, y2, dashLen, gapLen) {
   }
 }
 
-function drawSegmentedBar(x, y, w, h, segments, fillRatio, prng) {
-  let segW = w / segments;
-  let gap = segW * 0.15;
-  let filledCount = Math.round(segments * fillRatio);
-  for (let i = 0; i < segments; i++) {
-    let sx = x + i * segW + gap / 2;
-    let sw = segW - gap;
-    if (i < filledCount) {
-      svgRect(sx, y, sw, h);
-    } else {
-      drawDashedLine(sx, y + h / 2, sx + sw, y + h / 2, 2, 2);
-    }
-  }
-}
-
 function drawBarcodeLines(x, y, w, h, count, prng) {
   let ds = state.plotter ? state.plotter.detailScale : 1;
   let pos = 0;
@@ -4143,20 +4037,6 @@ function drawBarcodeLines(x, y, w, h, count, prng) {
     svgLine(x + pos + barW / 2, y, x + pos + barW / 2, y + h);
     pos += barW + gap;
   }
-}
-
-function drawParallelLines(x, y, w, h, count, angle) {
-  angle = angle || 0;
-  let step = h / (count + 1);
-  for (let i = 1; i <= count; i++) {
-    let ly = y + step * i;
-    svgLine(x, ly, x + w, ly);
-  }
-}
-
-function drawCrosshatchGrid(x, y, w, h, spacing) {
-  for (let i = 0; i <= w; i += spacing) svgLine(x + i, y, x + i, y + h);
-  for (let i = 0; i <= h; i += spacing) svgLine(x, y + i, x + w, y + i);
 }
 
 // Vertical bar bank — count bars with PRNG-randomized heights
@@ -4172,29 +4052,6 @@ function drawBarBank(x, y, w, h, count, prng) {
   }
 }
 
-// Horizontal bar bank — count bars with PRNG-randomized widths
-function drawHorizontalBarBank(x, y, w, h, count, prng) {
-  let gap = h * 0.02;
-  let barH = (h - gap * (count + 1)) / count;
-  if (barH < 1) barH = 1;
-  for (let i = 0; i < count; i++) {
-    let by = y + gap + i * (barH + gap);
-    let barW = w * (0.15 + prng.nextFloat() * 0.85);
-    svgRect(x, by, barW, barH);
-  }
-}
-
-// Mini sparkline — waveform polyline across bounding box
-function drawMiniSparkline(x, y, w, h, points, prng) {
-  svgBeginShape();
-  for (let i = 0; i < points; i++) {
-    let px = x + (i / (points - 1)) * w;
-    let py = y + h * 0.1 + prng.nextFloat() * h * 0.8;
-    svgVertex(px, py);
-  }
-  svgEndShape(false);
-}
-
 // Polar grid — concentric rings + radial spokes for chart backgrounds
 function drawPolarGrid(cx, cy, radius, rings, spokes) {
   for (let i = 1; i <= rings; i++) {
@@ -4204,21 +4061,6 @@ function drawPolarGrid(cx, cy, radius, rings, spokes) {
     let a = (i / spokes) * TWO_PI - HALF_PI;
     svgLine(cx, cy, cx + radius * cos(a), cy + radius * sin(a));
   }
-}
-
-// Waveform — sine-like wave with PRNG perturbation
-function drawWaveform(x, y, w, h, segments, prng) {
-  let midY = y + h / 2;
-  let amp = h * 0.4;
-  let freq = 1.5 + prng.nextFloat() * 3;
-  svgBeginShape();
-  for (let i = 0; i <= segments; i++) {
-    let t = i / segments;
-    let px = x + t * w;
-    let py = midY + Math.sin(t * freq * TWO_PI + prng.nextFloat() * PI) * amp * (0.5 + prng.nextFloat() * 0.5);
-    svgVertex(px, py);
-  }
-  svgEndShape(false);
 }
 
 // Dashed concentric ring — single ring drawn as dashed arc segments
@@ -4231,16 +4073,6 @@ function drawDashedRing(cx, cy, radius, dashCount) {
   }
 }
 
-// Hexagon — regular 6-sided polygon
-function drawHexagon(cx, cy, radius) {
-  svgBeginShape();
-  for (let i = 0; i < 6; i++) {
-    let a = (i / 6) * TWO_PI - HALF_PI;
-    svgVertex(cx + radius * cos(a), cy + radius * sin(a));
-  }
-  svgEndShape(true);
-}
-
 // Rotated square (diamond) — square rotated 45 degrees
 function drawDiamond(cx, cy, radius) {
   svgBeginShape();
@@ -4249,45 +4081,6 @@ function drawDiamond(cx, cy, radius) {
   svgVertex(cx, cy + radius);
   svgVertex(cx - radius, cy);
   svgEndShape(true);
-}
-
-// Chevron — V-shape pointing in a direction
-function drawChevron(cx, cy, w, h, pointing) {
-  // pointing: 'up', 'down', 'left', 'right'
-  if (pointing === 'up' || pointing === 'down') {
-    let dir = pointing === 'up' ? -1 : 1;
-    svgBeginShape();
-    svgVertex(cx - w / 2, cy - dir * h / 2);
-    svgVertex(cx, cy + dir * h / 2);
-    svgVertex(cx + w / 2, cy - dir * h / 2);
-    svgEndShape(false);
-  } else {
-    let dir = pointing === 'left' ? -1 : 1;
-    svgBeginShape();
-    svgVertex(cx - dir * w / 2, cy - h / 2);
-    svgVertex(cx + dir * w / 2, cy);
-    svgVertex(cx - dir * w / 2, cy + h / 2);
-    svgEndShape(false);
-  }
-}
-
-// Range ruler — short measurement ruler with tick marks
-function drawRangeRuler(x, y, length, tickCount, tickLen, vertical) {
-  if (vertical) {
-    svgLine(x, y, x, y + length);
-    for (let i = 0; i <= tickCount; i++) {
-      let ty = y + (i / tickCount) * length;
-      let tl = (i === 0 || i === tickCount) ? tickLen * 1.5 : tickLen;
-      svgLine(x - tl / 2, ty, x + tl / 2, ty);
-    }
-  } else {
-    svgLine(x, y, x + length, y);
-    for (let i = 0; i <= tickCount; i++) {
-      let tx = x + (i / tickCount) * length;
-      let tl = (i === 0 || i === tickCount) ? tickLen * 1.5 : tickLen;
-      svgLine(tx, y - tl / 2, tx, y + tl / 2);
-    }
-  }
 }
 
 // ---- Shape Rendering Styles ----
@@ -4374,44 +4167,6 @@ function drawStyledPolygon(verts, style, params) {
   }
 }
 
-// Convenience: pick a render style from PRNG, biased by context
-// cloneIndex: 0 = primary shape (usually solid), >0 = clone (more likely styled)
-// maxBusyness: 0-1, limits how many hashes/dots are acceptable
-function pickShapeStyle(prng, cloneIndex, maxBusyness) {
-  if (cloneIndex === 0) {
-    // Primary shape: mostly solid, small chance of styled
-    let r = prng.nextFloat();
-    if (r < 0.75) return 'solid';
-    if (r < 0.85) return 'hashes';
-    if (r < 0.92) return 'dashed';
-    return 'dots';
-  }
-  // Clone: higher chance of alternate style, progressing with clone index
-  let r = prng.nextFloat();
-  let styledBias = Math.min(0.85, 0.3 + cloneIndex * 0.2);
-  if (r > styledBias) return 'solid';
-  // Pick from styled options
-  let styleR = prng.nextFloat();
-  if (styleR < 0.25) return 'dots';
-  if (styleR < 0.45) return 'dashed';
-  if (styleR < 0.65) return 'squares';
-  if (styleR < 0.85) return 'hashes';
-  return 'dotEdge';
-}
-
-// Progressive style params: as cloneIndex increases, params evolve
-function getProgressiveParams(cloneIndex, baseRadius, totalClones) {
-  let t = totalClones > 1 ? cloneIndex / (totalClones - 1) : 0;
-  return {
-    dotSize: 2 + t * 2,
-    dashLen: 4 + t * 4,
-    dashGap: 3 + t * 3,
-    squareSize: 2 + t * 2,
-    hashLen: 3 + t * 2,
-    hashSpacing: 5 + t * 3
-  };
-}
-
 // Regular polygon — n-sided shape, optionally with a rendering style
 function drawRegularPolygon(cx, cy, radius, sides, rotation, style, styleParams) {
   let verts = getPolygonVertices(cx, cy, radius, sides, rotation || -HALF_PI);
@@ -4427,60 +4182,6 @@ function drawRegularPolygon(cx, cy, radius, sides, rotation, style, styleParams)
 // Triangle — convenience for 3-sided regular polygon
 function drawTriangle(cx, cy, radius, rotation, style, styleParams) {
   drawRegularPolygon(cx, cy, radius, 3, rotation !== undefined ? rotation : -HALF_PI, style, styleParams);
-}
-
-// Styled circle — dots around circumference, dashed ring, or hash marks
-function drawStyledCircle(cx, cy, diameter, style, params) {
-  params = params || {};
-  let r = diameter / 2;
-  if (style === 'dots') {
-    let count = Math.min(16, Math.max(6, Math.round(r * 0.4)));
-    for (let i = 0; i < count; i++) {
-      let a = (i / count) * TWO_PI;
-      svgPoint(cx + r * cos(a), cy + r * sin(a));
-    }
-  } else if (style === 'dashed') {
-    let dashCount = Math.min(16, Math.max(4, Math.round(r * 0.3)));
-    drawDashedRing(cx, cy, r, dashCount);
-  } else if (style === 'squares') {
-    let count = Math.min(12, Math.max(4, Math.round(r * 0.3)));
-    let sz = params.squareSize || 3;
-    for (let i = 0; i < count; i++) {
-      let a = (i / count) * TWO_PI;
-      let px = cx + r * cos(a), py = cy + r * sin(a);
-      svgRect(px - sz / 2, py - sz / 2, sz, sz);
-    }
-  } else if (style === 'hashes') {
-    svgCircle(cx, cy, diameter);
-    let count = Math.min(16, Math.max(6, Math.round(r * 0.3)));
-    let hl = params.hashLen || 4;
-    for (let i = 0; i < count; i++) {
-      let a = (i / count) * TWO_PI;
-      svgLine(cx + (r - hl / 2) * cos(a), cy + (r - hl / 2) * sin(a),
-              cx + (r + hl / 2) * cos(a), cy + (r + hl / 2) * sin(a));
-    }
-  } else {
-    svgCircle(cx, cy, diameter);
-  }
-}
-
-// Rotational cloning — draw a shape function N times at quantized rotation offsets,
-// optionally at varying scales. Center-aligned.
-// drawFn receives (cloneIndex, style, styleParams) so shapes can be rendered with progressive styles
-function drawRotationalClones(cx, cy, cloneCount, baseRotation, drawFn) {
-  let angleStep = TWO_PI / cloneCount;
-  for (let i = 0; i < cloneCount; i++) {
-    let angle = baseRotation + i * angleStep;
-    let angleDeg = angle * (180 / PI);
-    svgRec.beginGroupWithTransform('clone-' + i, `rotate(${svgRec._r(angleDeg)}, ${svgRec._r(cx)}, ${svgRec._r(cy)})`);
-    push();
-    translate(cx, cy);
-    rotate(angle);
-    translate(-cx, -cy);
-    drawFn(i);
-    pop();
-    svgRec.endGroup();
-  }
 }
 
 // Warning stripes — diagonal hash lines in a rectangular area
@@ -4779,29 +4480,6 @@ function drawTextureGreeble(x, y, w, h, s, prng) {
     }
   }
   svgSetStrokeWeight(prevW);
-}
-
-// Helper: clamp text draw position inside a bounding box
-// Get micro text — injects user text based on blend/amount settings
-function getMicroText(prng, fallbackFn) {
-  let te = state.typeEngine;
-  let userText = te.userMicroText ? te.userMicroText.trim() : '';
-  if (!userText) return fallbackFn ? fallbackFn() : textGen.identifier(prng);
-
-  if (!te.userTextBlend) {
-    // Exclusive mode: user text only, gated by amount
-    return prng.nextFloat() < te.userTextAmount ? userText : '';
-  }
-  // Blend mode: chance to use user text vs random
-  if (prng.nextFloat() < te.userTextAmount) return userText;
-  return fallbackFn ? fallbackFn() : textGen.identifier(prng);
-}
-
-function drawTextClamped(str, x, y, fontSize, bounds) {
-  let tw = measureFallbackText(str, fontSize);
-  let tx = Math.max(bounds.x + 2, Math.min(x, bounds.x + bounds.w - tw - 2));
-  let ty = Math.max(bounds.y + fontSize + 2, Math.min(y, bounds.y + bounds.h - 2));
-  drawFallbackText(str, tx, ty, fontSize);
 }
 
 // ========================================================
@@ -5116,7 +4794,6 @@ function kitStack(r, s, prng, vertical) {
   }
 }
 
-const KIT_MODULES = ['readout', 'ruler', 'spark', 'bars', 'matrix', 'code', 'dial', 'hex'];
 
 // One self-contained HUD module, picked to suit the rect's shape. Always
 // consumes the same PRNG draws for the pick, then the module's own.
@@ -5321,13 +4998,6 @@ function detailActive(layer, s) {
   return entry ? s < entry.threshold : true;
 }
 
-function getRenderMode(s) {
-  for (let z of RENDER_MODE_ZONES) {
-    if (s <= z.max) return z.mode;
-  }
-  return 'solid';
-}
-
 // Compute effective fill probability based on scale and user slider
 function getEffectiveFillProb(s) {
   let scaleFill = 0;
@@ -5336,24 +5006,6 @@ function getEffectiveFillProb(s) {
   else if (s < 0.75) scaleFill = 0.3 + (s - 0.55) / 0.20 * 0.4; // Solid transition
   else scaleFill = 0.7 + (s - 0.75) / 0.25 * 0.3; // Silhouette
   return scaleFill * state.geometry.fillProbability;
-}
-
-// Compute effective greeble amount from scale + slider
-function getEffectiveGreeble(s) {
-  // Scale-driven greeble: high at micro, low at macro
-  let scaleGreeble = 1.0 - s;
-  let effective = scaleGreeble * (state.detail.greebleAmount * 2.0);
-  let floor = state.detail.greebleAmount * 0.15;
-  return Math.max(floor, Math.min(1.0, effective));
-}
-
-// Compute effective text density
-function getEffectiveTextDensity(s) {
-  if (state.detail.textDensity !== 'auto') return state.detail.textDensity;
-  if (s < 0.15) return 'dense';
-  if (s < 0.30) return 'medium';
-  if (s < 0.50) return 'sparse';
-  return 'none';
 }
 
 // Check if an archetype is compatible with a cell's aspect ratio
@@ -5405,370 +5057,6 @@ function generateCircleElement(cx, cy, size, s, prng) {
     }
   } else {
     svgCircle(cx, cy, size);
-  }
-}
-
-function generateStarElement(cx, cy, size, s, prng) {
-  let r = size / 2;
-  if (s > 0.5 && prng.nextFloat() < 0.5) {
-    // Bold star or pinwheel
-    let points = prng.nextInt(4, Math.min(8, state.geometry.maxRadialArms));
-    drawStar(cx, cy, r, r * 0.35, points);
-  } else if (s < 0.3) {
-    // Sunburst or asterisk
-    let arms = prng.nextInt(6, Math.min(16, state.geometry.maxRadialArms));
-    if (prng.nextFloat() < 0.5) {
-      drawAsterisk(cx, cy, r, arms);
-    } else {
-      drawStarburst(cx, cy, r, r * 0.2, arms);
-    }
-  } else {
-    // Standard star
-    let points = prng.nextInt(4, Math.min(8, state.geometry.maxRadialArms));
-    let innerRatio = 0.3 + prng.nextFloat() * 0.25;
-    drawStar(cx, cy, r, r * innerRatio, points);
-  }
-}
-
-function generateEnclosureElement(x, y, w, h, s, prng) {
-  if (s < 0.45) {
-    let armLen = Math.min(w, h) * (0.08 + prng.nextFloat() * 0.08);
-    if (prng.nextFloat() < 0.6) {
-      drawCornerBrackets(x, y, w, h, armLen);
-    } else {
-      draw2CornerBrackets(x, y, w, h, armLen, prng);
-    }
-    if (s < 0.3 && prng.nextFloat() < 0.4) {
-      // Nested squares
-      let inset = Math.min(w, h) * 0.1;
-      svgRect(x + inset, y + inset, w - inset * 2, h - inset * 2);
-    }
-  } else {
-    // At macro: just a simple framing element
-    svgRect(x, y, w, h);
-  }
-}
-
-function generateGearElement(cx, cy, size, s, prng) {
-  let r = size / 2;
-  let teeth = prng.nextInt(6, Math.min(16, state.geometry.maxRadialArms));
-  if (s > 0.6) teeth = Math.max(6, Math.floor(teeth * 0.5));
-  let toothDepth = r * (0.1 + prng.nextFloat() * 0.1);
-  let innerR = r * (0.2 + prng.nextFloat() * 0.15);
-  if (prng.nextFloat() < 0.5) {
-    drawGearWheel(cx, cy, r, innerR, teeth, toothDepth);
-  } else {
-    drawSerratedBadge(cx, cy, r, r * (0.75 + prng.nextFloat() * 0.15), teeth);
-    svgCircle(cx, cy, innerR * 2);
-  }
-}
-
-function generateConnectorElement(x, y, w, h, s, prng) {
-  if (s < 0.3 && prng.nextFloat() < 0.5) {
-    // Dashed line with ticks
-    let mid = y + h / 2;
-    drawDashedLine(x, mid, x + w, mid, w * 0.08, w * 0.04);
-    if (detailActive('tickMarks', s)) {
-      let count = prng.nextInt(3, 8);
-      let step = w / (count + 1);
-      for (let i = 1; i <= count; i++) {
-        svgLine(x + step * i, mid - h * 0.1, x + step * i, mid + h * 0.1);
-      }
-    }
-  } else if (s < 0.5) {
-    // Segmented bar
-    let segments = prng.nextInt(5, 12);
-    let fillRatio = prng.nextFloat();
-    drawSegmentedBar(x, y + h * 0.3, w, h * 0.4, segments, fillRatio, prng);
-  } else {
-    // Bead chain
-    let count = prng.nextInt(3, 6);
-    let step = w / (count - 1 || 1);
-    for (let i = 0; i < count; i++) {
-      let bx = x + step * i;
-      svgCircle(bx, y + h / 2, Math.min(w, h) * 0.08);
-      if (i < count - 1) svgLine(bx + Math.min(w, h) * 0.04, y + h / 2, bx + step - Math.min(w, h) * 0.04, y + h / 2);
-    }
-  }
-}
-
-function generateGridElement(x, y, w, h, s, prng) {
-  if (s < 0.25) {
-    // Dense dot grid or pixel block
-    if (prng.nextFloat() < 0.5) {
-      let cols = prng.nextInt(4, 8);
-      let rows = prng.nextInt(4, 8);
-      drawDotGrid(x, y, w, h, cols, rows);
-    } else {
-      // Crosshatch
-      let spacing = Math.min(w, h) / prng.nextInt(4, 8);
-      drawCrosshatchGrid(x, y, w, h, spacing);
-    }
-  } else if (s < 0.5) {
-    // Parallel lines
-    let count = prng.nextInt(3, 6);
-    drawParallelLines(x, y, w, h, count);
-  } else {
-    // Sparse dot ring
-    let cx = x + w / 2, cy = y + h / 2;
-    let r = Math.min(w, h) * 0.35;
-    let count = prng.nextInt(5, 8);
-    for (let i = 0; i < count; i++) {
-      let a = (i / count) * TWO_PI;
-      svgPoint(cx + r * cos(a), cy + r * sin(a));
-    }
-  }
-}
-
-// ---- Globe/Sphere Family ----
-function generateGlobeElement(cx, cy, size, s, prng) {
-  let r = size / 2;
-  let choice = prng.nextFloat();
-  if (choice < 0.3 && s < 0.5) {
-    // Wireframe sphere — latitude + longitude lines
-    svgCircle(cx, cy, size);
-    let latCount = prng.nextInt(3, 6);
-    for (let i = 1; i < latCount; i++) {
-      let t = i / latCount;
-      let ew = r * Math.sin(t * PI);
-      let ey = cy - r + size * t;
-      svgEllipse(cx, cy - r * cos(t * PI), ew * 2, r * 0.15 * 2);
-    }
-    // Longitude arcs (2-3 vertical ellipses)
-    let lonCount = prng.nextInt(2, 3);
-    for (let i = 0; i < lonCount; i++) {
-      let squeeze = 0.3 + (i / lonCount) * 0.5;
-      svgEllipse(cx, cy, r * squeeze * 2, size);
-    }
-  } else if (choice < 0.5) {
-    // Sphere with horizontal stripes
-    svgCircle(cx, cy, size);
-    let stripes = s < 0.4 ? prng.nextInt(4, 7) : prng.nextInt(2, 3);
-    for (let i = 1; i < stripes; i++) {
-      let t = i / stripes;
-      let sy = cy - r + size * t;
-      let hw = Math.sqrt(r * r - (sy - cy) * (sy - cy));
-      svgLine(cx - hw, sy, cx + hw, sy);
-    }
-  } else if (choice < 0.7) {
-    // Eye-globe
-    svgEllipse(cx, cy, size, size * 0.55);
-    svgCircle(cx, cy, size * 0.3);
-    svgPoint(cx, cy);
-    if (s < 0.4) {
-      // Iris lines
-      let irisR = size * 0.15;
-      let count = prng.nextInt(6, 10);
-      for (let i = 0; i < count; i++) {
-        let a = (i / count) * TWO_PI;
-        svgLine(cx + irisR * 0.5 * cos(a), cy + irisR * 0.5 * sin(a),
-                cx + irisR * cos(a), cy + irisR * sin(a));
-      }
-    }
-  } else if (choice < 0.78) {
-    // Half-globe
-    svgArc(cx, cy, size, size, PI, TWO_PI);
-    svgLine(cx - r, cy, cx + r, cy);
-    let stripes = s < 0.5 ? prng.nextInt(2, 4) : 1;
-    for (let i = 1; i <= stripes; i++) {
-      let t = i / (stripes + 1);
-      let arcR = r * t;
-      svgArc(cx, cy, arcR * 2, arcR * 2, PI, TWO_PI);
-    }
-  } else if (choice < 0.84) {
-    // NEW: Geodesic sphere — triangulated surface
-    svgCircle(cx, cy, size);
-    let subdivisions = s < 0.3 ? 3 : 2;
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.35);
-    // Generate icosahedron-like triangular grid within circle
-    for (let ring = 1; ring <= subdivisions + 1; ring++) {
-      let ringR = r * ring / (subdivisions + 1.5);
-      let pts = 5 + ring;
-      let offset = ring * 0.3;
-      for (let j = 0; j < pts; j++) {
-        let a1 = offset + (j / pts) * TWO_PI;
-        let a2 = offset + ((j + 1) / pts) * TWO_PI;
-        svgLine(cx + ringR * cos(a1), cy + ringR * sin(a1), cx + ringR * cos(a2), cy + ringR * sin(a2));
-        // Radial connections to inner ring
-        if (ring > 1) {
-          let innerR = r * (ring - 1) / (subdivisions + 1.5);
-          let innerPts = 5 + ring - 1;
-          let innerA = (ring - 1) * 0.3 + (j / innerPts) * TWO_PI;
-          svgLine(cx + ringR * cos(a1), cy + ringR * sin(a1), cx + innerR * cos(innerA), cy + innerR * sin(innerA));
-        }
-      }
-    }
-    svgPoint(cx, cy); // center vertex
-  } else if (choice < 0.89) {
-    // NEW: Torus / ring world — donut shape with mesh lines
-    let torusRmaj = r * 0.65; // major radius (center of tube to center of torus)
-    let torusRmin = r * 0.3;  // minor radius (tube thickness)
-    let ringSegs = s < 0.3 ? 20 : 12;
-    let tubeSegs = s < 0.3 ? 8 : 5;
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-    // Draw tube cross-section rings around the torus
-    for (let i = 0; i < ringSegs; i++) {
-      let a = (i / ringSegs) * TWO_PI;
-      let tcx = cx + torusRmaj * cos(a);
-      let tcy = cy + torusRmaj * sin(a) * 0.35; // flatten for 3/4 view
-      let visible = sin(a) > -0.3; // hide back portions
-      if (visible) {
-        svgEllipse(tcx, tcy, torusRmin * 2 * 0.4, torusRmin * 2);
-      }
-    }
-    // Outer and inner edge curves
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.6);
-    svgEllipse(cx, cy, (torusRmaj + torusRmin) * 2, (torusRmaj + torusRmin) * 2 * 0.35);
-    svgEllipse(cx, cy, (torusRmaj - torusRmin) * 2, (torusRmaj - torusRmin) * 2 * 0.35);
-  } else if (choice < 0.94) {
-    // NEW: Stacked parallax layers — isometric disc stack
-    let layerCount = prng.nextInt(3, 5);
-    let layerGap = size * 0.12;
-    let baseW = r * 1.4;
-    for (let i = 0; i < layerCount; i++) {
-      let ly = cy + (i - layerCount / 2) * layerGap;
-      let lw = baseW * (1 - Math.abs(i - layerCount / 2) / layerCount * 0.4);
-      let lh = lw * 0.25;
-      svgSetStrokeWeight(state.geometry.strokeWeight * (0.3 + (layerCount - i) * 0.1));
-      svgEllipse(cx, ly, lw * 2, lh * 2);
-      // Internal detail lines on each disc
-      if (s < 0.4 && i < layerCount - 1) {
-        svgSetStrokeWeight(state.geometry.strokeWeight * 0.15);
-        svgLine(cx - lw * 0.6, ly, cx + lw * 0.6, ly);
-      }
-    }
-  } else {
-    // NEW: Scanning globe — scan line reveals detail
-    svgCircle(cx, cy, size);
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.2);
-    // Sparse latitude lines (always drawn, represent "unscanned")
-    for (let i = 1; i < 5; i++) {
-      let t = i / 5;
-      let sy = cy - r + size * t;
-      let hw = Math.sqrt(Math.max(0, r * r - (sy - cy) * (sy - cy)));
-      drawDashedLine(cx - hw, sy, cx + hw, sy, 2, 4);
-    }
-    // Scan line position (animated)
-    let scanPos = 0.5; // default center
-    if (animCtx && _cellAnim) {
-      scanPos = anim.sweep(animCtx.frameIndex, animCtx.frameCount, animCtx.frameCount, animCtx.speedMul, _cellAnim.phaseOffset);
-    }
-    let scanY = cy - r + size * scanPos;
-    // Bright scan line
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.8);
-    let scanHW = Math.sqrt(Math.max(0, r * r - (scanY - cy) * (scanY - cy)));
-    svgLine(cx - scanHW, scanY, cx + scanHW, scanY);
-    // Detailed region near scan line
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-    let detailRange = r * 0.25;
-    for (let i = 1; i <= 3; i++) {
-      let dy = scanY + (i - 1.5) * detailRange * 0.5;
-      if (dy < cy - r || dy > cy + r) continue;
-      let dhw = Math.sqrt(Math.max(0, r * r - (dy - cy) * (dy - cy)));
-      svgLine(cx - dhw, dy, cx + dhw, dy);
-    }
-    // Longitude arcs in scanned region
-    if (s < 0.4) {
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.25);
-      for (let i = 0; i < 2; i++) {
-        let squeeze = 0.3 + i * 0.3;
-        svgEllipse(cx, cy, r * squeeze * 2, size);
-      }
-    }
-  }
-}
-
-// ---- Hourglass/Bowtie Family ----
-function generateHourglassElement(cx, cy, size, s, prng) {
-  let r = size / 2;
-  let choice = prng.nextFloat();
-  if (choice < 0.35) {
-    // Vertical hourglass
-    svgBeginShape();
-    svgVertex(cx - r, cy - r); svgVertex(cx + r, cy - r);
-    svgVertex(cx, cy);
-    svgVertex(cx + r, cy + r); svgVertex(cx - r, cy + r);
-    svgVertex(cx, cy);
-    svgEndShape(true);
-  } else if (choice < 0.6) {
-    // Horizontal bowtie
-    svgBeginShape();
-    svgVertex(cx - r, cy - r); svgVertex(cx - r, cy + r);
-    svgVertex(cx, cy);
-    svgVertex(cx + r, cy + r); svgVertex(cx + r, cy - r);
-    svgVertex(cx, cy);
-    svgEndShape(true);
-  } else if (choice < 0.75) {
-    // Diamond pinch
-    drawDiamond(cx, cy - r * 0.5, r * 0.5);
-    drawDiamond(cx, cy + r * 0.5, r * 0.5);
-    svgLine(cx, cy - r * 0.05, cx, cy + r * 0.05);
-  } else {
-    // Figure-8 chain
-    svgCircle(cx, cy - r * 0.45, r * 0.9);
-    svgCircle(cx, cy + r * 0.45, r * 0.9);
-  }
-  // Inner detail
-  if (detailActive('internalDetail', s) && prng.nextFloat() < 0.4) {
-    svgPoint(cx, cy);
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-    svgLine(cx - r * 0.2, cy, cx + r * 0.2, cy);
-    svgSetStrokeWeight(state.geometry.strokeWeight);
-  }
-}
-
-// ---- Organic/Biomorphic Family ----
-function generateOrganicElement(cx, cy, size, s, prng) {
-  let r = size / 2;
-  let choice = prng.nextFloat();
-  if (choice < 0.3) {
-    // Cellular cluster — irregular packed circles
-    let count = s < 0.5 ? prng.nextInt(4, 7) : prng.nextInt(2, 3);
-    for (let i = 0; i < count; i++) {
-      let a = prng.nextFloat() * TWO_PI;
-      let dist = prng.nextFloat() * r * 0.5;
-      let cr = r * (0.15 + prng.nextFloat() * 0.2);
-      svgCircle(cx + dist * cos(a), cy + dist * sin(a), cr * 2);
-    }
-  } else if (choice < 0.55) {
-    // Tendril/spider — curved arms from center
-    let arms = s < 0.6 ? prng.nextInt(4, 7) : prng.nextInt(3, 4);
-    svgCircle(cx, cy, r * 0.15);
-    for (let i = 0; i < arms; i++) {
-      let a = (i / arms) * TWO_PI + prng.nextFloat() * 0.3;
-      let endR = r * (0.6 + prng.nextFloat() * 0.35);
-      let midA = a + (prng.nextFloat() - 0.5) * 0.5;
-      let midR = endR * 0.55;
-      // Approximate curve with two line segments
-      svgBeginShape();
-      svgVertex(cx + r * 0.07 * cos(a), cy + r * 0.07 * sin(a));
-      svgVertex(cx + midR * cos(midA), cy + midR * sin(midA));
-      svgVertex(cx + endR * cos(a), cy + endR * sin(a));
-      svgEndShape(false);
-      if (prng.nextFloat() < 0.4) svgPoint(cx + endR * cos(a), cy + endR * sin(a));
-    }
-  } else if (choice < 0.75) {
-    // Molecule chain — connected nodes
-    let nodes = prng.nextInt(3, 5);
-    let prevX = cx - r * 0.4, prevY = cy;
-    for (let i = 0; i < nodes; i++) {
-      let nx = cx - r * 0.4 + (i / (nodes - 1)) * r * 0.8;
-      let ny = cy + (prng.nextFloat() - 0.5) * r * 0.6;
-      let nr = r * (0.08 + prng.nextFloat() * 0.08);
-      svgCircle(nx, ny, nr * 2);
-      if (i > 0) svgLine(prevX, prevY, nx, ny);
-      prevX = nx; prevY = ny;
-    }
-  } else {
-    // Sketch circle — wobbly circle approximation
-    let segs = prng.nextInt(12, 20);
-    svgBeginShape();
-    for (let i = 0; i <= segs; i++) {
-      let a = (i / segs) * TWO_PI;
-      let wobble = r * (0.85 + prng.nextFloat() * 0.3);
-      svgVertex(cx + wobble * cos(a), cy + wobble * sin(a));
-    }
-    svgEndShape(true);
   }
 }
 
@@ -5899,214 +5187,6 @@ function drawMiniQR(cx, cy, w2, h2OrPrng, maybePrng) {
       }
       if (shouldDraw) svgRect(x + cx2 * cellSz, y2 + ry * cellSz, cellSz * 0.8, cellSz * 0.8);
     }
-  }
-}
-
-function generateBarcodeElement(x, y, w, h, s, prng) {
-  let choice = prng.nextFloat();
-  let minDim = Math.min(w, h);
-
-  if (s < 0.35) {
-    if (choice < 0.35) {
-      // 1D barcode with text
-      drawBarcodeLines(x, y, w, h, prng.nextInt(15, 30), prng);
-      if (detailActive('secondaryText', s)) {
-        let code = prng.nextInt(0, 999999999).toString().padStart(9, '0');
-        let fontSize = Math.max(4, h * 0.12);
-        drawFallbackText(code, x + 2, y + h + fontSize, fontSize);
-      }
-    } else if (choice < 0.65) {
-      // QR code — uses full available area, any aspect ratio
-      drawQRCode(x, y, w, h, s < 0.15 ? 1.0 : 0.6, 0, prng);
-    } else {
-      // Data matrix
-      drawDataMatrix(x, y, w, h, s < 0.15 ? 1.0 : 0.6, prng);
-    }
-  } else if (s < 0.6) {
-    // Corrupted codes
-    if (choice < 0.4) {
-      // Corrupted 1D barcode
-      let barCount = prng.nextInt(10, 20);
-      let pos = 0;
-      for (let i = 0; i < barCount; i++) {
-        let barW = prng.nextFloat() * 3 + 0.5;
-        let gap = prng.nextFloat() * 3 + 0.5;
-        if (prng.nextFloat() < 0.2) gap += w * 0.05;
-        if (pos + barW > w) break;
-        let barH = h * (0.6 + prng.nextFloat() * 0.4);
-        svgLine(x + pos + barW / 2, y + (h - barH) / 2, x + pos + barW / 2, y + (h + barH) / 2);
-        pos += barW + gap;
-      }
-    } else if (choice < 0.7) {
-      // Corrupted QR — full area, any aspect ratio
-      let corruption = 0.15 + (s - 0.35) * 0.8;
-      drawQRCode(x, y, w, h, 0.5, corruption, prng);
-    } else {
-      // Corrupted data matrix
-      let corruption = 0.1 + (s - 0.35) * 0.6;
-      drawDataMatrix(x, y, w, h, 0.4, prng);
-      // Add corruption: random lines through it
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.8);
-      for (let i = 0; i < Math.round(corruption * 4); i++) {
-        let ly = y + prng.nextFloat() * h;
-        svgLine(x, ly, x + w * (0.3 + prng.nextFloat() * 0.7), ly);
-      }
-      svgSetStrokeWeight(state.geometry.strokeWeight);
-    }
-  } else {
-    // Abstract fragments at macro
-    if (choice < 0.5) {
-      // Few bold bars
-      let barCount = prng.nextInt(3, 6);
-      let barW = w / (barCount * 2);
-      for (let i = 0; i < barCount; i++) {
-        let bx = x + (i / barCount) * w + prng.nextFloat() * barW;
-        svgSetStrokeWeight(state.geometry.strokeWeight * (1 + prng.nextFloat()));
-        svgLine(bx, y, bx, y + h);
-      }
-      svgSetStrokeWeight(state.geometry.strokeWeight);
-    } else {
-      // Bold corrupted QR fragment — fills full area
-      svgSetStrokeWeight(state.geometry.strokeWeight * 1.2);
-      drawQRCode(x, y, w, h, 0.3, 0.5, prng);
-      svgSetStrokeWeight(state.geometry.strokeWeight);
-    }
-  }
-}
-
-// ---- Warning/Hazard Family ----
-function generateWarningElement(cx, cy, size, s, prng) {
-  let r = size / 2;
-  let choice = prng.nextFloat();
-  if (choice < 0.2) {
-    // Triangle with exclamation
-    drawTriangle(cx, cy, r);
-    svgLine(cx, cy - r * 0.25, cx, cy + r * 0.15);
-    svgPoint(cx, cy + r * 0.35);
-  } else if (choice < 0.35) {
-    // Radiation trefoil
-    for (let i = 0; i < 3; i++) {
-      let a = (i / 3) * TWO_PI - HALF_PI;
-      svgArc(cx, cy, r * 1.4, r * 1.4, a - 0.4, a + 0.4);
-    }
-    svgCircle(cx, cy, r * 0.25);
-  } else if (choice < 0.5) {
-    // Biohazard — interlocking arcs
-    for (let i = 0; i < 3; i++) {
-      let a = (i / 3) * TWO_PI - HALF_PI;
-      let px = cx + r * 0.3 * cos(a), py = cy + r * 0.3 * sin(a);
-      svgCircle(px, py, r * 0.6);
-    }
-    svgCircle(cx, cy, r * 0.15);
-  } else if (choice < 0.65) {
-    // Lightning bolt
-    svgBeginShape();
-    svgVertex(cx - r * 0.1, cy - r);
-    svgVertex(cx + r * 0.3, cy - r * 0.1);
-    svgVertex(cx, cy);
-    svgVertex(cx + r * 0.15, cy - r * 0.05);
-    svgVertex(cx - r * 0.2, cy + r);
-    svgVertex(cx - r * 0.05, cy + r * 0.1);
-    svgVertex(cx - r * 0.1, cy - r);
-    svgEndShape(false);
-  } else if (choice < 0.8) {
-    // Circular prohibition
-    svgCircle(cx, cy, size);
-    svgLine(cx - r * 0.7, cy + r * 0.7, cx + r * 0.7, cy - r * 0.7);
-    if (detailActive('internalDetail', s)) {
-      drawTriangle(cx, cy, r * 0.35);
-    }
-  } else {
-    // Alert beacon — radiating arcs
-    svgPoint(cx, cy + r * 0.3);
-    for (let i = 1; i <= 3; i++) {
-      let arcR = r * i * 0.25;
-      svgArc(cx, cy + r * 0.3, arcR * 2, arcR * 2, PI + 0.5, TWO_PI - 0.5);
-    }
-  }
-}
-
-// ---- Wireframe/Low-Poly Family ----
-function generateWireframeElement(cx, cy, size, s, prng) {
-  let r = size / 2;
-  let choice = prng.nextFloat();
-  if (choice < 0.35) {
-    // Wireframe cube (isometric)
-    let d = r * 0.7;
-    let ox = d * 0.5, oy = d * 0.3;
-    // Front face
-    svgRect(cx - d * 0.5, cy - d * 0.3, d, d * 0.8);
-    // Top face (parallelogram)
-    svgBeginShape();
-    svgVertex(cx - d * 0.5, cy - d * 0.3);
-    svgVertex(cx - d * 0.5 + ox, cy - d * 0.3 - oy);
-    svgVertex(cx + d * 0.5 + ox, cy - d * 0.3 - oy);
-    svgVertex(cx + d * 0.5, cy - d * 0.3);
-    svgEndShape(true);
-    // Right face (parallelogram)
-    svgBeginShape();
-    svgVertex(cx + d * 0.5, cy - d * 0.3);
-    svgVertex(cx + d * 0.5 + ox, cy - d * 0.3 - oy);
-    svgVertex(cx + d * 0.5 + ox, cy + d * 0.5 - oy);
-    svgVertex(cx + d * 0.5, cy + d * 0.5);
-    svgEndShape(true);
-  } else if (choice < 0.6) {
-    // Geodesic sphere — triangulated circle
-    svgCircle(cx, cy, size);
-    let verts = [];
-    let count = prng.nextInt(8, 14);
-    for (let i = 0; i < count; i++) {
-      let a = (i / count) * TWO_PI;
-      verts.push({ x: cx + r * cos(a), y: cy + r * sin(a) });
-    }
-    // Internal triangulation — connect every other vertex to center
-    for (let i = 0; i < count; i++) {
-      svgLine(verts[i].x, verts[i].y, verts[(i + 1) % count].x, verts[(i + 1) % count].y);
-      if (i % 2 === 0) svgLine(cx, cy, verts[i].x, verts[i].y);
-    }
-    // Mid-ring
-    if (detailActive('secondaryRings', s)) {
-      let midR = r * 0.5;
-      for (let i = 0; i < count; i += 2) {
-        let a = (i / count) * TWO_PI;
-        let na = ((i + 2) / count) * TWO_PI;
-        svgLine(cx + midR * cos(a), cy + midR * sin(a), cx + midR * cos(na), cy + midR * sin(na));
-      }
-    }
-  } else if (choice < 0.8) {
-    // Platonic solid (octahedron approximation)
-    drawDiamond(cx, cy, r);
-    // Internal structure
-    svgLine(cx - r, cy, cx + r, cy);
-    svgLine(cx, cy - r, cx, cy + r);
-    if (detailActive('internalDetail', s)) {
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-      // Hidden edges dashed
-      drawDashedLine(cx - r * 0.5, cy - r * 0.5, cx + r * 0.5, cy + r * 0.5, 3, 3);
-      drawDashedLine(cx + r * 0.5, cy - r * 0.5, cx - r * 0.5, cy + r * 0.5, 3, 3);
-      svgSetStrokeWeight(state.geometry.strokeWeight);
-    }
-  } else {
-    // Vertex-and-edge graph
-    let nodeCount = prng.nextInt(4, 8);
-    let nodes = [];
-    for (let i = 0; i < nodeCount; i++) {
-      let a = (i / nodeCount) * TWO_PI + prng.nextFloat() * 0.3;
-      let nr = r * (0.3 + prng.nextFloat() * 0.6);
-      nodes.push({ x: cx + nr * cos(a), y: cy + nr * sin(a) });
-    }
-    // Edges — connect nearby nodes
-    for (let i = 0; i < nodeCount; i++) {
-      for (let j = i + 1; j < nodeCount; j++) {
-        let dx = nodes[i].x - nodes[j].x, dy = nodes[i].y - nodes[j].y;
-        let dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < r * 1.0 && prng.nextFloat() < 0.6) {
-          svgLine(nodes[i].x, nodes[i].y, nodes[j].x, nodes[j].y);
-        }
-      }
-    }
-    // Node dots
-    for (let n of nodes) svgCircle(n.x, n.y, 4);
   }
 }
 
@@ -6331,8 +5411,6 @@ function _radDashArc(cx, cy, r, a0, a1, dashes, duty) {
     svgArc(cx, cy, r * 2, r * 2, s0, s0 + (a1 - a0) / dashes * duty);
   }
 }
-// Text width check at a size (measure consumes the font roll; call it unconditionally per layout).
-function _radFits(str, size, maxW) { return measureFallbackText(String(str), size) <= maxW; }
 
 // Callout from a target point with the leader along (dx, dy). Tries the four
 // mirrored placements and takes the first whose label box stays inside `b`
@@ -11661,67 +10739,6 @@ function composeAsciiArt(rect, s, prng) {
 
 // ---- Celestial Body Icons (vector approximations of unicode symbols) ----
 
-// ✦ 4-pointed star (U+2726) — sharp diamond star
-function drawStarIcon4(cx, cy, size) {
-  let s2 = size / 2, s4 = size / 5;
-  svgBeginShape();
-  svgVertex(cx, cy - s2); svgVertex(cx + s4, cy - s4);
-  svgVertex(cx + s2, cy); svgVertex(cx + s4, cy + s4);
-  svgVertex(cx, cy + s2); svgVertex(cx - s4, cy + s4);
-  svgVertex(cx - s2, cy); svgVertex(cx - s4, cy - s4);
-  svgEndShape(true);
-}
-
-// ✶ 6-pointed star (U+2736)
-function drawStarIcon6(cx, cy, size) {
-  drawStar(cx, cy, size / 2, size / 5, 6);
-}
-
-// ✸ 8-pointed star (U+2738)
-function drawStarIcon8(cx, cy, size) {
-  drawStar(cx, cy, size / 2, size / 4, 8);
-}
-
-// ⋆ small star (U+22C6) — simple 5-point
-function drawStarIcon5(cx, cy, size) {
-  drawStar(cx, cy, size / 2, size / 5, 5);
-}
-
-// ✧ outlined 4-point (U+2727) — thin diamond cross
-function drawStarIconOpen(cx, cy, size) {
-  let s2 = size / 2;
-  svgLine(cx, cy - s2, cx, cy + s2);
-  svgLine(cx - s2, cy, cx + s2, cy);
-  svgLine(cx, cy - s2 * 0.7, cx + s2 * 0.7, cy);
-  svgLine(cx + s2 * 0.7, cy, cx, cy + s2 * 0.7);
-  svgLine(cx, cy + s2 * 0.7, cx - s2 * 0.7, cy);
-  svgLine(cx - s2 * 0.7, cy, cx, cy - s2 * 0.7);
-}
-
-// ⊹ dot with rays (U+22B9)
-function drawStarIconRays(cx, cy, size) {
-  let r = size / 2;
-  svgPoint(cx, cy);
-  for (let i = 0; i < 4; i++) {
-    let a = (i / 4) * TWO_PI + PI / 4;
-    svgLine(cx + r * 0.3 * cos(a), cy + r * 0.3 * sin(a),
-            cx + r * cos(a), cy + r * sin(a));
-  }
-}
-
-// Draw a random star marker based on magnitude
-function drawStarMarker(cx, cy, size, magnitude, prng) {
-  let icons = magnitude < 0.12
-    ? [drawStarIcon8, drawStarIcon6, drawStarIconOpen]   // brightest — elaborate
-    : magnitude < 0.3
-    ? [drawStarIcon4, drawStarIcon5, drawStarIconRays]   // medium bright
-    : magnitude < 0.5
-    ? [drawStarIcon4, drawStarIcon5]                      // medium
-    : null;                                                // faint = dot
-  if (!icons) { svgPoint(cx, cy); return; }
-  prng.pick(icons)(cx, cy, size);
-}
-
 // ☉ Sun/central star — circle with dot and optional rays
 function drawSunIcon(cx, cy, size) {
   svgCircle(cx, cy, size);
@@ -11734,27 +10751,6 @@ function drawSunIcon(cx, cy, size) {
   }
 }
 
-// ♃ Jupiter-like — circle with horizontal band
-function drawGasGiantIcon(cx, cy, size) {
-  svgCircle(cx, cy, size);
-  let r = size / 2;
-  svgLine(cx - r * 0.8, cy - r * 0.3, cx + r * 0.8, cy - r * 0.3);
-  svgLine(cx - r * 0.9, cy + r * 0.15, cx + r * 0.9, cy + r * 0.15);
-}
-
-// ♄ Ringed planet — circle with elliptical ring
-function drawRingedPlanetIcon(cx, cy, size) {
-  svgCircle(cx, cy, size * 0.7);
-  svgEllipse(cx, cy, size * 1.6, size * 0.5);
-}
-
-// ☾ Crescent moon
-function drawMoonIcon(cx, cy, size) {
-  let r = size / 2;
-  svgArc(cx, cy, size, size, -HALF_PI - 0.3, HALF_PI + 0.3);
-  svgArc(cx + r * 0.35, cy, size * 0.7, size * 0.85, -HALF_PI - 0.3, HALF_PI + 0.3);
-}
-
 // ☄ Comet — dot with trailing lines
 function drawCometIcon(cx, cy, size, angle) {
   angle = angle || PI * 0.75;
@@ -11764,21 +10760,6 @@ function drawCometIcon(cx, cy, size, angle) {
   svgLine(cx, cy, cx + tailLen * cos(angle), cy + tailLen * sin(angle));
   svgLine(cx, cy, cx + tailLen * 0.8 * cos(angle + 0.15), cy + tailLen * 0.8 * sin(angle + 0.15));
   svgLine(cx, cy, cx + tailLen * 0.7 * cos(angle - 0.12), cy + tailLen * 0.7 * sin(angle - 0.12));
-}
-
-// ◌ Empty orbit marker — dashed circle
-function drawOrbitMarker(cx, cy, size) {
-  drawDashedRing(cx, cy, size / 2, 8);
-}
-
-// Pick a random planet icon
-function drawPlanetIcon(cx, cy, size, prng) {
-  let choice = prng.nextFloat();
-  if (choice < 0.3) svgCircle(cx, cy, size); // simple solid
-  else if (choice < 0.5) drawGasGiantIcon(cx, cy, size);
-  else if (choice < 0.7) drawRingedPlanetIcon(cx, cy, size);
-  else if (choice < 0.85) { svgCircle(cx, cy, size); svgPoint(cx, cy); } // with center dot
-  else drawOrbitMarker(cx, cy, size); // empty/dwarf
 }
 
 // ---- Archetype: Sigil (rotational icon with shaped arms) ----
@@ -21863,10 +20844,6 @@ function setMode(mode, keepOverrides) {
 
 function toggleBorderParams() {
   document.getElementById('border-params').style.display = state.bordersEnabled ? 'block' : 'none';
-}
-
-function toggleTreatmentIntensity() {
-  document.getElementById('treatment-intensity-wrap').style.display = state.treatment !== 'none' ? 'block' : 'none';
 }
 
 function buildArchetypeList() {
