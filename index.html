@@ -50,6 +50,8 @@
     }
     #sidebar .subtitle { font-size: 0.8em; color: #5a6a80; margin-bottom: 16px; }
     .control-group { margin-bottom: 14px; }
+    .plot-stats { font-family: monospace; font-size: 0.78em; line-height: 1.5; color: #9fe8c4; background: rgba(0,255,136,0.05); border: 1px solid rgba(0,255,136,0.18); border-radius: 4px; padding: 6px 8px; margin: 2px 0 10px; }
+    .plot-stats b { color: #00ff88; font-weight: 600; }
     .control-group label { display: block; font-size: 0.85em; color: #00e5ff; margin-bottom: 3px; }
     .control-group .hint { font-size: 0.72em; color: #4a5568; margin-top: 2px; }
     input[type="number"], input[type="text"], select {
@@ -816,75 +818,6 @@
         <input type="color" id="fg-color" value="#d0d8e8" onchange="updateState('fgColor', this.value); document.getElementById('fg-color-val').textContent=this.value">
         <span class="color-value" id="fg-color-val">#d0d8e8</span>
       </div>
-      <hr class="divider">
-      <div class="hint" style="margin-bottom:4px">Plotter Settings</div>
-      <div class="control-group">
-        <label>Min Text Size</label>
-        <div class="row">
-          <input type="number" id="plotter-min-text" min="0.1" max="20" step="0.1" value="2"
-            onchange="updateState('plotter.minTextSize', +this.value)">
-          <select id="plotter-min-text-unit" style="width:60px" onchange="updateState('plotter.minTextSizeUnit', this.value)">
-            <option value="mm" selected>mm</option>
-            <option value="in">in</option>
-            <option value="px">px</option>
-          </select>
-        </div>
-      </div>
-      <div class="check-row">
-        <input type="checkbox" id="plotter-reg-marks" onchange="updateState('plotter.registrationMarks', this.checked)">
-        <label for="plotter-reg-marks">Registration / Crop Marks</label>
-      </div>
-      <div class="check-row">
-        <input type="checkbox" id="plotter-layers" onchange="updateState('plotter.layers.enabled', this.checked)">
-        <label for="plotter-layers">Enable Layers</label>
-      </div>
-      <div class="check-row" data-tip="SVG export flattens curves, clips to the clip box, joins connected strokes, drops duplicates and leaves out the background rect (plotters trace it as a frame). Off = raw export.">
-        <input type="checkbox" id="plotter-plot-safe" checked onchange="updateState('plotter.plotSafe', this.checked)">
-        <label for="plotter-plot-safe">Plot-Safe SVG</label>
-      </div>
-      <div class="check-row" data-tip="Plot-safe clip box: on = inside the margins, off = the page edge. Cell borders may use the inner half of the margin; registration marks clip to the page edge.">
-        <input type="checkbox" id="plotter-clip-margins" checked onchange="updateState('plotter.clipToMargins', this.checked)">
-        <label for="plotter-clip-margins">Clip to Margins</label>
-      </div>
-      <hr class="divider">
-      <div class="hint" style="margin-bottom:4px">Hatch Fill</div>
-      <div class="check-row">
-        <input type="checkbox" id="hatch-enabled" onchange="updateState('plotter.hatch.enabled', this.checked)">
-        <label for="hatch-enabled">Enable Hatch Fill</label>
-      </div>
-      <div class="control-group">
-        <label>Hatch Angle</label>
-        <div class="slider-row">
-          <input type="range" id="hatch-angle" min="0" max="180" step="1" value="45"
-            oninput="updateState('plotter.hatch.angle', +this.value); syncVal(this, 'hatch-angle-val')">
-          <span class="slider-val" id="hatch-angle-val">45</span>
-        </div>
-      </div>
-      <div class="row">
-        <div class="control-group">
-          <label>Pen ⌀ (mm)</label>
-          <input type="number" id="hatch-pen-dia" min="0.05" max="5" step="0.05" value="0.3"
-            onchange="updateState('plotter.hatch.penDiameter', +this.value)">
-        </div>
-        <div class="control-group">
-          <label>Spacing (px)</label>
-          <input type="number" id="hatch-spacing" min="0" max="20" step="0.5" value="0"
-            onchange="updateState('plotter.hatch.spacing', +this.value)">
-        </div>
-      </div>
-      <div class="check-row">
-        <input type="checkbox" id="hatch-gradient" onchange="updateState('plotter.hatch.gradient', this.checked)">
-        <label for="hatch-gradient">Gradient Fill</label>
-      </div>
-      <div class="control-group">
-        <label>Gradient Range</label>
-        <div class="slider-row">
-          <input type="range" id="hatch-grad-range" min="0" max="1" step="0.05" value="0.5"
-            oninput="updateState('plotter.hatch.gradientRange', +this.value); syncVal(this, 'hatch-grad-range-val')">
-          <span class="slider-val" id="hatch-grad-range-val">0.50</span>
-        </div>
-      </div>
-      <div class="hint">0 spacing = auto from pen diameter. Hatch lines are plotter-native fills.</div>
     </details>
 
     <!-- ===== BORDERS ===== -->
@@ -1155,9 +1088,112 @@
 
     <!-- ===== AESTHETIC TREATMENT ===== -->
     <details class="collapsible">
-      <summary>V1835 <label class="rand-toggle"><input type="checkbox" id="rand-treatment" checked> rand</label></summary>
+      <summary>Treatments <label class="rand-toggle"><input type="checkbox" id="rand-treatment" checked> rand</label></summary>
       <div id="treatment-stack-container"></div>
-      <div class="hint">Enable vibes and drag to reorder. Effects stack in order.</div>
+      <div class="hint">Enable treatments and drag to reorder. They apply in order.</div>
+    </details>
+
+    <!-- ===== PLOTTER ===== -->
+    <details class="collapsible" open>
+      <summary>Plotter</summary>
+      <div id="plot-stats" class="plot-stats" data-tip="From the plot-safe geometry: ink drawn, pen-up travel and pen lifts, with a time estimate from the speeds below.">—</div>
+      <div class="check-row" data-tip="Show on the canvas exactly what will plot: clipped, flattened, ordered strokes at the pen's width.">
+        <input type="checkbox" id="plotter-preview" onchange="updateState('plotter.previewPlot', this.checked); refreshPlotView()">
+        <label for="plotter-preview">Plot Preview</label>
+      </div>
+      <div class="check-row">
+        <input type="checkbox" id="plotter-preview-travel" onchange="updateState('plotter.previewTravel', this.checked); refreshPlotView()">
+        <label for="plotter-preview-travel">Show Pen-Up Travel</label>
+      </div>
+      <div class="check-row" data-tip="Plot-safe SVG: strokes ordered nearest-neighbour from the plotter's home, reversed where that's shorter, and joined where they touch (what vpype linesort + linemerge do).">
+        <input type="checkbox" id="plotter-optimize" checked onchange="updateState('plotter.optimizeOrder', this.checked); refreshPlotView()">
+        <label for="plotter-optimize">Optimize Path Order</label>
+      </div>
+      <div class="row">
+        <div class="control-group">
+          <label data-tip="Pen-down drawing speed, for the time estimate.">Draw mm/s</label>
+          <input type="number" id="plotter-speed-draw" min="1" max="500" step="1" value="25"
+            onchange="updateState('plotter.speed.draw', Math.max(1, +this.value)); refreshPlotView()">
+        </div>
+        <div class="control-group">
+          <label data-tip="Pen-up travel speed.">Travel mm/s</label>
+          <input type="number" id="plotter-speed-travel" min="1" max="1000" step="1" value="80"
+            onchange="updateState('plotter.speed.travel', Math.max(1, +this.value)); refreshPlotView()">
+        </div>
+        <div class="control-group">
+          <label data-tip="Seconds per pen lift + drop.">Lift s</label>
+          <input type="number" id="plotter-speed-lift" min="0" max="5" step="0.05" value="0.3"
+            onchange="updateState('plotter.speed.lift', Math.max(0, +this.value)); refreshPlotView()">
+        </div>
+      </div>
+      <hr class="divider">
+      <div class="control-group">
+        <label>Min Text Size</label>
+        <div class="row">
+          <input type="number" id="plotter-min-text" min="0.1" max="20" step="0.1" value="2"
+            onchange="updateState('plotter.minTextSize', +this.value)">
+          <select id="plotter-min-text-unit" style="width:60px" onchange="updateState('plotter.minTextSizeUnit', this.value)">
+            <option value="mm" selected>mm</option>
+            <option value="in">in</option>
+            <option value="px">px</option>
+          </select>
+        </div>
+      </div>
+      <div class="check-row">
+        <input type="checkbox" id="plotter-reg-marks" onchange="updateState('plotter.registrationMarks', this.checked)">
+        <label for="plotter-reg-marks">Registration / Crop Marks</label>
+      </div>
+      <div class="check-row">
+        <input type="checkbox" id="plotter-layers" onchange="updateState('plotter.layers.enabled', this.checked)">
+        <label for="plotter-layers">Enable Layers</label>
+      </div>
+      <div class="check-row" data-tip="SVG export flattens curves, clips to the clip box, joins connected strokes, drops duplicates and leaves out the background rect (plotters trace it as a frame). Off = raw export.">
+        <input type="checkbox" id="plotter-plot-safe" checked onchange="updateState('plotter.plotSafe', this.checked)">
+        <label for="plotter-plot-safe">Plot-Safe SVG</label>
+      </div>
+      <div class="check-row" data-tip="Plot-safe clip box: on = inside the margins, off = the page edge. Cell borders may use the inner half of the margin; registration marks clip to the page edge.">
+        <input type="checkbox" id="plotter-clip-margins" checked onchange="updateState('plotter.clipToMargins', this.checked)">
+        <label for="plotter-clip-margins">Clip to Margins</label>
+      </div>
+      <hr class="divider">
+      <div class="hint" style="margin-bottom:4px">Hatch Fill</div>
+      <div class="check-row">
+        <input type="checkbox" id="hatch-enabled" onchange="updateState('plotter.hatch.enabled', this.checked)">
+        <label for="hatch-enabled">Enable Hatch Fill</label>
+      </div>
+      <div class="control-group">
+        <label>Hatch Angle</label>
+        <div class="slider-row">
+          <input type="range" id="hatch-angle" min="0" max="180" step="1" value="45"
+            oninput="updateState('plotter.hatch.angle', +this.value); syncVal(this, 'hatch-angle-val')">
+          <span class="slider-val" id="hatch-angle-val">45</span>
+        </div>
+      </div>
+      <div class="row">
+        <div class="control-group">
+          <label>Pen ⌀ (mm)</label>
+          <input type="number" id="hatch-pen-dia" min="0.05" max="5" step="0.05" value="0.3"
+            onchange="updateState('plotter.hatch.penDiameter', +this.value)">
+        </div>
+        <div class="control-group">
+          <label>Spacing (px)</label>
+          <input type="number" id="hatch-spacing" min="0" max="20" step="0.5" value="0"
+            onchange="updateState('plotter.hatch.spacing', +this.value)">
+        </div>
+      </div>
+      <div class="check-row">
+        <input type="checkbox" id="hatch-gradient" onchange="updateState('plotter.hatch.gradient', this.checked)">
+        <label for="hatch-gradient">Gradient Fill</label>
+      </div>
+      <div class="control-group">
+        <label>Gradient Range</label>
+        <div class="slider-row">
+          <input type="range" id="hatch-grad-range" min="0" max="1" step="0.05" value="0.5"
+            oninput="updateState('plotter.hatch.gradientRange', +this.value); syncVal(this, 'hatch-grad-range-val')">
+          <span class="slider-val" id="hatch-grad-range-val">0.50</span>
+        </div>
+      </div>
+      <div class="hint">0 spacing = auto from pen diameter. Hatch lines are plotter-native fills.</div>
     </details>
 
     <!-- ===== EXPORT ===== -->
@@ -1193,7 +1229,7 @@
       </div>
       <div id="path-stats" class="hint" style="font-family:monospace;"></div>
       <div class="hint">Keyboard: Enter=Generate, R=Randomize, S=SVG, P=PNG, Space=Play/Pause, ←→=Step Frame</div>
-      <div class="hint">For travel optimization, process SVG through vpype.</div>
+      <div class="hint">Plot-safe SVG is clipped, flattened and path-ordered for the plotter; see the Plotter section.</div>
     </details>
 
     <!-- ===== PRESETS ===== -->
@@ -2622,96 +2658,21 @@ const svgRec = {
   // where strokes connect, duplicates dropped, fill none, and sorted into
   // Inkscape layers when layers are enabled.
   _serializePlotSafe() {
-    let W = this.width, H = this.height, m = state.margin, p = state.plotter;
-    let page = [0, 0, W, H];
-    let content = p.clipToMargins ? [m.left, m.top, W - m.right, H - m.bottom] : page;
-    // Cell borders are drawn outward into the margin by design: let them use
-    // the inner half of it, but never reach the paper edge.
-    let borderBox = p.clipToMargins ? [m.left / 2, m.top / 2, W - m.right / 2, H - m.bottom / 2] : page;
-    let layered = p.layers.enabled;
-    let buckets = new Map(); // layer key -> Map(cell id -> strokes)
-    let seen = new Set();
+    let P = plotSafeStrokes(this);
     let r = this._r;
-
-    const classify = ids => {
-      if (ids.some(id => id === 'registration-marks' || id === 'pen-reference')) return 'registration';
-      if (ids.includes('otf-text')) return 'macroText';
-      if (ids.some(id => id === 'font-text' || id === 'micro-text')) return 'microText';
-      if (ids.some(id => id === 'border' || id === 'anim-border')) return 'borders';
-      if (ids.some(id => id === 'detail' || id.startsWith('treatment-') || id.startsWith('clone-'))) return 'details';
-      return 'mainContent';
-    };
-
-    const add = (layer, cell, stroke, sw, pts) => {
-      let key = pts.map(q => r(q[0]) + ',' + r(q[1])).join(' ');
-      if (seen.has(key)) return;
-      seen.add(key);
-      let lk = layered ? layer : 'all';
-      if (!buckets.has(lk)) buckets.set(lk, new Map());
-      let cells = buckets.get(lk);
-      if (!cells.has(cell)) cells.set(cell, []);
-      let list = cells.get(cell);
-      let prev = list[list.length - 1];
-      if (prev && prev.stroke === stroke && prev.sw === sw) {
-        let end = prev.pts[prev.pts.length - 1];
-        if (Math.abs(end[0] - pts[0][0]) < 0.01 && Math.abs(end[1] - pts[0][1]) < 0.01) {
-          for (let k = 1; k < pts.length; k++) prev.pts.push(pts[k]);
-          return;
-        }
-      }
-      list.push({ stroke, sw, pts });
-    };
-
-    const walk = (nodes, M, ids) => {
-      for (let n of nodes) {
-        if (n.children) {
-          let M2 = n.transform ? _matMul(M, parseTransformMatrix(n.transform)) : M;
-          walk(n.children, M2, n.id ? ids.concat(n.id) : ids);
-        } else if (n.d && n.stroke && n.stroke !== 'none') {
-          let layer = classify(ids);
-          let rect = layer === 'registration' ? page : layer === 'borders' ? borderBox : content;
-          let cell = ids.find(id => /^cell-\d+$/.test(id)) || '';
-          for (let poly of parsePathToPolylines(n.d)) {
-            let pts = poly.map(q => [M[0]*q[0] + M[2]*q[1] + M[4], M[1]*q[0] + M[3]*q[1] + M[5]])
-                          .filter(q => Number.isFinite(q[0]) && Number.isFinite(q[1]));
-            if (pts.length < 2) continue;
-            for (let piece of clipPolylineToRect(pts, rect)) add(layer, cell, n.stroke, n.strokeWidth, piece);
-          }
-        }
-      }
-    };
-    let I = [1, 0, 0, 1, 0, 0];
-    walk(this.groups, I, []);
-    walk(this.paths, I, []);
-
-    const emitCells = (cells, indent) => {
-      let out = '';
-      for (let [cell, list] of cells) {
-        let inner = cell ? indent + '  ' : indent;
-        if (cell) out += `${indent}<g id="${cell}">\n`;
-        for (let s of list) {
-          let d = s.pts.map((q, k) => `${k ? 'L' : 'M'}${r(q[0])} ${r(q[1])}`).join('');
-          out += `${inner}<path d="${d}" stroke="${s.stroke}" stroke-width="${r(s.sw)}"/>\n`;
-        }
-        if (cell) out += `${indent}</g>\n`;
-      }
-      return out;
-    };
-
+    let emit = (strokes, indent) => strokes.map(s =>
+      `${indent}<path d="${s.pts.map((q, k) => `${k ? 'L' : 'M'}${r(q[0])} ${r(q[1])}`).join('')}" stroke="${s.stroke}" stroke-width="${r(s.sw)}"/>\n`).join('');
     let out = '';
-    if (!layered) {
+    if (!P.layered) {
       out += `  <g id="composition" fill="none">\n`;
-      if (buckets.has('all')) out += emitCells(buckets.get('all'), '    ');
-      out += `  </g>\n`;
-      return out;
+      if (P.layers.length) out += emit(P.layers[0].strokes, '    ');
+      return out + `  </g>\n`;
     }
-    let order = ['mainContent', 'borders', 'macroText', 'microText', 'details', 'registration'];
-    order.forEach((lk, idx) => {
-      if (!buckets.has(lk)) return;
-      out += `  <g id="layer${idx + 1}" inkscape:label="${p.layers[lk]}" inkscape:groupmode="layer" fill="none">\n`;
-      out += emitCells(buckets.get(lk), '    ');
+    for (let L of P.layers) {
+      out += `  <g id="layer${L.n}" inkscape:label="${L.label}" inkscape:groupmode="layer" fill="none">\n`;
+      out += emit(L.strokes, '    ');
       out += `  </g>\n`;
-    });
+    }
     return out;
   },
 
@@ -2737,6 +2698,205 @@ const svgRec = {
     return out;
   }
 };
+
+// ========================================================
+// PLOT-SAFE GEOMETRY (shared by export, plot stats and plot preview)
+// ========================================================
+
+// Every recorded path as absolute polylines: transforms applied, curves
+// flattened, clipped (content -> margins, cell borders -> inner half of the
+// margin, registration -> page), duplicates and non-finite points dropped,
+// sorted into pen layers (or one layer), then ordered for the plotter.
+// Returns { layered, layers: [{ key, n, label, strokes: [{ stroke, sw, pts }] }] }.
+function plotSafeStrokes(rec) {
+  rec = rec || svgRec;
+  let W = rec.width, H = rec.height, m = state.margin, p = state.plotter;
+  let page = [0, 0, W, H];
+  let content = p.clipToMargins ? [m.left, m.top, W - m.right, H - m.bottom] : page;
+  let borderBox = p.clipToMargins ? [m.left / 2, m.top / 2, W - m.right / 2, H - m.bottom / 2] : page;
+  let layered = p.layers.enabled;
+  let order = ['mainContent', 'borders', 'macroText', 'microText', 'details', 'registration'];
+  let buckets = new Map();
+  let seen = new Set();
+  let r = rec._r;
+
+  const classify = ids => {
+    if (ids.some(id => id === 'registration-marks' || id === 'pen-reference')) return 'registration';
+    if (ids.includes('otf-text')) return 'macroText';
+    if (ids.some(id => id === 'font-text' || id === 'micro-text')) return 'microText';
+    if (ids.some(id => id === 'border' || id === 'anim-border')) return 'borders';
+    if (ids.some(id => id === 'detail' || id.startsWith('treatment-') || id.startsWith('clone-'))) return 'details';
+    return 'mainContent';
+  };
+  const add = (layer, stroke, sw, pts) => {
+    let key = pts.map(q => r(q[0]) + ',' + r(q[1])).join(' ');
+    if (seen.has(key)) return;
+    seen.add(key);
+    let lk = layered ? layer : 'all';
+    if (!buckets.has(lk)) buckets.set(lk, []);
+    buckets.get(lk).push({ stroke, sw, pts });
+  };
+  const walk = (nodes, M, ids) => {
+    for (let n of nodes) {
+      if (n.children) {
+        let M2 = n.transform ? _matMul(M, parseTransformMatrix(n.transform)) : M;
+        walk(n.children, M2, n.id ? ids.concat(n.id) : ids);
+      } else if (n.d && n.stroke && n.stroke !== 'none') {
+        let layer = classify(ids);
+        let rect = layer === 'registration' ? page : layer === 'borders' ? borderBox : content;
+        for (let poly of parsePathToPolylines(n.d)) {
+          let pts = poly.map(q => [M[0]*q[0] + M[2]*q[1] + M[4], M[1]*q[0] + M[3]*q[1] + M[5]])
+                        .filter(q => Number.isFinite(q[0]) && Number.isFinite(q[1]));
+          if (pts.length < 2) continue;
+          for (let piece of clipPolylineToRect(pts, rect)) add(layer, n.stroke, n.strokeWidth, piece);
+        }
+      }
+    }
+  };
+  let I = [1, 0, 0, 1, 0, 0];
+  walk(rec.groups, I, []);
+  walk(rec.paths, I, []);
+
+  let keys = layered ? order.filter(k => buckets.has(k)) : (buckets.has('all') ? ['all'] : []);
+  let layers = keys.map(k => {
+    let strokes = buckets.get(k);
+    if (p.optimizeOrder !== false) strokes = _orderStrokes(strokes, W, H);
+    return { key: k, n: order.indexOf(k) + 1, label: layered ? p.layers[k] : 'all', strokes: _joinStrokes(strokes) };
+  });
+  return { layered, layers };
+}
+
+// Greedy nearest-neighbour stroke order from the plotter's home (0,0),
+// reversing a stroke when its far end is nearer. A spatial grid keeps it
+// near-linear (20K+ strokes per page). This is what `vpype linesort` does.
+function _orderStrokes(strokes, W, H) {
+  let n = strokes.length;
+  if (n < 3) return strokes.slice();
+  let G = Math.max(8, Math.min(256, Math.round(Math.sqrt(n))));
+  let cw = Math.max(1e-6, W / G), ch = Math.max(1e-6, H / G);
+  let cellOf = (x, y) => [Math.max(0, Math.min(G - 1, Math.floor(x / cw))), Math.max(0, Math.min(G - 1, Math.floor(y / ch)))];
+  let grid = new Array(G * G);
+  for (let i = 0; i < n; i++) {
+    let pts = strokes[i].pts;
+    for (let end = 0; end < 2; end++) {
+      let q = end ? pts[pts.length - 1] : pts[0];
+      let [gx, gy] = cellOf(q[0], q[1]);
+      let k = gy * G + gx;
+      (grid[k] || (grid[k] = [])).push(i * 2 + end);
+    }
+  }
+  let used = new Uint8Array(n), out = [];
+  let cx = 0, cy = 0;
+  for (let step = 0; step < n; step++) {
+    let [gx, gy] = cellOf(cx, cy);
+    let best = -1, bestD = Infinity;
+    for (let ring = 0; ring <= G; ring++) {
+      // A ring can't hold anything nearer than (ring - 1) cells away
+      if (best >= 0 && (ring - 1) * Math.min(cw, ch) > Math.sqrt(bestD)) break;
+      for (let yy = gy - ring; yy <= gy + ring; yy++) {
+        if (yy < 0 || yy >= G) continue;
+        for (let xx = gx - ring; xx <= gx + ring; xx++) {
+          if (xx < 0 || xx >= G) continue;
+          if (Math.max(Math.abs(xx - gx), Math.abs(yy - gy)) !== ring) continue;
+          let list = grid[yy * G + xx];
+          if (!list) continue;
+          for (let e of list) {
+            let i = e >> 1;
+            if (used[i]) continue;
+            let pts = strokes[i].pts, q = (e & 1) ? pts[pts.length - 1] : pts[0];
+            let d = (q[0] - cx) * (q[0] - cx) + (q[1] - cy) * (q[1] - cy);
+            if (d < bestD) { bestD = d; best = e; }
+          }
+        }
+      }
+    }
+    if (best < 0) break;
+    let i = best >> 1;
+    used[i] = 1;
+    let s = strokes[i];
+    if (best & 1) s = { stroke: s.stroke, sw: s.sw, pts: s.pts.slice().reverse() };
+    out.push(s);
+    let last = s.pts[s.pts.length - 1];
+    cx = last[0]; cy = last[1];
+  }
+  return out;
+}
+
+// Join consecutive strokes whose ends are closer than half the pen width
+// (same pen attributes): one pen-down instead of two, and the bridge is
+// hidden under the nib. Mirrors `vpype linemerge --tolerance` on ordered strokes.
+function _joinStrokes(strokes) {
+  let tol = Math.max(0.05, unitToPx(state.plotter.hatch.penDiameter, 'mm', state.plotter.dpi) * 0.5);
+  let tol2 = tol * tol;
+  let out = [];
+  for (let s of strokes) {
+    let prev = out[out.length - 1];
+    if (prev && prev.stroke === s.stroke && prev.sw === s.sw) {
+      let a = prev.pts[prev.pts.length - 1], b = s.pts[0];
+      let d2 = (a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]);
+      if (d2 < tol2) {
+        prev.pts = prev.pts.concat(d2 < 0.0025 ? s.pts.slice(1) : s.pts);
+        continue;
+      }
+    }
+    out.push({ stroke: s.stroke, sw: s.sw, pts: s.pts });
+  }
+  return out;
+}
+
+// Ink length, pen-up travel, pen lifts and an estimated plot time, from the
+// plot-safe strokes. Speeds come from the Plotter settings.
+function plotStats(P) {
+  P = P || plotSafeStrokes();
+  let ink = 0, travel = 0, lifts = 0, paths = 0;
+  for (let L of P.layers) {
+    let cx = 0, cy = 0;
+    for (let s of L.strokes) {
+      let a = s.pts[0];
+      travel += Math.hypot(a[0] - cx, a[1] - cy);
+      for (let k = 1; k < s.pts.length; k++) ink += Math.hypot(s.pts[k][0] - s.pts[k - 1][0], s.pts[k][1] - s.pts[k - 1][1]);
+      let z = s.pts[s.pts.length - 1]; cx = z[0]; cy = z[1];
+      lifts++; paths++;
+    }
+    travel += Math.hypot(cx, cy); // back home
+  }
+  let mm = px => pxToUnit(px, 'mm', state.plotter.dpi);
+  let sp = state.plotter.speed || { draw: 25, travel: 80, lift: 0.3 };
+  let inkMM = mm(ink), travelMM = mm(travel);
+  let seconds = inkMM / sp.draw + travelMM / sp.travel + lifts * sp.lift;
+  return { inkMM, travelMM, lifts, paths, layers: P.layers.length, seconds };
+}
+
+// Canvas preview of exactly what will plot: the plot-safe strokes, and the
+// pen-up moves between them as faint dashed lines. Canvas only (no SVG).
+function renderPlotPreview(P) {
+  P = P || plotSafeStrokes();
+  push();
+  resetMatrix();
+  if (state.exportTransparent) clear(); else background(state.bgColor);
+  noFill();
+  strokeCap(ROUND);
+  strokeJoin(ROUND);
+  let pen = Math.max(0.5, unitToPx(state.plotter.hatch.penDiameter, 'mm', state.plotter.dpi));
+  for (let L of P.layers) {
+    let cx = 0, cy = 0;
+    for (let s of L.strokes) {
+      let a = s.pts[0];
+      if (state.plotter.previewTravel) {
+        stroke(255, 60, 60, 110); strokeWeight(Math.max(0.5, pen * 0.5));
+        drawingContext.setLineDash([3, 4]);
+        line(cx, cy, a[0], a[1]);
+        drawingContext.setLineDash([]);
+      }
+      stroke(s.stroke); strokeWeight(pen);
+      beginShape();
+      for (let q of s.pts) vertex(q[0], q[1]);
+      endShape();
+      let z = s.pts[s.pts.length - 1]; cx = z[0]; cy = z[1];
+    }
+  }
+  pop();
+}
 
 // Drawing suppression flag — when true, svg* functions are no-ops.
 // Used to maintain PRNG stability: code runs and consumes PRNG identically,
@@ -3678,6 +3838,10 @@ const state = {
     detailScale: 1.0,
     registrationMarks: false,
     plotSafe: true,       // SVG export: flatten, clip, join, layer, no background rect
+    optimizeOrder: true,  // plot-safe: nearest-neighbour stroke order + reversal (vpype linesort)
+    previewPlot: false,   // canvas shows the plot-safe strokes instead of the drawing
+    previewTravel: false, // plot preview also draws pen-up moves
+    speed: { draw: 25, travel: 80, lift: 0.3 }, // mm/s, mm/s, s per lift: plot-time estimate
     clipToMargins: true,  // plot-safe clip box: margins (true) or page edge (false)
     hatch: {
       enabled: false,
@@ -19053,8 +19217,9 @@ function generate(frameIndex) {
     pop();
   }
 
-  // Path statistics
+  // Path statistics, then (debounced) plot stats / plot preview
   updatePathStats();
+  refreshPlotView();
 
   // p5.js visibility fix
   requestAnimationFrame(() => {
@@ -19072,6 +19237,27 @@ function countPaths(nodes) {
   }
   return c;
 }
+// Plot stats and, when on, the plot preview. Debounced so slider drags stay
+// smooth; skipped while animating (exports capture the canvas between frames).
+let _plotViewTimer = null;
+function refreshPlotView() {
+  clearTimeout(_plotViewTimer);
+  _plotViewTimer = setTimeout(() => {
+    let el = document.getElementById('plot-stats');
+    if (state.animation.enabled) { if (el) el.textContent = 'plot stats: static compositions only'; return; }
+    let P = plotSafeStrokes();
+    let st = plotStats(P);
+    if (el) {
+      let mins = st.seconds / 60;
+      let time = mins >= 60 ? `${Math.floor(mins / 60)}h ${Math.round(mins % 60)}m` : `${Math.max(1, Math.round(mins))} min`;
+      el.innerHTML = `<b>~${time}</b> plot &middot; ${(st.inkMM / 1000).toFixed(1)} m ink<br>` +
+        `${(st.travelMM / 1000).toFixed(1)} m pen-up &middot; ${st.lifts.toLocaleString()} lifts` +
+        (P.layered ? ` &middot; ${st.layers} layers` : '');
+    }
+    if (state.plotter.previewPlot) renderPlotPreview(P);
+  }, 120);
+}
+
 function updatePathStats() {
   let count = countPaths(svgRec.groups) + svgRec.paths.length;
   let el = document.getElementById('path-stats');
@@ -21893,6 +22079,13 @@ function syncAllUI() {
   document.getElementById('plotter-layers').checked = state.plotter.layers.enabled;
   syncMarginLinkUI();
   document.getElementById('plotter-plot-safe').checked = !!state.plotter.plotSafe;
+  document.getElementById('plotter-preview').checked = !!state.plotter.previewPlot;
+  document.getElementById('plotter-preview-travel').checked = !!state.plotter.previewTravel;
+  document.getElementById('plotter-optimize').checked = state.plotter.optimizeOrder !== false;
+  let sp = state.plotter.speed || { draw: 25, travel: 80, lift: 0.3 };
+  document.getElementById('plotter-speed-draw').value = sp.draw;
+  document.getElementById('plotter-speed-travel').value = sp.travel;
+  document.getElementById('plotter-speed-lift').value = sp.lift;
   document.getElementById('plotter-clip-margins').checked = !!state.plotter.clipToMargins;
   document.getElementById('hatch-enabled').checked = state.plotter.hatch.enabled;
   document.getElementById('hatch-angle').value = state.plotter.hatch.angle;
