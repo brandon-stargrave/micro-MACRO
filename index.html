@@ -294,6 +294,11 @@
     }
     .mode-toggle button:hover { background: #ffffff14; color: #00e5ff; }
     .mode-toggle button.active { background: #00ff8825; color: #00ff88; font-weight: 600; }
+    .pen-row { display: flex; align-items: center; gap: 8px; margin: 3px 0; font-size: 0.82em; }
+    .pen-row .pen-label { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--text-primary); }
+    .pen-row input[type=color] { flex: 0 0 34px; width: 34px; height: 20px; padding: 0; border: 1px solid #ffffff22; background: none; }
+    .pen-row select { min-width: 0; }
+    .pens-block { margin: 0 0 10px; }
     button.secondary.active { border-color: #00ff8866; color: #00ff88; background: #00ff8818; }
     .mode-panel { display: none; }
     .mode-panel.active { display: block; }
@@ -826,7 +831,7 @@
       </div>
       <div class="color-row">
         <label>Foreground</label>
-        <input type="color" id="fg-color" value="#d0d8e8" onchange="updateState('fgColor', this.value); document.getElementById('fg-color-val').textContent=this.value">
+        <input type="color" id="fg-color" value="#d0d8e8" onchange="updateState('fgColor', this.value); document.getElementById('fg-color-val').textContent=this.value; syncPenUI()">
         <span class="color-value" id="fg-color-val">#d0d8e8</span>
       </div>
     </details>
@@ -1058,6 +1063,43 @@
     <details class="collapsible" open>
       <summary>Plotter</summary>
       <div id="plot-stats" class="plot-stats" data-tip="From the plot-safe geometry: ink drawn, pen-up travel and pen lifts, with a time estimate from the speeds below.">—</div>
+      <div class="pens-block" data-tip="Up to three inks. Pen 1 is the foreground colour. Exports put each pen on its own numbered layer (1-4), which Stvrpype and vpype read as pens.">
+        <div class="hint" style="margin:2px 0 4px;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:#00ff8888">Pens</div>
+        <div class="pen-row">
+          <span class="pen-label">1 &middot; Primary</span>
+          <input type="color" id="pen1-color" value="#d0d8e8" onchange="setPenColor(1, this.value)">
+        </div>
+        <div class="pen-row">
+          <label class="pen-label"><input type="checkbox" id="pen2-on" onchange="updateState('pens.p2.enabled', this.checked); penSettingsChanged()"> 2 &middot; Secondary</label>
+          <input type="color" id="pen2-color" value="#ff8a3d" onchange="setPenColor(2, this.value)">
+        </div>
+        <div class="pen-row">
+          <label class="pen-label"><input type="checkbox" id="pen3-on" onchange="updateState('pens.p3.enabled', this.checked); penSettingsChanged()"> 3 &middot; Tertiary</label>
+          <input type="color" id="pen3-color" value="#3da5ff" onchange="setPenColor(3, this.value)">
+        </div>
+        <div class="control-group" data-tip="Which pen draws the treatments: one of the three above, or a pen of their own (layer 4). A pen that is switched off falls back to pen 1.">
+          <label>Treatments Pen</label>
+          <div class="pen-row">
+            <select id="pen-treat" style="flex:1 1 auto" onchange="updateState('pens.treatments', this.value); penSettingsChanged()">
+              <option value="p1">Pen 1</option><option value="p2">Pen 2</option><option value="p3">Pen 3</option><option value="own">Own pen</option>
+            </select>
+            <input type="color" id="pen-treat-color" value="#c77dff" onchange="setPenColor(4, this.value)">
+          </div>
+        </div>
+        <div class="control-group" data-tip="Role: pen 2 picks out accents (status words, needles, silhouette fills, big values), pen 3 takes fine detail (hatching, grids, micro text). By cell: whole cells in one ink, the largest in pen 1. By weight: heavy lines pen 1, secondary pen 2, fine pen 3.">
+          <label>Distribution</label>
+          <select id="pen-dist" onchange="updateState('pens.distribution', this.value); penSettingsChanged()">
+            <option value="role">Accent by role</option><option value="cell">By cell</option><option value="weight">By line weight</option>
+          </select>
+        </div>
+        <div class="control-group" id="pen-amount-row" data-tip="How much of the page the extra pens get. Role: the share of cells whose accents go to pen 2, and for pen 3 hatching and texture, then fine lines (0.35+), then micro text (0.6+). By cell: the share of cells drawn in pen 2 or 3.">
+          <label>Extra Pen Amount <span class="slider-val" id="pen-amount-val">0.50</span></label>
+          <div class="slider-row">
+            <input type="range" id="pen-amount" min="0" max="1" step="0.05" value="0.5"
+              oninput="syncVal(this, 'pen-amount-val')" onchange="updateState('pens.amount', +this.value); penSettingsChanged()">
+          </div>
+        </div>
+      </div>
       <div class="check-row" data-tip="Show on the canvas exactly what will plot: clipped, flattened, ordered strokes at the pen's width.">
         <input type="checkbox" id="plotter-preview" onchange="updateState('plotter.previewPlot', this.checked); refreshPlotView()">
         <label for="plotter-preview">Plot Preview</label>
@@ -1168,6 +1210,9 @@
         <button class="secondary" onclick="exportSVG()">⬡ SVG</button>
         <button class="secondary" onclick="exportPNG()">◻ PNG</button>
         <button class="secondary" onclick="copySVG()">⎘ Copy SVG</button>
+      </div>
+      <div class="export-row" style="margin-top:4px">
+        <button class="secondary" id="send-stvrpype-btn" onclick="sendToStvrpype()" data-tip="Send the plot-safe SVG of what is on screen (the complete frame while ◆ ALL is shown) to Stvrpype on this computer, as a new project with one layer per pen.">⇢ Send to Stvrpype</button>
       </div>
       <label class="checkbox-row" style="margin-top:6px;display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.82em;color:var(--text-primary);" data-tip="Export with no background — full alpha transparency. Applies to PNG, GIF, MOV, and SVG. MP4 does not support transparency.">
         <input type="checkbox" id="export-transparent" onchange="toggleExportTransparent(this.checked)">
@@ -2900,6 +2945,138 @@ function redrawCellFromRecord(cellGroup, rect) {
 }
 
 // ========================================================
+// PENS (up to three inks plus a treatments pen)
+// ========================================================
+
+// Pen 1 is the foreground colour. 2 and 3 are switched on in the Plotter
+// section; 4 exists only when treatments get their own pen. A stroke sent to
+// a pen that is off falls back to pen 1.
+const PEN_NAMES = { 1: 'Primary', 2: 'Secondary', 3: 'Tertiary', 4: 'Treatments' };
+function penOn(p) {
+  let P = state.pens;
+  return p === 1 || (p === 2 && P.p2.enabled) || (p === 3 && P.p3.enabled) || (p === 4 && P.treatments === 'own');
+}
+function penResolve(p) { return penOn(p) ? p : 1; }
+function penColor(p) {
+  p = penResolve(p);
+  return p === 2 ? state.pens.p2.color : p === 3 ? state.pens.p3.color : p === 4 ? state.pens.treatColor : state.fgColor;
+}
+function treatmentPen() {
+  let t = state.pens.treatments;
+  return t === 'own' ? 4 : penResolve(+String(t).slice(1) || 1);
+}
+// More than one ink in play: plot-safe export layers by pen
+function multiPenActive() { return penOn(2) || penOn(3) || penOn(4); }
+
+// Which cells get the extra pens, decided once per page from the cell rects.
+// The largest cell (the hero) anchors pen 1 in 'cell' mode and always gets its
+// accents in 'role' mode. Hash-driven, so the cell PRNG streams are untouched.
+function planCellPens(rects) {
+  let P = state.pens, n = rects.length, base = seedNumber(state.seed);
+  let hero = 0;
+  rects.forEach((r, i) => { if (r.w * r.h > rects[hero].w * rects[hero].h) hero = i; });
+  let roll = i => _profileHash((base ^ (i * 2654435761)) >>> 0, 0x9e1);
+  let accent = rects.map((r, i) => i === hero ? P.amount > 0 : roll(i) < P.amount);
+  // By cell: colour the cells largest first, never matching a touching neighbour
+  let extra = [2, 3].filter(penOn);
+  let cellPen = new Array(n).fill(1);
+  if (extra.length) {
+    let touch = (a, b) => {
+      let g = state.multi.cellPadding * 2 + 2;
+      let ox = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x), oy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+      return (ox > -g && oy > 0) || (oy > -g && ox > 0);
+    };
+    let order = rects.map((r, i) => i).sort((a, b) => rects[b].w * rects[b].h - rects[a].w * rects[a].h);
+    for (let i of order) {
+      if (i === hero || roll(i + 101) >= P.amount) continue;
+      let used = new Set(order.filter(j => j !== i && touch(rects[i], rects[j])).map(j => cellPen[j]));
+      let choices = [1].concat(extra).filter(p => !used.has(p));
+      let pool = choices.filter(p => p !== 1);
+      cellPen[i] = pool.length ? pool[Math.floor(roll(i + 202) * pool.length)] : (choices[0] || 1);
+    }
+  }
+  return { hero, accent, cellPen };
+}
+
+// Give every stroke of one composed cell its pen, by the page's distribution.
+// Returns true when any stroke left pen 1 (the cell is then repainted).
+function assignCellPens(cellGroup, ci, cellRect, plan) {
+  if (!plan || !multiPenActive()) return false;
+  let mode = state.pens.distribution, base = state.geometry.strokeWeight || 1;
+  let minDim = Math.min(cellRect.w, cellRect.h);
+  let changed = false;
+  const textHeight = node => {
+    let y0 = Infinity, y1 = -Infinity;
+    const gather = (g, L) => {
+      for (let c of g.children) {
+        if (c.children) gather(c, c.transform ? _matMul(L, parseTransformMatrix(c.transform)) : L);
+        else if (c.d) for (let poly of parsePathToPolylines(c.d)) for (let q of poly) { let y = L[1] * q[0] + L[3] * q[1] + L[5]; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+      }
+    };
+    gather(node, node.transform ? parseTransformMatrix(node.transform) : [1, 0, 0, 1, 0, 0]);
+    return y1 > y0 ? y1 - y0 : 0;
+  };
+  const pick = (n, f) => {
+    if (f.border) return 1;
+    let ratio = (n.strokeWidth || base) / base;
+    if (mode === 'cell') return plan.cellPen[ci] || 1;
+    if (mode === 'weight') return ratio >= 0.8 ? 1 : ratio >= 0.5 ? 2 : 3;
+    // role
+    if (penOn(2) && plan.accent[ci] && (f.accent || f.fill || (f.textH && f.textH >= Math.max(14, minDim * 0.05)))) return 2;
+    // Pen 3 widens with the amount: texture and hatching, then fine lines,
+    // then micro text (all of a page's text in one ink reads as a choice)
+    let a = state.pens.amount;
+    if (penOn(3) && a > 0 && (f.detail || (f.hatch && !f.fill) ||
+        (f.textH ? a >= 0.6 && f.textH < 6.5 : a >= 0.35 && ratio < 0.5))) return 3;
+    return 1;
+  };
+  const walk = (node, f) => {
+    for (let n of node.children) {
+      if (n.children) {
+        let id = n.id || '';
+        if (id.startsWith('treatment-') || id.startsWith('clone-')) continue; // drawn in their own pen already
+        let g = f;
+        if (id) {
+          g = Object.assign({}, f);
+          if (id === 'border' || id === 'anim-border') g.border = true;
+          else if (id === 'accent') g.accent = true;
+          else if (id === 'fill') g.fill = true;
+          else if (id === 'hatch') g.hatch = true;
+          else if (id === 'detail') g.detail = true;
+          else if (_TEXT_GROUP_IDS.has(id) && !f.textH) g.textH = textHeight(n) || 0.01;
+        }
+        walk(n, g);
+      } else if (n.d && n.stroke && n.stroke !== 'none') {
+        leaves.push({ n, f, p: penResolve(pick(n, f)) });
+      }
+    }
+  };
+  let leaves = [];
+  walk(cellGroup, {});
+  // A cell picked for accents that has none of its own (no status word,
+  // pointer or fill) lends pen 2 its heaviest lines, else its largest text
+  if (mode === 'role' && penOn(2) && plan.accent[ci] && !leaves.some(L => L.p === 2)) {
+    let heavy = leaves.filter(L => !L.f.border && !L.f.textH && (L.n.strokeWidth || base) / base >= 1.4);
+    if (heavy.length) heavy.forEach(L => L.p = 2);
+    else {
+      let big = 0;
+      for (let L of leaves) if (L.f.textH > big) big = L.f.textH;
+      if (big >= 7) leaves.forEach(L => { if (L.f.textH === big) L.p = 2; });
+    }
+  }
+  for (let L of leaves) {
+    L.n.pen = L.p;
+    if (L.p !== 1) {
+      let c = penColor(L.p);
+      if (L.n.fill && L.n.fill !== 'none') L.n.fill = c; // points are filled dots
+      L.n.stroke = c;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+// ========================================================
 // PLOT-SAFE GEOMETRY (shared by export, plot stats and plot preview)
 // ========================================================
 
@@ -2914,12 +3091,19 @@ function plotSafeStrokes(rec) {
   let page = [0, 0, W, H];
   let content = p.clipToMargins ? [m.left, m.top, W - m.right, H - m.bottom] : page;
   let borderBox = p.clipToMargins ? [m.left / 2, m.top / 2, W - m.right / 2, H - m.bottom / 2] : page;
-  let layered = p.layers.enabled;
-  let order = ['mainContent', 'borders', 'macroText', 'microText', 'details', 'registration', 'fine'];
+  // Several inks: one layer per pen (numbered first, so Stvrpype and vpype map
+  // them to pens 1-4), plus a fine-nib layer per pen when Split Fine is on.
+  // Otherwise the role layers, when Enable Layers is on.
+  let byPen = multiPenActive();
+  let layered = p.layers.enabled || byPen;
+  let order = byPen ? ['pen1', 'pen2', 'pen3', 'pen4', 'pen1f', 'pen2f', 'pen3f', 'pen4f']
+                    : ['mainContent', 'borders', 'macroText', 'microText', 'details', 'registration', 'fine'];
+  let tPen = treatmentPen();
+  let penLabel = k => { let n = +k[3], f = k.length > 4; return `${order.indexOf(k) + 1} ${PEN_NAMES[n]}${f ? ' fine' : ''}`; };
   // With one pen the kit's weight hierarchy (heavy 1.7x .. fine 0.35x) flattens;
   // hairline content strokes on their own layer can take a finer pen.
   let fineCut = state.geometry.strokeWeight * 0.5;
-  let splitFine = layered && p.layers.splitFine !== false;
+  let splitFine = (byPen ? p.layers.enabled : layered) && p.layers.splitFine !== false;
   let buckets = new Map();
   let seen = new Set();
   let r = rec._r;
@@ -2946,9 +3130,13 @@ function plotSafeStrokes(rec) {
         let M2 = n.transform ? _matMul(M, parseTransformMatrix(n.transform)) : M;
         walk(n.children, M2, n.id ? ids.concat(n.id) : ids);
       } else if (n.d && n.stroke && n.stroke !== 'none') {
-        let layer = classify(ids);
-        let rect = layer === 'registration' ? page : layer === 'borders' ? borderBox : content;
-        if (splitFine && (layer === 'mainContent' || layer === 'details') && n.strokeWidth < fineCut) layer = 'fine';
+        let role = classify(ids);
+        let rect = role === 'registration' ? page : role === 'borders' ? borderBox : content;
+        let layer = role;
+        if (byPen) {
+          let pen = ids.some(id => id.startsWith('treatment-') || id.startsWith('clone-')) ? tPen : (n.pen || 1);
+          layer = 'pen' + pen + (splitFine && (role === 'mainContent' || role === 'details') && n.strokeWidth < fineCut ? 'f' : '');
+        } else if (splitFine && (layer === 'mainContent' || layer === 'details') && n.strokeWidth < fineCut) layer = 'fine';
         for (let poly of parsePathToPolylines(n.d)) {
           let pts = poly.map(q => [M[0]*q[0] + M[2]*q[1] + M[4], M[1]*q[0] + M[3]*q[1] + M[5]])
                         .filter(q => Number.isFinite(q[0]) && Number.isFinite(q[1]));
@@ -2966,7 +3154,7 @@ function plotSafeStrokes(rec) {
   let layers = keys.map(k => {
     let strokes = buckets.get(k);
     if (p.optimizeOrder !== false) strokes = _orderStrokes(strokes, W, H);
-    return { key: k, n: order.indexOf(k) + 1, label: layered ? p.layers[k] : 'all', strokes: _joinStrokes(strokes) };
+    return { key: k, n: order.indexOf(k) + 1, label: !layered ? 'all' : byPen ? penLabel(k) : p.layers[k], strokes: _joinStrokes(strokes) };
   });
   return { layered, layers };
 }
@@ -3053,9 +3241,9 @@ function _joinStrokes(strokes) {
 // plot-safe strokes. Speeds come from the Plotter settings.
 function plotStats(P) {
   P = P || plotSafeStrokes();
-  let ink = 0, travel = 0, lifts = 0, paths = 0;
+  let ink = 0, travel = 0, lifts = 0, paths = 0, perLayer = [];
   for (let L of P.layers) {
-    let cx = 0, cy = 0;
+    let cx = 0, cy = 0, ink0 = ink;
     for (let s of L.strokes) {
       let a = s.pts[0];
       travel += Math.hypot(a[0] - cx, a[1] - cy);
@@ -3064,12 +3252,14 @@ function plotStats(P) {
       lifts++; paths++;
     }
     travel += Math.hypot(cx, cy); // back home
+    perLayer.push({ key: L.key, label: L.label, color: L.strokes.length ? L.strokes[0].stroke : null, ink: ink - ink0 });
   }
   let mm = px => pxToUnit(px, 'mm', state.plotter.dpi);
   let sp = state.plotter.speed || { draw: 25, travel: 80, lift: 0.3 };
   let inkMM = mm(ink), travelMM = mm(travel);
   let seconds = inkMM / sp.draw + travelMM / sp.travel + lifts * sp.lift;
-  return { inkMM, travelMM, lifts, paths, layers: P.layers.length, seconds };
+  for (let L of perLayer) L.inkMM = mm(L.ink);
+  return { inkMM, travelMM, lifts, paths, layers: P.layers.length, seconds, perLayer };
 }
 
 // Canvas preview of exactly what will plot: the plot-safe strokes, and the
@@ -3287,7 +3477,10 @@ function svgPoint(x, y) {
   svgRec._addPath(`M${svgRec._r(x-r)} ${svgRec._r(y)}a${r},${r} 0 1,0 ${r*2},0a${r},${r} 0 1,0 ${-r*2},0`, null, svgRec.currentStroke, null);
 }
 
+// While a treatment draws, every ink it asks for is the treatments' pen
+let _inkOverride = null;
 function svgSetStroke(c) {
+  if (_inkOverride) c = _inkOverride;
   stroke(c);
   svgRec.setStroke(c);
 }
@@ -3653,6 +3846,22 @@ function _tagSvgGroup(names, id) {
 }
 _tagSvgGroup(['_drawBuiltinText', '_drawDecomposedGlyph'], 'micro-text');
 _tagSvgGroup(['drawBarcodeLines', 'drawDitherFill', 'drawTextureStamp', 'drawTextureStrip', 'drawTextureGreeble'], 'detail');
+_tagSvgGroup(['hatchFillContours'], 'hatch');
+
+// Accents: what a designer would pick out in a second ink. Composers wrap a
+// pointer, a fault marker or a highlighted value in kitAccent(); status words
+// (drawAnimText's 'status' hints) count as accents on their own.
+function kitAccent(fn) {
+  svgRec.beginGroup('accent');
+  try { return fn(); } finally { svgRec.endGroup(); }
+}
+{
+  let animText = window.drawAnimText;
+  window.drawAnimText = function (str, x, y, fontSize, elemSeed, hint) {
+    if (hint && /status/.test(hint)) return kitAccent(() => animText.apply(this, arguments));
+    return animText.apply(this, arguments);
+  };
+}
 
 // ========================================================
 // FONT LOADING SYSTEM
@@ -4088,7 +4297,17 @@ const state = {
   manualLayout: null,
   exportTransparent: false,
   pageFrame: true,   // margin grid ticks + colophon line
-  labelKnockout: true // break strokes around labels, drop labels that land on labels
+  labelKnockout: true, // break strokes around labels, drop labels that land on labels
+  // Pens: pen 1 is the foreground colour; 2 and 3 are optional extra inks;
+  // treatments go to one of them or to their own pen (4).
+  pens: {
+    distribution: 'role',   // role | cell | weight
+    amount: 0.5,            // how much of the page the extra pens get (role, cell)
+    p2: { enabled: false, color: '#ff8a3d' },
+    p3: { enabled: false, color: '#3da5ff' },
+    treatments: 'p2',       // p1 | p2 | p3 | own
+    treatColor: '#c77dff'
+  }
 };
 
 // Initialize archetype state
@@ -5271,8 +5490,10 @@ function kitFillStyle(s, prng) {
 function kitFillContours(contours, style, role) {
   if (!style) return;
   kitWeight(role || 'primary');
+  svgRec.beginGroup('fill'); // silhouette fill: an accent ink when pens allow
   hatchFillContours(contours, style.angle, style.spacing, 0);
   if (style.kind === 'cross') hatchFillContours(contours, style.angle + 90, style.spacing * 1.4, 0);
+  svgRec.endGroup();
 }
 
 // Engraving-style fill for a disc or ring: concentric circles from r0 out to r1.
@@ -5286,7 +5507,9 @@ function kitRingFill(cx, cy, r1, r0, style, role) {
     kitFillContours(contours, style, role);
     return;
   }
+  svgRec.beginGroup('fill');
   for (let r = r1 - style.spacing; r > Math.max(r0, style.spacing * 0.5); r -= style.spacing) svgCircle(cx, cy, r * 2);
+  svgRec.endGroup();
 }
 
 // ========================================================
@@ -6347,6 +6570,9 @@ function _mtrScale(cx, cy, r, a0, a1, sc, o) {
 
 // Tapered needle with counterweight tail and a two-ring hub.
 function _mtrNeedle(cx, cy, len, a, w, solid) {
+  kitAccent(() => _mtrNeedleDraw(cx, cy, len, a, w, solid));
+}
+function _mtrNeedleDraw(cx, cy, len, a, w, solid) {
   let c = Math.cos(a), s = Math.sin(a), nx = -s, ny = c;
   let tail = len * 0.2;
   let pts = [[cx + c * len, cy + s * len], [cx + nx * w, cy + ny * w], [cx - c * tail + nx * w * 1.4, cy - s * tail + ny * w * 1.4],
@@ -18196,6 +18422,7 @@ function generate(frameIndex) {
   _cellCount = cells.length;
   _cellMeta = [];
   _lastCellRects = cells.map(c => ({ x: c.x, y: c.y, w: c.w, h: c.h }));
+  let penPlan = multiPenActive() ? planCellPens(_lastCellRects) : null;
 
   svgRec.beginGroup('composition');
 
@@ -18243,6 +18470,7 @@ function generate(frameIndex) {
       if (state.bordersEnabled) {
         generateBorder(inner, cellScale, state.border.style, state.border.weight, bp, cellPrng);
       }
+      if (penPlan && !_drawingSuppressed && assignCellPens(svgRec.groupStack[1], i, cell, penPlan)) redrawCellFromRecord(svgRec.groupStack[1], cell);
       svgRec.endGroup();
       continue;
     }
@@ -18483,10 +18711,13 @@ function generate(frameIndex) {
       if (!tx.enabled) continue;
       let perCellFn = TREATMENT_PER_CELL[tx.id];
       if (!perCellFn) continue;
-      // Grouped so label knockouts leave treatments alone (they may overlap)
+      // Grouped so label knockouts leave treatments alone (they may overlap),
+      // and drawn in the treatments' pen
       svgRec.beginGroup('treatment-' + tx.id);
+      _inkOverride = penColor(treatmentPen());
+      svgSetStroke(_inkOverride);
       try { perCellFn(tx.intensity, padded, cellScale, archetype, cellPrng, i); }
-      finally { svgRec.endGroup(); }
+      finally { svgRec.endGroup(); _inkOverride = null; svgSetStroke(state.fgColor); }
     }
     _cellTextLog = _savedTextLog;
 
@@ -18504,10 +18735,13 @@ function generate(frameIndex) {
     while (svgRec.groupStack.length > 2) {
       svgRec.endGroup(); // close leaked inner groups
     }
-    // Clear the labels (border included); then repaint the cell so screen = plot
-    if (state.labelKnockout !== false && !_drawingSuppressed) {
-      let cellGroup = svgRec.groupStack[1];
-      if (cellGroup && knockoutCellLabels(cellGroup, cell)) redrawCellFromRecord(cellGroup, cell);
+    // Clear the labels (border included) and hand out the pens; then repaint
+    // the cell from its record so screen = plot
+    let cellGroup = svgRec.groupStack[1];
+    if (cellGroup && !_drawingSuppressed) {
+      let changed = state.labelKnockout !== false && knockoutCellLabels(cellGroup, cell);
+      if (penPlan) changed = assignCellPens(cellGroup, i, cell, penPlan) || changed;
+      if (changed) redrawCellFromRecord(cellGroup, cell);
     }
     svgRec.endGroup(); // close cell group — stack returns to ['composition']
 
@@ -18519,10 +18753,14 @@ function generate(frameIndex) {
   // Apply aesthetic treatments from the stack (in order)
   // Disable text tracking so treatment draws don't pollute cell logs
   _cellTextLog = null;
-  for (let tx of state.treatmentStack) {
-    if (!tx.enabled) continue;
-    applyTreatment(tx.id, tx.intensity, contentRect, prng, _cellMeta);
-  }
+  _inkOverride = penColor(treatmentPen());
+  svgSetStroke(_inkOverride);
+  try {
+    for (let tx of state.treatmentStack) {
+      if (!tx.enabled) continue;
+      applyTreatment(tx.id, tx.intensity, contentRect, prng, _cellMeta);
+    }
+  } finally { _inkOverride = null; svgSetStroke(state.fgColor); }
 
   svgRec.endGroup();
 
@@ -18670,7 +18908,9 @@ function refreshPlotView() {
       let time = mins >= 60 ? `${Math.floor(mins / 60)}h ${Math.round(mins % 60)}m` : `${Math.max(1, Math.round(mins))} min`;
       el.innerHTML = `<b>~${time}</b> plot &middot; ${(st.inkMM / 1000).toFixed(1)} m ink<br>` +
         `${(st.travelMM / 1000).toFixed(1)} m pen-up &middot; ${st.lifts.toLocaleString()} lifts` +
-        (P.layered ? ` &middot; ${st.layers} layers` : '');
+        (P.layered ? ` &middot; ${st.layers} layer${st.layers === 1 ? '' : 's'}` : '') +
+        (multiPenActive() ? '<br>' + st.perLayer.map(L =>
+          `<span style="color:${L.color}">&#9632;</span> ${L.label.split(' ').slice(1).join(' ')} ${(L.inkMM / 1000).toFixed(1)} m`).join(' &middot; ') : '');
     }
     if (state.plotter.previewPlot) renderPlotPreview(P);
   }, 120);
@@ -20690,6 +20930,35 @@ function exportPNG() {
   showConfirmation('CAPTURED');
 }
 
+// Stvrpype (the plotter workbench) takes drawings from pages on this computer:
+// POST /api/send with the SVG as a plain-text body makes a project of it.
+async function sendToStvrpype() {
+  let base = (state.plotter.stvrpypeURL || 'http://127.0.0.1:8000').replace(/\/$/, '');
+  let safe = state.plotter.plotSafe;
+  state.plotter.plotSafe = true; // Stvrpype wants plot-ready geometry, whatever the export toggle says
+  let svg;
+  try { svg = svgRec.serialize(null); } finally { state.plotter.plotSafe = safe; }
+  let frame = state.animation.enabled && !state.animation.showComplete ? ` F${String(state.animation.currentFrame + 1).padStart(3, '0')}` : '';
+  let name = `micro-MACRO ${state.seed}${frame}`;
+  let btn = document.getElementById('send-stvrpype-btn');
+  if (btn) btn.disabled = true;
+  try {
+    let res;
+    try {
+      res = await fetch(`${base}/api/send?` + new URLSearchParams({ name, open: '1' }), { method: 'POST', body: svg });
+    } catch (e) {
+      showConfirmation('STVRPYPE NOT RUNNING AT ' + base.replace(/^https?:\/\//, ''));
+      return;
+    }
+    let out = await res.json().catch(() => ({}));
+    if (!out.ok) { showConfirmation('STVRPYPE REFUSED: ' + String((out.error && out.error.message) || res.status).toUpperCase().slice(0, 60)); return; }
+    showConfirmation('SENT TO STVRPYPE');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+window.sendToStvrpype = sendToStvrpype;
+
 function copySVG() {
   let svgContent = svgRec.serialize(svgExportBg());
   navigator.clipboard.writeText(svgContent).then(() => {
@@ -21329,6 +21598,34 @@ function doGenerate() {
 }
 
 // Re-render the current seed after a content setting changes.
+// Pen controls: pen 1 is the foreground colour, so the two pickers stay in step.
+function setPenColor(p, c) {
+  if (p === 1) {
+    state.fgColor = c;
+    let fg = document.getElementById('fg-color'); if (fg) fg.value = c;
+    let fv = document.getElementById('fg-color-val'); if (fv) fv.textContent = c;
+  } else if (p === 4) state.pens.treatColor = c;
+  else state.pens['p' + p].color = c;
+  penSettingsChanged();
+}
+function syncPenUI() {
+  let P = state.pens, set = (id, prop, v) => { let el = document.getElementById(id); if (el) el[prop] = v; };
+  set('pen1-color', 'value', state.fgColor);
+  set('pen2-on', 'checked', !!P.p2.enabled); set('pen2-color', 'value', P.p2.color);
+  set('pen3-on', 'checked', !!P.p3.enabled); set('pen3-color', 'value', P.p3.color);
+  set('pen-treat', 'value', P.treatments); set('pen-treat-color', 'value', P.treatColor);
+  set('pen-dist', 'value', P.distribution);
+  set('pen-amount', 'value', P.amount);
+  set('pen-amount-val', 'textContent', (+P.amount).toFixed(2));
+  let tc = document.getElementById('pen-treat-color'); if (tc) tc.style.visibility = P.treatments === 'own' ? 'visible' : 'hidden';
+  let ar = document.getElementById('pen-amount-row'); if (ar) ar.style.display = P.distribution === 'weight' ? 'none' : '';
+  set('pen2-color', 'disabled', !P.p2.enabled); set('pen3-color', 'disabled', !P.p3.enabled);
+}
+function penSettingsChanged() { syncPenUI(); doGenerateKeepSeed(); }
+window.setPenColor = setPenColor;
+window.penSettingsChanged = penSettingsChanged;
+window.syncPenUI = syncPenUI;
+
 function doGenerateKeepSeed() {
   let locked = state.lockSeed;
   state.lockSeed = true;
@@ -21564,6 +21861,8 @@ function syncAllUI() {
   document.getElementById('plotter-layers').checked = state.plotter.layers.enabled;
   document.getElementById('page-frame').checked = state.pageFrame !== false;
   document.getElementById('label-knockout').checked = state.labelKnockout !== false;
+  if (!state.pens) state.pens = JSON.parse(JSON.stringify(_defaultState ? _defaultState.pens : { distribution: 'role', amount: 0.5, p2: { enabled: false, color: '#ff8a3d' }, p3: { enabled: false, color: '#3da5ff' }, treatments: 'p2', treatColor: '#c77dff' }));
+  syncPenUI();
   document.getElementById('plotter-split-fine').checked = state.plotter.layers.splitFine !== false;
   syncMarginLinkUI();
   document.getElementById('plotter-plot-safe').checked = !!state.plotter.plotSafe;
