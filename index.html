@@ -299,6 +299,24 @@
     .pen-row input[type=color] { flex: 0 0 34px; width: 34px; height: 20px; padding: 0; border: 1px solid #ffffff22; background: none; }
     .pen-row select { min-width: 0; }
     .pens-block { margin: 0 0 10px; }
+    #clip-view { position: fixed; inset: 0; z-index: 900; background: #07040d; display: flex; }
+    #clip-view .clip-side { width: 300px; flex: 0 0 300px; overflow-y: auto; padding: 12px 14px; border-right: 1px solid #00ff8822; background: #0b0716; }
+    #clip-view .clip-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; color: #00ff88; letter-spacing: 1px; }
+    #clip-view .clip-head button { min-width: 0; padding: 2px 10px; }
+    #clip-view .clip-3 { display: flex; gap: 8px; margin: 4px 0 8px; }
+    #clip-view .clip-3 label { flex: 1; display: flex; flex-direction: column; gap: 3px; font-size: 0.78em; color: var(--text-primary); }
+    #clip-view .clip-3 input { width: 100%; }
+    #clip-board { flex: 1; overflow: auto; padding: 18px; display: flex; flex-wrap: wrap; gap: 18px; align-content: flex-start; }
+    #clip-board .clip-card { cursor: zoom-in; display: flex; flex-direction: column; gap: 6px; }
+    #clip-board .clip-card canvas { box-shadow: 0 0 0 1px #ffffff22, 0 6px 18px #0008; }
+    #clip-board .clip-cap, .clip-zoom-bar span { font-family: monospace; font-size: 11px; color: #9fe8c4; }
+    #clip-board .clip-empty { color: #ff8a8a; font-family: monospace; }
+    .clip-warn { color: #ffb36b; }
+    #clip-zoom { position: absolute; inset: 0; background: #000c; align-items: center; justify-content: center; z-index: 2; }
+    #clip-zoom .clip-zoom-inner { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+    #clip-zoom .clip-zoom-bar { display: flex; align-items: center; gap: 10px; }
+    #clip-zoom .clip-zoom-bar button { min-width: 0; padding: 2px 10px; }
+    @media (max-width: 700px) { #clip-view { flex-direction: column; } #clip-view .clip-side { width: auto; flex: 0 0 auto; max-height: 55vh; border-right: 0; border-bottom: 1px solid #00ff8822; } }
     button.secondary.active { border-color: #00ff8866; color: #00ff88; background: #00ff8818; }
     .mode-panel { display: none; }
     .mode-panel.active { display: block; }
@@ -619,6 +637,9 @@
     </button>
     <button class="secondary edit-mode-btn" id="edit-mode-btn" onclick="toggleEditMode()">
       <span class="btn-label">✎ EDIT COMPOSITION</span>
+    </button>
+    <button class="secondary edit-mode-btn" id="plot-clip-btn" onclick="openPlotClip()" data-tip="Lay the animation (or the complete frame) out on plotter pages: pick paper and drawing size, see the page count and every page, then download the pages or send them to Stvrpype.">
+      <span class="btn-label">▦ PLOT CLIP</span>
     </button>
 
     <!-- ===== PLAYBACK (top-level, auto-enables animation) ===== -->
@@ -3077,6 +3098,411 @@ function assignCellPens(cellGroup, ci, cellRect, plan) {
 }
 
 // ========================================================
+// PLOT CLIP: an animation (or the complete frame) laid out on plotter pages
+// ========================================================
+
+// Paper sizes in mm (portrait) and the machines Stvrpype knows, with their
+// plot areas (landscape, mm) and the papers they suggest.
+const CLIP_PAPERS = {
+  a5: [148, 210], a4: [210, 297], a3: [297, 420], a2: [420, 594], a1: [594, 841],
+  letter: [215.9, 279.4], '9x12in': [228.6, 304.8], '11x17in': [279.4, 431.8],
+  '18x24in': [457.2, 609.6], '24x36in': [609.6, 914.4]
+};
+const CLIP_MACHINES = {
+  'axidraw-v3':     { name: 'AxiDraw V3', area: [300, 218], papers: ['a4', 'letter'] },
+  'axidraw-v3-a3':  { name: 'AxiDraw V3/A3', area: [430, 297], papers: ['a3', 'a4', 'letter', '11x17in'] },
+  'axidraw-se-a3':  { name: 'AxiDraw SE/A3', area: [430, 297], papers: ['a3', 'a4', 'letter', '11x17in'] },
+  'axidraw-se-a2':  { name: 'AxiDraw SE/A2', area: [594, 432], papers: ['a2', 'a3', 'a4', '11x17in', '18x24in'] },
+  'axidraw-se-a1':  { name: 'AxiDraw SE/A1', area: [864, 594], papers: ['a1', 'a2', 'a3', '18x24in'] },
+  'artframe-2436':  { name: 'Bantam ArtFrame 24x36', area: [914.4, 609.6], papers: ['24x36in', '18x24in', 'a1', 'a2', 'a3', '11x17in'] }
+};
+
+function clipPaperMM() {
+  let c = state.clip;
+  let wh = c.paper === 'custom' ? [c.customW, c.customH] : (CLIP_PAPERS[c.paper] || CLIP_PAPERS.a4);
+  let [w, h] = [Math.min(wh[0], wh[1]), Math.max(wh[0], wh[1])];
+  return c.landscape ? [h, w] : [w, h];
+}
+
+// The frames to plot, as animation frame indices (null = the complete frame).
+function clipFrames() {
+  let c = state.clip, a = state.animation;
+  if (!a.enabled || c.source === 'complete') return [null];
+  let n = a.frameCount;
+  let from = Math.max(1, Math.min(n, c.from | 0)), to = c.to > 0 ? Math.max(from, Math.min(n, c.to | 0)) : n;
+  let step = Math.max(1, c.step | 0), out = [];
+  for (let f = from; f <= to; f += step) out.push(f - 1);
+  if (c.pingpong && out.length > 2) out = out.concat(out.slice(1, -1).reverse());
+  return out;
+}
+
+// Page geometry in mm: the slot grid, the drawing size and the page count.
+function clipLayout() {
+  let c = state.clip, [PW, PH] = clipPaperMM();
+  let aspect = state.height / state.width;
+  let capture = c.layout === 'capture';
+  let labelH = capture || c.labels ? 4.5 : 0;
+  let titleH = !capture && c.title ? 7 : 0;
+  let m = Math.max(0, +c.margin || 0), gap = Math.max(0, +c.gap || 0);
+  let CW = PW - m * 2, CH = PH - m * 2 - titleH;
+  let frames = clipFrames(), warnings = [];
+  let cols, rows, w;
+  if (c.sizeMode === 'fit') {
+    let N = Math.max(1, c.perPage | 0), best = null;
+    for (let k = 1; k <= N; k++) {
+      let r = Math.ceil(N / k);
+      let ww = Math.min((CW - (k - 1) * gap) / k, ((CH - (r - 1) * gap) / r - labelH) / aspect);
+      if (!best || ww > best.w) best = { k, r, w: ww };
+    }
+    cols = best.k; rows = best.r; w = best.w;
+  } else {
+    w = Math.max(5, +c.drawW || 50);
+    cols = Math.floor((CW + gap) / (w + gap));
+    rows = Math.floor((CH + gap) / (w * aspect + labelH + gap));
+  }
+  let h = w * aspect;
+  if (!(w > 0) || cols < 1 || rows < 1) {
+    warnings.push('The drawing does not fit on the paper inside the margins');
+    cols = rows = 0;
+  }
+  let perPage = c.sizeMode === 'fit' ? Math.max(1, c.perPage | 0) : cols * rows;
+  // Centre the grid in the content area
+  let gw = cols * w + (cols - 1) * gap, gh = rows * (h + labelH) + (rows - 1) * gap;
+  let x0 = m + (CW - gw) / 2, y0 = m + titleH + (CH - gh) / 2;
+  let slots = [];
+  for (let r = 0; r < rows; r++) for (let k = 0; k < cols; k++) slots.push({ x: x0 + k * (w + gap), y: y0 + r * (h + labelH + gap) });
+  slots = slots.slice(0, perPage);
+  let pages = perPage ? Math.ceil(frames.length / perPage) : 0;
+  let mach = CLIP_MACHINES[c.machine];
+  if (mach) {
+    let [aw, ah] = mach.area;
+    let fits = (PW <= aw + 0.5 && PH <= ah + 0.5) || (PW <= ah + 0.5 && PH <= aw + 0.5);
+    if (!fits) warnings.push(`The paper is larger than the ${mach.name}'s plot area (${aw} x ${ah} mm)`);
+  }
+  if (w * state.plotter.dpi / 25.4 < 120) warnings.push('At this size a frame is under 120 px at the current DPI: raise the DPI for finer detail');
+  return { PW, PH, w, h, cols, rows, perPage, slots, labelH, titleH, margin: m, frames, pages, warnings, capture };
+}
+
+// Single-stroke text from the built-in glyphs, as polylines (page px).
+function clipTextStrokes(str, x, y, size, align) {
+  let spacing = state.typeEngine ? state.typeEngine.charSpacing : 0.82;
+  let charW = size * spacing, sx = (size * 0.7) / 5, sy = size / 7;
+  let width = str.length * charW;
+  if (align === 'right') x -= width; else if (align === 'center') x -= width / 2;
+  let out = [];
+  for (let i = 0; i < str.length; i++) {
+    let g = FALLBACK_GLYPHS[str[i].toUpperCase()] || FALLBACK_GLYPHS['?'] || [];
+    let ox = x + i * charW;
+    for (let s of g) out.push([[ox + s[0] * sx, y + s[1] * sy - size], [ox + s[2] * sx, y + s[3] * sy - size]]);
+  }
+  return out;
+}
+
+let _clipFrameCache = { key: null, frames: new Map() };
+let _clipPages = null;
+let _clipBuilding = 0;
+
+// Render the frames the layout needs (at the drawing's real pixel size, so
+// minimum text size and detail shedding match the paper) and keep their
+// plot-safe strokes. The app's own view is put back afterwards.
+async function clipRenderFrames(L, onProgress) {
+  let dpi = state.plotter.dpi;
+  let W = Math.max(40, Math.round(L.w * dpi / 25.4)), H = Math.max(40, Math.round(L.h * dpi / 25.4));
+  let snap = JSON.parse(JSON.stringify(state));
+  delete snap.clip; delete snap.animation.currentFrame; delete snap.animation.showComplete; delete snap.animation.playing; delete snap.fonts;
+  let key = JSON.stringify(snap) + `|${W}x${H}`;
+  if (_clipFrameCache.key !== key) _clipFrameCache = { key, frames: new Map() };
+  let need = [...new Set(L.frames)].filter(f => !_clipFrameCache.frames.has(String(f)));
+  if (!need.length) return { W, H };
+  let keep = { width: state.width, height: state.height, pageFrame: state.pageFrame, reg: state.plotter.registrationMarks,
+               cur: state.animation.currentFrame, complete: state.animation.showComplete };
+  if (state.animation.playing) stopAnimPlayback();
+  try {
+    state.width = W; state.height = H;
+    state.pageFrame = false;                // page furniture comes from the clip layout
+    state.plotter.registrationMarks = false;
+    state.animation.showComplete = false;
+    for (let i = 0; i < need.length; i++) {
+      let f = need[i];
+      if (f === null) generate(); else generate(f);
+      _clipFrameCache.frames.set(String(f), plotSafeStrokes());
+      if (onProgress) onProgress(i + 1, need.length);
+      await new Promise(r => setTimeout(r, 0));
+    }
+  } finally {
+    state.width = keep.width; state.height = keep.height; state.pageFrame = keep.pageFrame;
+    state.plotter.registrationMarks = keep.reg; state.animation.showComplete = keep.complete;
+    if (state.animation.enabled) generateFrame(keep.cur || 0); else { generate(); fixCanvasVisibility(); }
+  }
+  return { W, H };
+}
+
+// Assemble the pages: frames placed in their slots, page furniture (frame
+// numbers, registration, title) on pen 1, strokes re-ordered per pen.
+function clipAssemble(L, dims) {
+  let k = state.plotter.dpi / 25.4, c = state.clip;
+  let PWpx = L.PW * k, PHpx = L.PH * k, sc = (L.w * k) / dims.W;
+  let sample = _clipFrameCache.frames.get(String(L.frames[0]));
+  let layered = sample ? sample.layered : false;
+  let furnKey = !layered ? 'all' : multiPenActive() ? 'pen1' : 'registration';
+  let meta = {};
+  for (let P of _clipFrameCache.frames.values()) for (let Ly of P.layers) meta[Ly.key] = { n: Ly.n, label: Ly.label };
+  if (!meta[furnKey]) meta[furnKey] = { n: furnKey === 'registration' ? 6 : 1, label: furnKey === 'registration' ? state.plotter.layers.registration : furnKey === 'pen1' ? '1 Primary' : 'all' };
+  let ink = state.fgColor, fsw = state.geometry.strokeWeight * 0.5;
+  let pages = [];
+  let total = state.animation.frameCount, seed = String(state.seed).toUpperCase();
+  let fname = f => f === null ? 'ALL' : 'F' + String(f + 1).padStart(3, '0');
+  for (let p = 0; p < L.pages; p++) {
+    let frames = L.frames.slice(p * L.perPage, (p + 1) * L.perPage);
+    let buckets = new Map();
+    let put = (key, s) => { if (!buckets.has(key)) buckets.set(key, []); buckets.get(key).push(s); };
+    let line = pts => put(furnKey, { stroke: ink, sw: fsw, pts });
+    frames.forEach((f, i) => {
+      let P = _clipFrameCache.frames.get(String(f)), slot = L.slots[i];
+      if (!P) return;
+      let ox = slot.x * k, oy = slot.y * k;
+      for (let Ly of P.layers) for (let s of Ly.strokes) put(Ly.key, { stroke: s.stroke, sw: s.sw, pts: s.pts.map(q => [ox + q[0] * sc, oy + q[1] * sc]) });
+      let x1 = ox + L.w * k, y1 = oy + L.h * k, t = 2 * k, o = 1 * k;
+      if (L.capture) {
+        // Corner ticks just outside the frame, for trimming and re-shooting
+        for (let [cx, cy, dx, dy] of [[ox, oy, -1, -1], [x1, oy, 1, -1], [x1, y1, 1, 1], [ox, y1, -1, 1]]) {
+          line([[cx + dx * o, cy + dy * (o + t)], [cx + dx * o, cy + dy * o], [cx + dx * (o + t), cy + dy * o]]);
+        }
+      }
+      if (L.labelH) {
+        let ts = 2.4 * k, by = y1 + (L.labelH - 0.9) * k;
+        let inset = L.capture ? 1.2 * k : 0; // clear of the corner ticks
+        for (let seg of clipTextStrokes(fname(f) + (f === null ? '' : '/' + String(total).padStart(3, '0')), ox + inset, by, ts, 'left')) line(seg);
+        if (L.capture) for (let seg of clipTextStrokes(seed, x1 - inset, by, ts, 'right')) line(seg);
+      }
+    });
+    let pageLabel = `P${p + 1}/${L.pages}`;
+    let range = frames.length ? fname(frames[0]) + (frames.length > 1 ? '-' + fname(frames[frames.length - 1]) : '') : '';
+    if (L.capture) {
+      // Registration crosses at the corners of the margin box
+      let m = L.margin * k, r = Math.min(3 * k, m * 0.25); // centred in the margin, clear of the paper edge
+      if (r > k) for (let [cx, cy] of [[m * 0.5, m * 0.5], [PWpx - m * 0.5, m * 0.5], [PWpx - m * 0.5, PHpx - m * 0.5], [m * 0.5, PHpx - m * 0.5]]) {
+        line([[cx - r, cy], [cx + r, cy]]); line([[cx, cy - r], [cx, cy + r]]);
+        line(Array.from({ length: 25 }, (_, i) => [cx + Math.cos(i / 24 * TWO_PI) * r * 0.55, cy + Math.sin(i / 24 * TWO_PI) * r * 0.55]));
+      }
+      if (m > 4 * k) for (let seg of clipTextStrokes(`MICRO-MACRO  ${seed}  ${pageLabel}  ${range}`, PWpx / 2, PHpx - m * 0.5 + 1.2 * k, 2.4 * k, 'center')) line(seg);
+    } else if (c.title) {
+      let m = L.margin * k;
+      for (let seg of clipTextStrokes(`MICRO-MACRO  ${seed}  ${range}`, m, m + 4 * k, 3.2 * k, 'left')) line(seg);
+      for (let seg of clipTextStrokes(pageLabel, PWpx - m, m + 4 * k, 3.2 * k, 'right')) line(seg);
+    }
+    let layers = [...buckets.keys()].sort((a, b) => meta[a].n - meta[b].n).map(key => {
+      let strokes = buckets.get(key);
+      if (state.plotter.optimizeOrder !== false) strokes = _orderStrokes(strokes, PWpx, PHpx);
+      return { key, n: meta[key].n, label: meta[key].label, strokes: _joinStrokes(strokes) };
+    });
+    let P = { layered, layers };
+    pages.push({ P, frames, label: pageLabel, range, stats: plotStats(P), Wpx: PWpx, Hpx: PHpx });
+  }
+  return pages;
+}
+
+// One page as a plot-ready SVG at its true size (mm), one layer per pen.
+function clipPageSVG(page, L) {
+  let r = v => Math.round(v * 100) / 100;
+  let svg = `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" width="${r(L.PW)}mm" height="${r(L.PH)}mm" viewBox="0 0 ${r(page.Wpx)} ${r(page.Hpx)}" stroke-linecap="round" stroke-linejoin="round">\n`;
+  let emit = strokes => strokes.map(s => `    <path d="${s.pts.map((q, i) => `${i ? 'L' : 'M'}${r(q[0])} ${r(q[1])}`).join('')}" stroke="${s.stroke}" stroke-width="${r(s.sw)}"/>\n`).join('');
+  if (!page.P.layered) svg += `  <g id="composition" fill="none">\n${emit(page.P.layers.flatMap(Ly => Ly.strokes))}  </g>\n`;
+  else for (let Ly of page.P.layers) svg += `  <g id="layer${Ly.n}" inkscape:label="${Ly.label}" inkscape:groupmode="layer" fill="none">\n${emit(Ly.strokes)}  </g>\n`;
+  return svg + '</svg>\n';
+}
+
+function clipDrawPage(cv, page, L, maxW, maxH) {
+  let s = Math.min(maxW / L.PW, maxH / L.PH);
+  let dpr = Math.min(2, window.devicePixelRatio || 1);
+  cv.width = Math.round(L.PW * s * dpr); cv.height = Math.round(L.PH * s * dpr);
+  cv.style.width = Math.round(L.PW * s) + 'px'; cv.style.height = Math.round(L.PH * s) + 'px';
+  let g = cv.getContext('2d'), k = cv.width / page.Wpx;
+  g.fillStyle = state.exportTransparent ? '#ffffff' : state.bgColor;
+  g.fillRect(0, 0, cv.width, cv.height);
+  // margin box and slot outlines, faint, so empty slots and the margins read
+  g.strokeStyle = 'rgba(128,128,128,0.35)'; g.lineWidth = 1;
+  let mk = state.plotter.dpi / 25.4 * k;
+  g.setLineDash([3, 3]);
+  g.strokeRect(L.margin * mk, L.margin * mk, (L.PW - 2 * L.margin) * mk, (L.PH - 2 * L.margin) * mk);
+  L.slots.forEach((sl, i) => { if (i >= page.frames.length) g.strokeRect(sl.x * mk, sl.y * mk, L.w * mk, L.h * mk); });
+  g.setLineDash([]);
+  g.lineCap = 'round'; g.lineJoin = 'round';
+  g.lineWidth = Math.max(0.6, unitToPx(state.plotter.hatch.penDiameter, 'mm', state.plotter.dpi) * k);
+  for (let Ly of page.P.layers) for (let st of Ly.strokes) {
+    g.strokeStyle = st.stroke;
+    g.beginPath();
+    st.pts.forEach((q, i) => i ? g.lineTo(q[0] * k, q[1] * k) : g.moveTo(q[0] * k, q[1] * k));
+    g.stroke();
+  }
+}
+
+function clipFmtTime(sec) {
+  let m = sec / 60;
+  return m >= 60 ? `${Math.floor(m / 60)}h ${Math.round(m % 60)}m` : `${Math.max(1, Math.round(m))} min`;
+}
+
+// The layout readout updates at once; pages rebuild (rendering any frames
+// not yet cached) a moment after the last change.
+let _clipTimer = null;
+function clipChanged() {
+  clipSyncUI();
+  let L = clipLayout();
+  clipReadout(L, null);
+  clearTimeout(_clipTimer);
+  _clipTimer = setTimeout(() => clipBuild(), 250);
+}
+
+async function clipBuild() {
+  let L = clipLayout();
+  let board = document.getElementById('clip-board');
+  let myBuild = ++_clipBuilding;
+  _clipPages = null;
+  if (!L.pages) { board.innerHTML = '<div class="clip-empty">Nothing fits: make the drawing smaller or the margins narrower.</div>'; clipReadout(L, null); return; }
+  let prog = document.getElementById('clip-progress');
+  let dims = await clipRenderFrames(L, (i, n) => { if (prog) prog.textContent = `Rendering frame ${i}/${n}`; });
+  if (myBuild !== _clipBuilding) return; // a newer change started another build
+  if (prog) prog.textContent = '';
+  let pages = clipAssemble(L, dims);
+  _clipPages = { L, pages };
+  board.innerHTML = '';
+  let thumbH = Math.max(160, Math.min(320, Math.floor((window.innerHeight - 160) / 2)));
+  pages.forEach((pg, i) => {
+    let card = document.createElement('div');
+    card.className = 'clip-card';
+    let cv = document.createElement('canvas');
+    clipDrawPage(cv, pg, L, thumbH * L.PW / L.PH, thumbH);
+    card.appendChild(cv);
+    let cap = document.createElement('div');
+    cap.className = 'clip-cap';
+    cap.textContent = `${pg.label}  ${pg.range}  ~${clipFmtTime(pg.stats.seconds)}`;
+    card.appendChild(cap);
+    card.onclick = () => clipZoom(i);
+    board.appendChild(card);
+  });
+  clipReadout(L, pages);
+}
+
+function clipReadout(L, pages) {
+  let el = document.getElementById('clip-readout');
+  if (!el) return;
+  let unit = state.plotter.unit === 'in' ? 'in' : 'mm';
+  let fmt = v => unit === 'in' ? (v / 25.4).toFixed(2) + ' in' : v.toFixed(1) + ' mm';
+  let lines = [
+    `<b>${L.frames.length}</b> frame${L.frames.length === 1 ? '' : 's'} &middot; <b>${L.perPage}</b> per page &middot; <b>${L.pages}</b> page${L.pages === 1 ? '' : 's'}`,
+    `Drawing ${fmt(L.w)} &times; ${fmt(L.h)} on ${fmt(L.PW)} &times; ${fmt(L.PH)}`
+  ];
+  if (pages && pages.length) {
+    let sec = pages.reduce((a, p) => a + p.stats.seconds, 0);
+    let mach = CLIP_MACHINES[state.clip.machine];
+    let changes = pages.reduce((a, p) => a + Math.max(0, p.P.layers.length - 1), 0);
+    let changeS = changes * (mach && mach.name.startsWith('Bantam') ? 45 : 30);
+    let inkBy = {};
+    for (let p of pages) for (let Ly of p.stats.perLayer) { let k = Ly.label; (inkBy[k] = inkBy[k] || { c: Ly.color, m: 0 }).m += Ly.inkMM; }
+    lines.push(`<b>~${clipFmtTime(sec + changeS)}</b> to plot (${changes} pen change${changes === 1 ? '' : 's'})`);
+    lines.push(Object.entries(inkBy).map(([k, v]) => `<span style="color:${v.c}">&#9632;</span> ${k.replace(/^\d+ /, '')} ${(v.m / 1000).toFixed(1)} m`).join(' &middot; '));
+  }
+  for (let w of L.warnings) lines.push(`<span class="clip-warn">${w}</span>`);
+  el.innerHTML = lines.join('<br>');
+}
+
+function clipZoom(i) {
+  if (!_clipPages) return;
+  let { L, pages } = _clipPages, pg = pages[i];
+  let box = document.getElementById('clip-zoom');
+  let cv = document.getElementById('clip-zoom-canvas');
+  box.style.display = 'flex';
+  clipDrawPage(cv, pg, L, window.innerWidth * 0.86, window.innerHeight * 0.82);
+  document.getElementById('clip-zoom-cap').textContent = `${pg.label}  ${pg.range}  ~${clipFmtTime(pg.stats.seconds)}  ${(pg.stats.inkMM / 1000).toFixed(1)} m ink  ${pg.stats.lifts} lifts`;
+  box.dataset.page = i;
+}
+function clipZoomStep(d) {
+  let box = document.getElementById('clip-zoom');
+  if (!_clipPages) return;
+  let n = _clipPages.pages.length, i = ((+box.dataset.page || 0) + d + n) % n;
+  clipZoom(i);
+}
+
+function clipDownload() {
+  if (!_clipPages) return;
+  let { L, pages } = _clipPages;
+  let ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  pages.forEach((pg, i) => setTimeout(() =>
+    downloadBlob(new Blob([clipPageSVG(pg, L)], { type: 'image/svg+xml' }), `${state.filenamePrefix}_${state.seed}_clip_p${String(i + 1).padStart(2, '0')}_${ts}.svg`), i * 120));
+  showConfirmation(`${pages.length} PAGE${pages.length === 1 ? '' : 'S'} EXPORTED`);
+}
+
+// The whole clip as one Stvrpype project with a page per sheet.
+async function clipSend() {
+  if (!_clipPages) return;
+  let { L, pages } = _clipPages;
+  let base = (state.plotter.stvrpypeURL || 'http://127.0.0.1:8000').replace(/\/$/, '');
+  let name = `micro-MACRO ${state.seed} clip`;
+  let body = {
+    name, open: 1,
+    pages: pages.map((pg, i) => ({ name: `p${String(i + 1).padStart(2, '0')} ${pg.range}`, svg: clipPageSVG(pg, L) })),
+    meta: { generator: 'micro-MACRO', seed: state.seed, layout: state.clip.layout, paper: state.clip.paper, landscape: !!state.clip.landscape,
+            paper_mm: [L.PW, L.PH], drawing_mm: [Math.round(L.w * 10) / 10, Math.round(L.h * 10) / 10], per_page: L.perPage,
+            frames: L.frames.map(f => f === null ? 'complete' : f + 1), frame_count: state.animation.frameCount, fps: state.animation.fps,
+            machine: state.clip.machine, dpi: state.plotter.dpi }
+  };
+  let btn = document.getElementById('clip-send-btn');
+  if (btn) btn.disabled = true;
+  try {
+    let res;
+    try {
+      res = await fetch(`${base}/api/send`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    } catch (e) { showConfirmation('STVRPYPE NOT RUNNING AT ' + base.replace(/^https?:\/\//, '')); return; }
+    let out = await res.json().catch(() => ({}));
+    if (!out.ok) {
+      let msg = (out.error && out.error.message) || String(res.status);
+      showConfirmation(/send an svg/i.test(msg) ? 'STVRPYPE NEEDS MULTI-PAGE SUPPORT (UPDATE IT)' : 'STVRPYPE REFUSED: ' + msg.toUpperCase().slice(0, 60));
+      return;
+    }
+    showConfirmation(`SENT ${pages.length} PAGE${pages.length === 1 ? '' : 'S'} TO STVRPYPE`);
+  } finally { if (btn) btn.disabled = false; }
+}
+
+function clipSyncUI() {
+  let c = state.clip, set = (id, prop, v) => { let el = document.getElementById(id); if (el) el[prop] = v; };
+  set('clip-source', 'value', c.source); set('clip-from', 'value', c.from); set('clip-to', 'value', c.to || state.animation.frameCount);
+  set('clip-step', 'value', c.step); set('clip-pingpong', 'checked', !!c.pingpong);
+  set('clip-layout', 'value', c.layout); set('clip-machine', 'value', c.machine);
+  set('clip-paper', 'value', c.paper); set('clip-landscape', 'checked', !!c.landscape);
+  set('clip-custom-w', 'value', c.customW); set('clip-custom-h', 'value', c.customH);
+  set('clip-margin', 'value', c.margin); set('clip-gap', 'value', c.gap);
+  set('clip-size-mode', 'value', c.sizeMode); set('clip-per-page', 'value', c.perPage); set('clip-draw-w', 'value', c.drawW);
+  set('clip-labels', 'checked', !!c.labels); set('clip-title', 'checked', !!c.title);
+  let show = (id, on) => { let el = document.getElementById(id); if (el) el.style.display = on ? '' : 'none'; };
+  let anim = state.animation.enabled && c.source !== 'complete';
+  show('clip-range-row', anim);
+  show('clip-custom-row', c.paper === 'custom');
+  show('clip-per-page-row', c.sizeMode === 'fit');
+  show('clip-draw-w-row', c.sizeMode !== 'fit');
+  show('clip-sheet-opts', c.layout === 'sheet');
+  let sel = document.getElementById('clip-paper'), mach = CLIP_MACHINES[c.machine];
+  if (sel && mach) for (let o of sel.options) o.textContent = o.value === 'custom' ? 'Custom' : o.value.toUpperCase().replace('IN', ' in') + (mach.papers.includes(o.value) ? '' : '  (not suggested)');
+  let note = document.getElementById('clip-anim-note');
+  if (note) note.style.display = state.animation.enabled ? 'none' : '';
+}
+
+function clipSet(path, v) { updateState('clip.' + path, v); clipChanged(); }
+
+function openPlotClip() {
+  if (state.animation.playing) stopAnimPlayback();
+  let v = document.getElementById('clip-view');
+  v.style.display = 'flex';
+  clipChanged();
+}
+function closePlotClip() {
+  document.getElementById('clip-view').style.display = 'none';
+  document.getElementById('clip-zoom').style.display = 'none';
+  _clipBuilding++; // drop a build in flight
+}
+window.openPlotClip = openPlotClip; window.closePlotClip = closePlotClip; window.clipSet = clipSet;
+window.clipDownload = clipDownload; window.clipSend = clipSend; window.clipZoomStep = clipZoomStep;
+
+// ========================================================
 // PLOT-SAFE GEOMETRY (shared by export, plot stats and plot preview)
 // ========================================================
 
@@ -4307,6 +4733,18 @@ const state = {
     p3: { enabled: false, color: '#3da5ff' },
     treatments: 'p2',       // p1 | p2 | p3 | own
     treatColor: '#c77dff'
+  },
+  // Plot Clip: frames of the animation (or the complete frame) on plotter pages
+  clip: {
+    source: 'clip',         // clip | complete
+    from: 1, to: 0, step: 1, pingpong: false,   // to 0 = the last frame
+    layout: 'capture',      // capture (registered, numbered) | sheet (grid art)
+    machine: 'axidraw-v3-a3',
+    paper: 'a4', landscape: false, customW: 210, customH: 297,
+    margin: 12, gap: 6,     // mm
+    sizeMode: 'fit',        // fit (N per page) | size (drawing width)
+    perPage: 1, drawW: 80,  // drawW in mm
+    labels: true, title: true   // sheet mode
   }
 };
 
@@ -22128,6 +22566,13 @@ document.addEventListener('keydown', (e) => {
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
   let mod = e.metaKey || e.ctrlKey || e.altKey;
+  let clipView = document.getElementById('clip-view');
+  if (clipView && clipView.style.display !== 'none') {
+    let zoom = document.getElementById('clip-zoom');
+    if (e.key === 'Escape') { e.preventDefault(); if (zoom.style.display !== 'none') zoom.style.display = 'none'; else closePlotClip(); }
+    else if (zoom.style.display !== 'none' && (e.key === 'ArrowRight' || e.key === 'ArrowLeft')) { e.preventDefault(); clipZoomStep(e.key === 'ArrowRight' ? 1 : -1); }
+    return;
+  }
   // Single-letter shortcuts only without modifiers, so Cmd/Ctrl+R, S and P
   // keep doing reload, save and print
   if (e.key === 'Enter' && !mod) { e.preventDefault(); doGenerate(); }
@@ -22683,5 +23128,78 @@ window.clearSingleCellOverride = clearSingleCellOverride;
 window.copyCellStyle = copyCellStyle;
 window.pasteCellStyle = pasteCellStyle;
 </script>
+
+<!-- ===== PLOT CLIP VIEW ===== -->
+<div id="clip-view" style="display:none">
+  <div class="clip-side">
+    <div class="clip-head"><b>▦ PLOT CLIP</b><button class="secondary" onclick="closePlotClip()" title="Close (Esc)">✕</button></div>
+    <div id="clip-anim-note" class="hint">Animation is off: the complete frame is laid out. Turn on Animation to plot a clip.</div>
+    <div class="control-group">
+      <label>Frames</label>
+      <select id="clip-source" onchange="clipSet('source', this.value)">
+        <option value="clip">Animation frames</option><option value="complete">Complete frame only</option>
+      </select>
+    </div>
+    <div id="clip-range-row">
+      <div class="clip-3">
+        <label>From<input type="number" id="clip-from" min="1" onchange="clipSet('from', +this.value)"></label>
+        <label>To<input type="number" id="clip-to" min="1" onchange="clipSet('to', +this.value)"></label>
+        <label>Every<input type="number" id="clip-step" min="1" onchange="clipSet('step', +this.value)"></label>
+      </div>
+      <div class="check-row"><input type="checkbox" id="clip-pingpong" onchange="clipSet('pingpong', this.checked)"><label for="clip-pingpong">Ping-pong (forward, then back)</label></div>
+    </div>
+    <div class="control-group" data-tip="Capture: every frame in the same registered position, with corner ticks, registration crosses and frame numbers, for re-shooting as an animation. Sheet: the frames as a grid on the page, as artwork.">
+      <label>Layout</label>
+      <select id="clip-layout" onchange="clipSet('layout', this.value)">
+        <option value="capture">Capture (registered, numbered)</option><option value="sheet">Sheet (grid artwork)</option>
+      </select>
+    </div>
+    <div id="clip-sheet-opts">
+      <div class="check-row"><input type="checkbox" id="clip-labels" onchange="clipSet('labels', this.checked)"><label for="clip-labels">Frame numbers</label></div>
+      <div class="check-row"><input type="checkbox" id="clip-title" onchange="clipSet('title', this.checked)"><label for="clip-title">Page title</label></div>
+    </div>
+    <div class="control-group">
+      <label>Machine</label>
+      <select id="clip-machine" onchange="clipSet('machine', this.value)"><option value="axidraw-v3">AxiDraw V3</option><option value="axidraw-v3-a3">AxiDraw V3/A3</option><option value="axidraw-se-a3">AxiDraw SE/A3</option><option value="axidraw-se-a2">AxiDraw SE/A2</option><option value="axidraw-se-a1">AxiDraw SE/A1</option><option value="artframe-2436">Bantam ArtFrame 24x36</option></select>
+    </div>
+    <div class="control-group">
+      <label>Paper</label>
+      <div class="pen-row">
+        <select id="clip-paper" style="flex:1 1 auto" onchange="clipSet('paper', this.value)"><option value="a5">a5</option><option value="a4">a4</option><option value="a3">a3</option><option value="a2">a2</option><option value="a1">a1</option><option value="letter">letter</option><option value="9x12in">9x12in</option><option value="11x17in">11x17in</option><option value="18x24in">18x24in</option><option value="24x36in">24x36in</option><option value="custom">custom</option></select>
+        <label class="pen-label" style="flex:0 0 auto"><input type="checkbox" id="clip-landscape" onchange="clipSet('landscape', this.checked)"> Landscape</label>
+      </div>
+    </div>
+    <div class="clip-3" id="clip-custom-row">
+      <label>W mm<input type="number" id="clip-custom-w" min="20" onchange="clipSet('customW', +this.value)"></label>
+      <label>H mm<input type="number" id="clip-custom-h" min="20" onchange="clipSet('customH', +this.value)"></label>
+    </div>
+    <div class="clip-3">
+      <label>Margin mm<input type="number" id="clip-margin" min="0" step="1" onchange="clipSet('margin', +this.value)"></label>
+      <label>Gap mm<input type="number" id="clip-gap" min="0" step="1" onchange="clipSet('gap', +this.value)"></label>
+    </div>
+    <div class="control-group" data-tip="Fit: choose how many frames go on a page and they are made as large as fits. Size: choose the drawing width and as many fit as will.">
+      <label>Drawing Size</label>
+      <select id="clip-size-mode" onchange="clipSet('sizeMode', this.value)">
+        <option value="fit">Fit frames per page</option><option value="size">Set drawing width</option>
+      </select>
+    </div>
+    <div class="clip-3" id="clip-per-page-row"><label>Frames per page<input type="number" id="clip-per-page" min="1" onchange="clipSet('perPage', +this.value)"></label></div>
+    <div class="clip-3" id="clip-draw-w-row"><label>Drawing width mm<input type="number" id="clip-draw-w" min="5" step="1" onchange="clipSet('drawW', +this.value)"></label></div>
+    <div id="clip-readout" class="plot-stats"></div>
+    <div id="clip-progress" class="hint" style="font-family:monospace"></div>
+    <div class="export-row">
+      <button class="secondary" onclick="clipDownload()">⬡ Download Pages</button>
+      <button class="secondary" id="clip-send-btn" onclick="clipSend()">⇢ Send to Stvrpype</button>
+    </div>
+    <div class="hint">Frames render at the drawing's real size (at the Plotter DPI), so text and detail match the paper; changing the size re-lays the composition. Pen layers follow the Pens settings.</div>
+  </div>
+  <div id="clip-board"></div>
+  <div id="clip-zoom" style="display:none" onclick="if (event.target === this) this.style.display='none'">
+    <div class="clip-zoom-inner">
+      <canvas id="clip-zoom-canvas"></canvas>
+      <div class="clip-zoom-bar"><button class="secondary" onclick="clipZoomStep(-1)">◀</button><span id="clip-zoom-cap"></span><button class="secondary" onclick="clipZoomStep(1)">▶</button><button class="secondary" onclick="document.getElementById('clip-zoom').style.display='none'">✕</button></div>
+    </div>
+  </div>
+</div>
 </body>
 </html>
