@@ -3440,7 +3440,7 @@ async function clipSend() {
   let name = `micro-MACRO ${state.seed} clip`;
   let body = {
     name, open: 1,
-    pages: pages.map((pg, i) => ({ name: `p${String(i + 1).padStart(2, '0')} ${pg.range}`, svg: clipPageSVG(pg, L) })),
+    pages: pages.map(pg => ({ name: pg.range, svg: clipPageSVG(pg, L) })), // Stvrpype numbers the pages itself
     meta: { generator: 'micro-MACRO', seed: state.seed, layout: state.clip.layout, paper: state.clip.paper, landscape: !!state.clip.landscape,
             paper_mm: [L.PW, L.PH], drawing_mm: [Math.round(L.w * 10) / 10, Math.round(L.h * 10) / 10], per_page: L.perPage,
             frames: L.frames.map(f => f === null ? 'complete' : f + 1), frame_count: state.animation.frameCount, fps: state.animation.fps,
