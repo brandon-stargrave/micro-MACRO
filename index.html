@@ -3201,7 +3201,7 @@ function clipLayoutFromPlan(p) {
   if (w * state.plotter.dpi / 25.4 < 120) warnings.push('At this size a frame is under 120 px at the current DPI: raise the DPI for finer detail');
   return { PW: p.paper_mm[0], PH: p.paper_mm[1], w, h, cols: p.grid.cols, rows: p.grid.rows, perPage: p.per_page,
            slots: p.slots.map(s => ({ x: s[0], y: s[1] })), labelH: p.capture_marks ? 3.6 : 0, titleH: 0,
-           margin: p.margin_mm, frames: clipFrames(), pages: p.pages, warnings, capture: p.capture_marks, hub: p };
+           margin: p.margin_mm, margins: p.margins_mm || null, frames: clipFrames(), pages: p.pages, warnings, capture: p.capture_marks, hub: p };
 }
 
 // Page geometry in mm: the slot grid, the drawing size and the page count.
@@ -3450,7 +3450,8 @@ function clipDrawPage(cv, page, L, maxW, maxH) {
   g.strokeStyle = 'rgba(128,128,128,0.35)'; g.lineWidth = 1;
   let mk = state.plotter.dpi / 25.4 * k;
   g.setLineDash([3, 3]);
-  g.strokeRect(L.margin * mk, L.margin * mk, (L.PW - 2 * L.margin) * mk, (L.PH - 2 * L.margin) * mk);
+  let M = L.margins || { top: L.margin, right: L.margin, bottom: L.margin, left: L.margin };
+  g.strokeRect(M.left * mk, M.top * mk, (L.PW - M.left - M.right) * mk, (L.PH - M.top - M.bottom) * mk);
   L.slots.forEach((sl, i) => { if (i >= page.frames.length) g.strokeRect(sl.x * mk, sl.y * mk, L.w * mk, L.h * mk); });
   g.setLineDash([]);
   g.lineCap = 'round'; g.lineJoin = 'round';
