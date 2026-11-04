@@ -3125,6 +3125,7 @@ function clipPaperMM() {
 }
 
 // The frames to plot, as animation frame indices (null = the complete frame).
+// Each is plotted once: ping-pong only changes the playback.
 function clipFrames() {
   let c = state.clip, a = state.animation;
   if (!a.enabled || c.source === 'complete') return [null];
@@ -3132,12 +3133,80 @@ function clipFrames() {
   let from = Math.max(1, Math.min(n, c.from | 0)), to = c.to > 0 ? Math.max(from, Math.min(n, c.to | 0)) : n;
   let step = Math.max(1, c.step | 0), out = [];
   for (let f = from; f <= to; f += step) out.push(f - 1);
-  if (c.pingpong && out.length > 2) out = out.concat(out.slice(1, -1).reverse());
   return out;
+}
+
+// How the video plays the plotted frames: indices into clipFrames(), at the
+// animation's speed (every Nth frame plays at 1/N the rate).
+function clipPlayback(count) {
+  let c = state.clip, seq = Array.from({ length: count }, (_, i) => i);
+  if (c.pingpong && count > 2) seq = seq.concat(seq.slice(1, -1).reverse());
+  return { fps: Math.max(0.1, state.animation.fps / Math.max(1, c.step | 0)), sequence: seq, holds: {} };
+}
+
+// Stvrpype's clip hub (its docs/clip-capture.md) plans the pages and draws the
+// capture marks; this app renders the frames at the planned size and sends
+// them. Without Stvrpype the layout below is worked out here, for a preview
+// and plain page downloads.
+let _clipHub = { plan: null, key: null, error: null, offline: false };
+let _clipHubScript = null, _clipHubBase = null;
+
+function clipBase() { return (state.plotter.stvrpypeURL || 'http://127.0.0.1:8000').replace(/\/$/, ''); }
+
+// The helper talks to the Stvrpype it was loaded from: load it again if that moved.
+function clipLoadHub() {
+  if (_clipHubBase !== clipBase()) { _clipHubBase = clipBase(); _clipHubScript = null; delete window.stvrpypeClip; }
+  if (window.stvrpypeClip) return Promise.resolve(true);
+  if (!_clipHubScript) _clipHubScript = new Promise(res => {
+    let s = document.createElement('script');
+    s.src = clipBase() + '/stvrpype-clip.js';
+    s.onload = () => res(!!window.stvrpypeClip);
+    s.onerror = () => { s.remove(); _clipHubScript = null; res(false); };
+    document.head.appendChild(s);
+  });
+  return _clipHubScript;
+}
+
+function clipMarksOn() { return state.clip.layout === 'capture' || !!state.clip.marks; }
+
+// The plan request (Stvrpype's POST /api/clip/plan) for the current settings.
+function clipRequest() {
+  let c = state.clip, marks = clipMarksOn();
+  let r = { machine: c.machine, layout: c.layout, capture_marks: marks, landscape: !!c.landscape,
+            frames: clipFrames().length, aspect: +(state.height / state.width).toFixed(4),
+            margin_mm: marks ? Math.max(18, +c.margin || 0) : Math.max(0, +c.margin || 0),
+            gap_mm: Math.max(0, +c.gap || 0) };
+  if (c.paper === 'custom') { r.paper = 'custom'; r.paper_mm = [+c.customW, +c.customH]; } else r.paper = c.paper;
+  if (c.sizeMode === 'fit') r.per_page = Math.max(1, c.perPage | 0); else r.frame_width_mm = Math.max(5, +c.drawW || 50);
+  return r;
+}
+
+async function clipRefreshPlan() {
+  let req = clipRequest(), key = clipBase() + JSON.stringify(req);
+  if (_clipHub.key === key && (_clipHub.plan || _clipHub.error)) return;
+  if (!(await clipLoadHub())) { _clipHub = { plan: null, key: null, error: null, offline: true }; return; }
+  try {
+    _clipHub = { plan: await window.stvrpypeClip.plan(req), key, error: null, offline: false };
+  } catch (e) {
+    let msg = String(e && e.message || e);
+    _clipHub = /isn't running/.test(msg) ? { plan: null, key: null, error: null, offline: true }
+                                          : { plan: null, key, error: msg, offline: false };
+  }
+}
+
+// The layout from Stvrpype's plan, in the shape clipLayout() returns.
+function clipLayoutFromPlan(p) {
+  let [w, h] = p.frame_mm, warnings = p.warnings.slice();
+  if (p.capture_marks && p.margin_mm > (+state.clip.margin || 0)) warnings.push(`Margins raised to ${p.margin_mm} mm to hold the capture marks`);
+  if (w * state.plotter.dpi / 25.4 < 120) warnings.push('At this size a frame is under 120 px at the current DPI: raise the DPI for finer detail');
+  return { PW: p.paper_mm[0], PH: p.paper_mm[1], w, h, cols: p.grid.cols, rows: p.grid.rows, perPage: p.per_page,
+           slots: p.slots.map(s => ({ x: s[0], y: s[1] })), labelH: p.capture_marks ? 3.6 : 0, titleH: 0,
+           margin: p.margin_mm, frames: clipFrames(), pages: p.pages, warnings, capture: p.capture_marks, hub: p };
 }
 
 // Page geometry in mm: the slot grid, the drawing size and the page count.
 function clipLayout() {
+  if (_clipHub.plan && _clipHub.key === clipBase() + JSON.stringify(clipRequest())) return clipLayoutFromPlan(_clipHub.plan);
   let c = state.clip, [PW, PH] = clipPaperMM();
   let aspect = state.height / state.width;
   let capture = c.layout === 'capture';
@@ -3180,7 +3249,8 @@ function clipLayout() {
     if (!fits) warnings.push(`The paper is larger than the ${mach.name}'s plot area (${aw} x ${ah} mm)`);
   }
   if (w * state.plotter.dpi / 25.4 < 120) warnings.push('At this size a frame is under 120 px at the current DPI: raise the DPI for finer detail');
-  return { PW, PH, w, h, cols, rows, perPage, slots, labelH, titleH, margin: m, frames, pages, warnings, capture };
+  if (_clipHub.error) warnings.unshift('Stvrpype: ' + _clipHub.error);
+  return { PW, PH, w, h, cols, rows, perPage, slots, labelH, titleH, margin: m, frames, pages, warnings, capture, hub: null };
 }
 
 // Single-stroke text from the built-in glyphs, as polylines (page px).
@@ -3244,9 +3314,11 @@ function clipAssemble(L, dims) {
   let PWpx = L.PW * k, PHpx = L.PH * k, sc = (L.w * k) / dims.W;
   let sample = _clipFrameCache.frames.get(String(L.frames[0]));
   let layered = sample ? sample.layered : false;
-  let furnKey = !layered ? 'all' : multiPenActive() ? 'pen1' : 'registration';
   let meta = {};
   for (let P of _clipFrameCache.frames.values()) for (let Ly of P.layers) meta[Ly.key] = { n: Ly.n, label: Ly.label };
+  // Stvrpype draws its marks on pen 1; the local layout keeps its own furniture layer
+  let furnKey = !layered ? 'all' : L.hub ? (Object.keys(meta).find(key => meta[key].n === 1) || 'pen1')
+              : multiPenActive() ? 'pen1' : 'registration';
   if (!meta[furnKey]) meta[furnKey] = { n: furnKey === 'registration' ? 6 : 1, label: furnKey === 'registration' ? state.plotter.layers.registration : furnKey === 'pen1' ? '1 Primary' : 'all' };
   let ink = state.fgColor, fsw = state.geometry.strokeWeight * 0.5;
   let pages = [];
@@ -3269,7 +3341,13 @@ function clipAssemble(L, dims) {
           line([[cx + dx * o, cy + dy * (o + t)], [cx + dx * o, cy + dy * o], [cx + dx * (o + t), cy + dy * o]]);
         }
       }
-      if (L.labelH) {
+      if (L.hub) {
+        if (L.labelH) {
+          let at = p * L.perPage + i, by = y1 + 3.0 * k;
+          for (let seg of clipTextStrokes(`F${String(at + 1).padStart(3, '0')}/${String(L.frames.length).padStart(3, '0')}`, ox, by, 1.4 * k, 'left')) line(seg);
+          for (let seg of clipTextStrokes(seed, x1, by, 1.4 * k, 'right')) line(seg);
+        }
+      } else if (L.labelH) {
         let ts = 2.4 * k, by = y1 + (L.labelH - 0.9) * k;
         let inset = L.capture ? 1.2 * k : 0; // clear of the corner ticks
         for (let seg of clipTextStrokes(fname(f) + (f === null ? '' : '/' + String(total).padStart(3, '0')), ox + inset, by, ts, 'left')) line(seg);
@@ -3278,7 +3356,9 @@ function clipAssemble(L, dims) {
     });
     let pageLabel = `P${p + 1}/${L.pages}`;
     let range = frames.length ? fname(frames[0]) + (frames.length > 1 ? '-' + fname(frames[frames.length - 1]) : '') : '';
-    if (L.capture) {
+    if (L.hub) {
+      if (L.capture) clipHubMarks(line, L, p, frames.length, k);
+    } else if (L.capture) {
       // Registration crosses at the corners of the margin box
       let m = L.margin * k, r = Math.min(3 * k, m * 0.25); // centred in the margin, clear of the paper edge
       if (r > k) for (let [cx, cy] of [[m * 0.5, m * 0.5], [PWpx - m * 0.5, m * 0.5], [PWpx - m * 0.5, PHpx - m * 0.5], [m * 0.5, PHpx - m * 0.5]]) {
@@ -3300,6 +3380,52 @@ function clipAssemble(L, dims) {
     pages.push({ P, frames, label: pageLabel, range, stats: plotStats(P), Wpx: PWpx, Hpx: PHpx });
   }
   return pages;
+}
+
+// A preview of the capture marks Stvrpype draws (docs/clip-capture.md section 2):
+// corner markers, the page code (a stand-in pattern: the real Data Matrix is made
+// there) with its line of text, all on pen 1, hatched solid at the pen width.
+function clipHubMarks(line, L, page, count, k) {
+  let pen = Math.max(0.1, +state.plotter.hatch.penDiameter || 0.35), pitch = pen * 0.9;
+  let fill = (x, y, w, h) => { for (let yy = y + pen / 2; yy <= y + h - pen / 2 + 1e-6; yy += pitch) line([[(x + pen / 2) * k, yy * k], [(x + w - pen / 2) * k, yy * k]]); };
+  let box = (x, y, w, h) => line([[x * k, y * k], [(x + w) * k, y * k], [(x + w) * k, (y + h) * k], [x * k, (y + h) * k], [x * k, y * k]]);
+  let ring = (cx, cy, r) => line(Array.from({ length: 33 }, (_, i) => [(cx + Math.cos(i / 32 * TWO_PI) * r) * k, (cy + Math.sin(i / 32 * TWO_PI) * r) * k]));
+  for (let m of L.hub.markers) {
+    let [cx, cy] = m.center, s = m.size;
+    box(cx - s / 2, cy - s / 2, s, s);
+    if (m.kind === 'orient') { ring(cx, cy, s * 0.3); for (let r = s * 0.11; r > pen / 4; r -= pitch) ring(cx, cy, r); }
+    else fill(cx - s * 3 / 14, cy - s * 3 / 14, s * 3 / 7, s * 3 / 7);
+  }
+  let [x, y, s] = L.hub.code_rect, n = 16, mod = s / n;
+  let dark = (r, c) => c === 0 || r === n - 1 || (r === 0 ? c % 2 === 0 : c === n - 1 ? r % 2 === 1
+                     : ((Math.sin((r * 31 + c * 17 + page * 7) * 12.9898) * 43758.5453) % 1 + 1) % 1 < 0.5);
+  for (let r = 0; r < n; r++) {
+    let run = null;
+    for (let c = 0; c <= n; c++) {
+      let on = c < n && dark(r, c);
+      if (on && run === null) run = c;
+      if (!on && run !== null) { fill(x + run * mod, y + r * mod, (c - run) * mod, mod); run = null; }
+    }
+  }
+  let first = page * L.perPage, pad = v => String(v).padStart(3, '0');
+  let human = `${String(state.seed).toUpperCase()}  P${page + 1}/${L.pages}  ` + (count ? `F${pad(first + 1)}-F${pad(first + count)}` : '');
+  for (let seg of clipTextStrokes(human, (x + s + 4) * k, (y + s / 2 + 1) * k, 2 * k, 'left')) line(seg);
+}
+
+// One frame as a plot-ready SVG at the plan's frame size (mm), one layer per pen.
+function clipFrameSVG(f, L, dims) {
+  return clipPageSVG({ P: _clipFrameCache.frames.get(String(f)), Wpx: dims.W, Hpx: dims.H }, { PW: L.w, PH: L.h });
+}
+
+// The project's pens, from the frames' layers: [{ layer, color, name }].
+function clipPens() {
+  let pens = new Map();
+  for (let P of _clipFrameCache.frames.values()) for (let Ly of P.layers) {
+    let n = P.layered ? Ly.n : 1;
+    if (!pens.has(n) && Ly.strokes.length) pens.set(n, { layer: n, color: Ly.strokes[0].stroke, name: P.layered ? Ly.label : '1 Primary' });
+  }
+  return [...pens.values()].sort((a, b) => a.layer - b.layer)
+    .map(p => /^#[0-9a-f]{6}$/i.test(p.color) ? p : { layer: p.layer, name: p.name });
 }
 
 // One page as a plot-ready SVG at its true size (mm), one layer per pen.
@@ -3348,15 +3474,18 @@ let _clipTimer = null;
 function clipChanged() {
   clipSyncUI();
   let L = clipLayout();
-  clipReadout(L, null);
+  if (L.hub || !_clipHub.plan) clipReadout(L, null); // else Stvrpype's new plan is a moment away
   clearTimeout(_clipTimer);
   _clipTimer = setTimeout(() => clipBuild(), 250);
 }
 
 async function clipBuild() {
+  let myBuild = ++_clipBuilding;
+  await clipRefreshPlan();
+  if (myBuild !== _clipBuilding) return;
+  clipSyncUI();
   let L = clipLayout();
   let board = document.getElementById('clip-board');
-  let myBuild = ++_clipBuilding;
   _clipPages = null;
   if (!L.pages) { board.innerHTML = '<div class="clip-empty">Nothing fits: make the drawing smaller or the margins narrower.</div>'; clipReadout(L, null); return; }
   let prog = document.getElementById('clip-progress');
@@ -3364,7 +3493,7 @@ async function clipBuild() {
   if (myBuild !== _clipBuilding) return; // a newer change started another build
   if (prog) prog.textContent = '';
   let pages = clipAssemble(L, dims);
-  _clipPages = { L, pages };
+  _clipPages = { L, pages, dims };
   board.innerHTML = '';
   let thumbH = Math.max(160, Math.min(320, Math.floor((window.innerHeight - 160) / 2)));
   pages.forEach((pg, i) => {
@@ -3403,7 +3532,10 @@ function clipReadout(L, pages) {
     lines.push(Object.entries(inkBy).map(([k, v]) => `<span style="color:${v.c}">&#9632;</span> ${k.replace(/^\d+ /, '')} ${(v.m / 1000).toFixed(1)} m`).join(' &middot; '));
   }
   for (let w of L.warnings) lines.push(`<span class="clip-warn">${w}</span>`);
-  el.innerHTML = lines.join('<br>');
+  let host = clipBase().replace(/^https?:\/\//, '');
+  lines.push(L.hub ? `<span class="hint">Pages planned by Stvrpype; its capture marks are shown as a preview</span>`
+             : _clipHub.offline ? `<span class="clip-warn">Stvrpype isn't running at ${host}: laid out here. Start it to send the clip with capture marks.</span>` : '');
+  el.innerHTML = lines.filter(Boolean).join('<br>');
 }
 
 function clipZoom(i) {
@@ -3423,43 +3555,47 @@ function clipZoomStep(d) {
   clipZoom(i);
 }
 
+// Plain pages laid out here (no page codes): only without Stvrpype, which
+// exports its own pages with their marks and manifest.
 function clipDownload() {
   if (!_clipPages) return;
   let { L, pages } = _clipPages;
+  if (L.hub) { showConfirmation('SEND TO STVRPYPE: IT EXPORTS THE PAGES'); return; }
   let ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   pages.forEach((pg, i) => setTimeout(() =>
     downloadBlob(new Blob([clipPageSVG(pg, L)], { type: 'image/svg+xml' }), `${state.filenamePrefix}_${state.seed}_clip_p${String(i + 1).padStart(2, '0')}_${ts}.svg`), i * 120));
   showConfirmation(`${pages.length} PAGE${pages.length === 1 ? '' : 'S'} EXPORTED`);
 }
 
-// The whole clip as one Stvrpype project with a page per sheet.
+// The clip to Stvrpype's hub: every frame once, at the plan's size, with its
+// playback. Stvrpype lays out the pages, draws the marks and keeps the
+// manifest, as one project with a page per sheet.
 async function clipSend() {
   if (!_clipPages) return;
-  let { L, pages } = _clipPages;
-  let base = (state.plotter.stvrpypeURL || 'http://127.0.0.1:8000').replace(/\/$/, '');
-  let name = `micro-MACRO ${state.seed} clip`;
-  let body = {
-    name, open: 1,
-    pages: pages.map(pg => ({ name: pg.range, svg: clipPageSVG(pg, L) })), // Stvrpype numbers the pages itself
-    meta: { generator: 'micro-MACRO', seed: state.seed, layout: state.clip.layout, paper: state.clip.paper, landscape: !!state.clip.landscape,
-            paper_mm: [L.PW, L.PH], drawing_mm: [Math.round(L.w * 10) / 10, Math.round(L.h * 10) / 10], per_page: L.perPage,
-            frames: L.frames.map(f => f === null ? 'complete' : f + 1), frame_count: state.animation.frameCount, fps: state.animation.fps,
-            machine: state.clip.machine, dpi: state.plotter.dpi }
+  let { L, dims } = _clipPages;
+  let host = clipBase().replace(/^https?:\/\//, '');
+  if (!L.hub) {
+    showConfirmation(_clipHub.error ? 'STVRPYPE REFUSED: ' + _clipHub.error.toUpperCase().slice(0, 60) : 'STVRPYPE NOT RUNNING AT ' + host);
+    return;
+  }
+  let fname = f => f === null ? 'ALL' : 'F' + String(f + 1).padStart(3, '0');
+  let clip = {
+    name: `micro-MACRO ${state.seed} clip`, open: 1, generator: 'micro-MACRO', seed: String(state.seed),
+    plan: clipRequest(), frame_mm: [L.w, L.h],
+    frames: L.frames.map(f => ({ label: fname(f), svg: clipFrameSVG(f, L, dims) })),
+    playback: clipPlayback(L.frames.length), pens: clipPens(),
+    meta: { frames: L.frames.map(f => f === null ? 'complete' : f + 1), frame_count: state.animation.frameCount,
+            anim_fps: state.animation.fps, dpi: state.plotter.dpi }
   };
   let btn = document.getElementById('clip-send-btn');
   if (btn) btn.disabled = true;
   try {
-    let res;
-    try {
-      res = await fetch(`${base}/api/send`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    } catch (e) { showConfirmation('STVRPYPE NOT RUNNING AT ' + base.replace(/^https?:\/\//, '')); return; }
-    let out = await res.json().catch(() => ({}));
-    if (!out.ok) {
-      let msg = (out.error && out.error.message) || String(res.status);
-      showConfirmation(/send an svg/i.test(msg) ? 'STVRPYPE NEEDS MULTI-PAGE SUPPORT (UPDATE IT)' : 'STVRPYPE REFUSED: ' + msg.toUpperCase().slice(0, 60));
-      return;
-    }
-    showConfirmation(`SENT ${pages.length} PAGE${pages.length === 1 ? '' : 'S'} TO STVRPYPE`);
+    let out = await window.stvrpypeClip.send(clip);
+    showConfirmation(`SENT ${L.frames.length} FRAME${L.frames.length === 1 ? '' : 'S'} ON ${out.pages} PAGE${out.pages === 1 ? '' : 'S'} TO STVRPYPE`);
+  } catch (e) {
+    let msg = String(e && e.message || e);
+    if (/render the frames again/i.test(msg)) { _clipHub.key = null; clipChanged(); }
+    showConfirmation(/isn't running/.test(msg) ? 'STVRPYPE NOT RUNNING AT ' + host : 'STVRPYPE REFUSED: ' + msg.toUpperCase().slice(0, 60));
   } finally { if (btn) btn.disabled = false; }
 }
 
@@ -3472,8 +3608,11 @@ function clipSyncUI() {
   set('clip-custom-w', 'value', c.customW); set('clip-custom-h', 'value', c.customH);
   set('clip-margin', 'value', c.margin); set('clip-gap', 'value', c.gap);
   set('clip-size-mode', 'value', c.sizeMode); set('clip-per-page', 'value', c.perPage); set('clip-draw-w', 'value', c.drawW);
-  set('clip-labels', 'checked', !!c.labels); set('clip-title', 'checked', !!c.title);
+  set('clip-labels', 'checked', !!c.labels); set('clip-title', 'checked', !!c.title); set('clip-marks', 'checked', !!c.marks);
   let show = (id, on) => { let el = document.getElementById(id); if (el) el.style.display = on ? '' : 'none'; };
+  let local = _clipHub.offline;  // laid out here: its own sheet furniture and downloads
+  show('clip-marks-row', !local); show('clip-labels-row', local); show('clip-title-row', local);
+  show('clip-download-btn', local);
   let anim = state.animation.enabled && c.source !== 'complete';
   show('clip-range-row', anim);
   show('clip-custom-row', c.paper === 'custom');
@@ -4741,10 +4880,11 @@ const state = {
     layout: 'capture',      // capture (registered, numbered) | sheet (grid art)
     machine: 'axidraw-v3-a3',
     paper: 'a4', landscape: false, customW: 210, customH: 297,
-    margin: 12, gap: 6,     // mm
+    margin: 18, gap: 6,     // mm; capture marks need 18
     sizeMode: 'fit',        // fit (N per page) | size (drawing width)
     perPage: 1, drawW: 80,  // drawW in mm
-    labels: true, title: true   // sheet mode
+    marks: false,           // sheet mode: capture marks too (Stvrpype draws them)
+    labels: true, title: true   // sheet mode, laid out here when Stvrpype isn't running
   }
 };
 
@@ -23155,8 +23295,9 @@ window.pasteCellStyle = pasteCellStyle;
       </select>
     </div>
     <div id="clip-sheet-opts">
-      <div class="check-row"><input type="checkbox" id="clip-labels" onchange="clipSet('labels', this.checked)"><label for="clip-labels">Frame numbers</label></div>
-      <div class="check-row"><input type="checkbox" id="clip-title" onchange="clipSet('title', this.checked)"><label for="clip-title">Page title</label></div>
+      <div class="check-row" id="clip-marks-row" data-tip="Corner markers, a page code and frame ticks, drawn by Stvrpype, so the sheet can be photographed back into a clip. They need 18 mm margins."><input type="checkbox" id="clip-marks" onchange="clipSet('marks', this.checked)"><label for="clip-marks">Capture marks</label></div>
+      <div class="check-row" id="clip-labels-row"><input type="checkbox" id="clip-labels" onchange="clipSet('labels', this.checked)"><label for="clip-labels">Frame numbers</label></div>
+      <div class="check-row" id="clip-title-row"><input type="checkbox" id="clip-title" onchange="clipSet('title', this.checked)"><label for="clip-title">Page title</label></div>
     </div>
     <div class="control-group">
       <label>Machine</label>
@@ -23188,10 +23329,10 @@ window.pasteCellStyle = pasteCellStyle;
     <div id="clip-readout" class="plot-stats"></div>
     <div id="clip-progress" class="hint" style="font-family:monospace"></div>
     <div class="export-row">
-      <button class="secondary" onclick="clipDownload()">⬡ Download Pages</button>
+      <button class="secondary" id="clip-download-btn" onclick="clipDownload()">⬡ Download Pages</button>
       <button class="secondary" id="clip-send-btn" onclick="clipSend()">⇢ Send to Stvrpype</button>
     </div>
-    <div class="hint">Frames render at the drawing's real size (at the Plotter DPI), so text and detail match the paper; changing the size re-lays the composition. Pen layers follow the Pens settings.</div>
+    <div class="hint">Frames render at the drawing's real size (at the Plotter DPI), so text and detail match the paper; changing the size re-lays the composition. Pen layers follow the Pens settings. Each frame is plotted once: ping-pong and the frame rate travel with the clip for the video.</div>
   </div>
   <div id="clip-board"></div>
   <div id="clip-zoom" style="display:none" onclick="if (event.target === this) this.style.display='none'">
