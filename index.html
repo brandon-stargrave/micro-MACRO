@@ -1406,9 +1406,16 @@ const ACCENT_CHARS = [
 
 // Font manifest — update when adding fonts to directories
 const FONT_MANIFEST = {
-  micro: ['EMSOsmotron.svg', 'TwinSans.svg', 'EMSReadability.svg', 'EMSSpaceRocks.svg'],
+  // Plotterm, single-stroke: all small type
+  micro: ['Plotterm-Vector.svg', 'Plotterm-Round.svg', 'Plotterm-Thread.svg', 'Plotterm-Typewriter.svg',
+          'Plotterm-Scan.svg', 'Plotterm-Pin.svg', 'Plotterm-Script.svg', 'Plotterm-Blackletter.svg'],
+  // H74 outline faces: display type and glyph shapes only
   macro: ['HAugmented01.otf', 'HBIOROID-Regular.otf', 'HProtagonist-Regular.otf', 'HVariant.otf', 'HWarMech-I.otf', 'HZROFCKS.otf']
 };
+// Faces Auto picks from. Scan and Pin draw each pixel as a raster stroke or a
+// dot, so they close up at small sizes; Script and Blackletter are a look to
+// choose, not a default. All eight are in the Type Engine's Micro Font list.
+const FONT_MICRO_AUTO = ['Plotterm-Vector.svg', 'Plotterm-Round.svg', 'Plotterm-Thread.svg', 'Plotterm-Typewriter.svg'];
 // ========================================================
 // PLOTTER UNIT SYSTEM
 // ========================================================
@@ -4303,8 +4310,9 @@ const FALLBACK_GLYPHS = {
   '█': [[0,0.5,5,0.5],[0,1.5,5,1.5],[0,2.5,5,2.5],[0,3.5,5,3.5],[0,4.5,5,4.5],[0,5.5,5,5.5],[0,6.5,5,6.5]]
 };
 
-// Draw a string using line-segment fallback glyphs (always available)
-function _drawBuiltinText(str, x, y, fontSize) {
+// Draw a string using line-segment fallback glyphs (always available): only
+// before fonts load, or for a character no Plotterm face has.
+function _drawLineGlyphs(str, x, y, fontSize) {
   if (_drawingSuppressed) return;
   fontSize = Math.max(fontSize, getMinTextSizePx());
   let spacing = state.typeEngine ? state.typeEngine.charSpacing : 0.82;
@@ -4322,19 +4330,63 @@ function _drawBuiltinText(str, x, y, fontSize) {
   }
 }
 
+// Text in the small-type face with no font roll: treatments that grow frame to
+// frame and page furniture use it so the cell PRNG is untouched.
+function _drawBuiltinText(str, x, y, fontSize) {
+  if (_drawingSuppressed) return;
+  fontSize = Math.max(fontSize, getMinTextSizePx());
+  let font = loadedFonts.ready ? _resolveFont(0, fontSize, 0) : null;
+  if (font && font.type === 'svg') drawSVGFontText(String(str), x, y, fontSize, font);
+  else _drawLineGlyphs(String(str), x, y, fontSize);
+}
+
+function _measureBuiltinText(str, fontSize) {
+  fontSize = Math.max(fontSize, getMinTextSizePx());
+  let font = loadedFonts.ready ? _resolveFont(0, fontSize, 0) : null;
+  if (font && font.type === 'svg') return measureSVGFontText(String(str), fontSize, font);
+  let spacing = state.typeEngine ? state.typeEngine.charSpacing : 0.82;
+  return str.length * fontSize * spacing;
+}
+
+// A glyph's strokes as straight segments for decomposition. Plotterm Vector:
+// its strokes run on the 5x7 lattice the round faces share, so each segment
+// is one lattice edge. Coordinates are font units, y up from the baseline.
+function _glyphSegments(ch) {
+  let f = loadedFonts.micro.find(f2 => f2.name === 'Plotterm Vector');
+  let g = f && (f.glyphs.get(ch) || f.glyphs.get(ch.toUpperCase()));
+  if (!g || !g.d) return null;
+  if (!g.segs) {
+    if (!g.polys) g.polys = parsePathToPolylines(g.d);
+    g.segs = [];
+    for (let poly of g.polys) for (let i = 1; i < poly.length; i++) g.segs.push([poly[i - 1][0], poly[i - 1][1], poly[i][0], poly[i][1]]);
+  }
+  return { segs: g.segs, em: f.em };
+}
+
 // Draw a single character with progressively dropped segments for zalgo decomposition
 // decompose: 0 = full glyph, 1 = nothing. hashSeed controls which segments survive.
 // xScale: 0 = collapsed to vertical center line, 1 = full width
 function _drawDecomposedGlyph(ch, x, y, fontSize, decompose, hashSeed, xScale) {
   if (_drawingSuppressed || decompose >= 1) return;
   if (xScale === undefined) xScale = 1;
+  let fullW = fontSize * 0.7;
+  let cx = x + fullW / 2; // horizontal center for X-scale compression
+  let pf = _glyphSegments(ch);
+  if (pf) {
+    // Scaled so the 0.6 em cell is as wide as the line glyphs' body
+    let k = fullW / (pf.em * 0.6);
+    for (let s = 0; s < pf.segs.length; s++) {
+      if (_profileHash(hashSeed + s * 7, 0x4380) < decompose) continue;
+      let seg = pf.segs[s];
+      svgLine(cx + (x + seg[0] * k - cx) * xScale, y - seg[1] * k, cx + (x + seg[2] * k - cx) * xScale, y - seg[3] * k);
+    }
+    return;
+  }
   ch = ch.toUpperCase();
   let glyph = FALLBACK_GLYPHS[ch] || FALLBACK_GLYPHS['?'] || [];
   if (glyph.length === 0) return;
-  let fullW = fontSize * 0.7;
   let scaleX = fullW / 5;
   let scaleY = fontSize / 7;
-  let cx = x + fullW / 2; // horizontal center for X-scale compression
   for (let s = 0; s < glyph.length; s++) {
     if (_profileHash(hashSeed + s * 7, 0x4380) < decompose) continue;
     let seg = glyph[s];
@@ -4345,12 +4397,6 @@ function _drawDecomposedGlyph(ch, x, y, fontSize, decompose, hashSeed, xScale) {
     x2 = cx + (x2 - cx) * xScale;
     svgLine(x1, y1, x2, y2);
   }
-}
-
-function _measureBuiltinText(str, fontSize) {
-  fontSize = Math.max(fontSize, getMinTextSizePx());
-  let spacing = state.typeEngine ? state.typeEngine.charSpacing : 0.82;
-  return str.length * fontSize * spacing;
 }
 
 // Primary text drawing — uses loaded fonts when available, builtin otherwise
@@ -4486,7 +4532,7 @@ function drawSVGFontText(str, x, y, fontSize, fontObj) {
     }
     if (!glyph) {
       // Fallback to built-in glyph
-      _drawBuiltinText(ch, curX, y, fontSize);
+      _drawLineGlyphs(ch, curX, y, fontSize);
       curX += fontSize * 0.7;
       continue;
     }
@@ -4612,11 +4658,34 @@ let _genFonts = { micro: null, macro: null };
 // PRNG stream - and every choice after it - is the same either way.
 function randomizeFontSelection(prng) {
   let rm = prng.nextFloat(), rM = prng.nextFloat();
-  _genFonts.micro = loadedFonts.micro.length ? loadedFonts.micro[Math.floor(rm * loadedFonts.micro.length)] : null;
+  let auto = loadedFonts.micro.filter(f => f.auto);
+  if (!auto.length) auto = loadedFonts.micro;
+  _genFonts.micro = auto.length ? auto[Math.floor(rm * auto.length)] : null;
   _genFonts.macro = loadedFonts.macro.length ? loadedFonts.macro[Math.floor(rM * loadedFonts.macro.length)] : null;
 }
 // Re-roll fonts for each cell (called from pipeline loop)
 function rerollCellFonts(prng) { randomizeFontSelection(prng); }
+
+// The face a string is set in. Small type is always a single-line micro face
+// (Plotterm); an outline macro face (H74) only ever sets display type. Below
+// s=0.3 everything is small type. Above it, type at least `macroMin` px tall is
+// display type, the threshold falling from 6x to 3x min text size as s rises to
+// 0.75 (an outline any smaller closes up under the pen). Deciding by size
+// instead of a per-call roll means a string is measured and drawn in the same
+// face, and big headings turn macro before small labels do. The roll decides
+// only for calls that pass no size (font draws spent to keep the stream).
+function _resolveFont(s, fontSize, roll) {
+  let te = state.typeEngine || {};
+  let macroMin = getMinTextSizePx() * (3 + Math.max(0, 0.75 - s) / 0.45 * 3);
+  let display = s >= 0.3 && (fontSize ? fontSize >= macroMin : roll >= 1 - (s - 0.3) / 0.45);
+  let font = null;
+  if (display) {
+    if (te.macroFont && te.macroFont !== 'auto') font = loadedFonts.macro.find(f => f.name === te.macroFont);
+    if (!font) font = _genFonts.macro;
+  }
+  if (!font && te.microFont && te.microFont !== 'auto') font = loadedFonts.micro.find(f => f.name === te.microFont);
+  return font || _genFonts.micro || loadedFonts.micro[0] || null;
+}
 
 function getTextRenderer(s, fontBias, prng, fontSize) {
   // Drawn first and unconditionally: the stream must not depend on whether
@@ -4624,39 +4693,8 @@ function getTextRenderer(s, fontBias, prng, fontSize) {
   let roll = prng ? prng.nextFloat() : 0.5;
   if (!loadedFonts.ready) return { draw: _drawBuiltinText, measure: _measureBuiltinText };
 
-  let font = null;
-
-  // Check type engine per-category explicit font selections
-  let te = state.typeEngine || {};
-  if (te.microFont && te.microFont !== 'auto' && s < 0.6) {
-    font = loadedFonts.micro.find(f => f.name === te.microFont);
-  }
-  if (!font && te.macroFont && te.macroFont !== 'auto' && s >= 0.3) {
-    font = loadedFonts.macro.find(f => f.name === te.macroFont);
-  }
-
-  if (!font) {
-    // Auto selection — micro (single-line) below s=0.3, macro (outline) above
-    // s=0.75. In between, type at least `macroMin` px tall goes macro, and the
-    // threshold falls from ~6x to ~2x min text size as s rises. Deciding by size
-    // instead of a per-call roll means a string is measured and drawn in the same
-    // face, and big headings turn macro before small labels do.
-    let macroMin = getMinTextSizePx() * (2 + Math.max(0, 0.75 - s) / 0.45 * 4);
-    let useMicro = s < 0.3 || (s <= 0.75 && (fontSize ? fontSize < macroMin : roll < 1 - (s - 0.3) / 0.45));
-    if (useMicro && _genFonts.micro) {
-      font = _genFonts.micro;
-    } else if (_genFonts.macro) {
-      font = _genFonts.macro;
-    } else if (_genFonts.micro) {
-      font = _genFonts.micro;
-    }
-    // Final fallback: pick from any available
-    if (!font) {
-      let allFonts = [...loadedFonts.micro, ...loadedFonts.macro];
-      font = allFonts.length > 0 ? allFonts[Math.floor(roll * allFonts.length)] : null; // reuse the roll: no extra, conditional draw
-    }
-  }
-
+  // No micro face loaded: the builtin line glyphs, never an outline face
+  let font = _resolveFont(s, fontSize, roll);
   if (!font) return { draw: _drawBuiltinText, measure: _measureBuiltinText };
 
   if (font.type === 'svg') {
@@ -4702,7 +4740,7 @@ async function loadAllFonts() {
       try { let r = await fetch('fonts/micro/' + filename); text = await r.text(); }
       catch(e) { text = await xhrLoadText('fonts/micro/' + filename); }
       let font = parseSVGFont(text, filename);
-      if (font) { font._order = FONT_MANIFEST.micro.indexOf(filename); loadedFonts.micro.push(font); console.log('Loaded micro font: ' + font.name); }
+      if (font) { font._order = FONT_MANIFEST.micro.indexOf(filename); font.auto = FONT_MICRO_AUTO.includes(filename); loadedFonts.micro.push(font); console.log('Loaded micro font: ' + font.name); }
     } catch(e) { console.warn('Failed to load micro font ' + filename + ':', e.message); }
   });
 
@@ -7898,29 +7936,8 @@ function _txFontStream() {
   return saved;
 }
 
-// The font getTextRenderer resolves to under the fixed roll.
-function _txFont() {
-  let te = state.typeEngine || {};
-  if (te.microFont && te.microFont !== 'auto' && _cellScale < 0.6) return loadedFonts.micro.find(f => f.name === te.microFont) || null;
-  if (te.macroFont && te.macroFont !== 'auto' && _cellScale >= 0.3) return loadedFonts.macro.find(f => f.name === te.macroFont) || null;
-  return _genFonts.micro || _genFonts.macro;
-}
-
-// Text width. The single-line SVG fonts draw a space (a glyph with no path)
-// at the 0.7 em fallback advance but measure it at the font's own advance, so
-// strings with spaces measure short; correct for that here.
-function _txW(str, size) {
-  str = String(str);
-  let w = measureFallbackText(str, size);
-  if (!loadedFonts.ready || str.indexOf(' ') < 0) return w;
-  let f = _txFont();
-  if (f && f.type === 'svg') {
-    let g = f.glyphs.get(' ');
-    let sz = Math.max(size, getMinTextSizePx());
-    if (g && !g.d) w += (str.split(' ').length - 1) * (sz * 0.7 - g.advance * sz / f.em);
-  }
-  return w;
-}
+// Text width (drawSVGFontText advances a space by the font's own width, as it measures)
+function _txW(str, size) { return measureFallbackText(String(str), size); }
 
 // Heavy weight only where the type is large enough to stay legible; small
 // text drawn heavy closes up into a blot.

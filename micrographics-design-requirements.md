@@ -112,21 +112,13 @@ Fonts are organized into two directories, each serving a different role in the m
 #### Micro Fonts (`/fonts/micro/`)
 Single-line (single-stroke) SVG fonts. Their glyphs are defined as open paths, not filled outlines. They render as stroked lines matching the foreground color and stroke weight. This makes them ideal for pen plotter output — each character is drawn as a continuous toolpath, not a filled region.
 
-Initial set:
-| Font | Character |
-|---|---|
-| `EMSOsmotron` | Geometric, constructed, futuristic |
-| `TwinSans` | Clean, neutral, technical |
-| `EMSReadability` | Clear, functional, higher legibility |
-| `EMSSpaceRocks` | Angular, alien, decorative |
+The set is **Plotterm**, our own monospace single-stroke family: `Plotterm Vector`, `Round`, `Thread`, `Typewriter` (the Auto pool), plus `Scan`, `Pin`, `Script` and `Blackletter` (chosen explicitly in the Type Engine).
 
-- These fonts are the workhorses of the application — used for all text at micro and mid scale positions
-- At micro: `EMSReadability` is preferred for dense text that needs to remain parseable at small sizes
-- At mid: any micro font may be selected based on the text role
-- At macro: micro fonts are still used for any text that appears (via greeble/text density override), but macro fonts become available as an additional option
+- These fonts set **all small type** at every scale position: labels, readouts, treatment text (cipher, flood, hex dumps), glitch decomposition (Plotterm Vector's lattice strokes) and page furniture
+- The old line-segment glyphs remain only as a fallback before fonts load, or for a character Plotterm lacks
 
 #### Macro Fonts (`/fonts/macro/`)
-Standard outline fonts (TTF/OTF/WOFF) with more visual weight and presence. These are display/decorative fonts used **only at macro scale positions** (scale >= 0.6) and in **limited quantities** — typically 1–2 text elements per composition at most. Their purpose is to provide a bolder, more graphic typographic element when text appears as a dominant visual feature rather than as annotation.
+The H74 outline faces (OTF). Display type only — hero words, index numerals, big headings — and glyph shapes. Above scale 0.3, type at least 6× min text size (falling to 3× by scale 0.75) may be set in them; smaller type is always Plotterm, and choosing a Macro Font in the Type Engine never changes that.
 
 - Macro fonts are rendered by extracting glyph outlines via opentype.js and converting them to filled `<path>` elements in SVG
 - For pen plotter compatibility, macro font glyphs are rendered as **outline strokes** (the path traces the glyph boundary, not a fill) — this produces a single toolpath following the letter's silhouette
@@ -1413,7 +1405,7 @@ The exported SVG adheres to these plotter-compatibility requirements:
 - **Stroke attributes:** `stroke-linecap="square"`, `stroke-linejoin="miter"` set on the root `<svg>` element for consistent pen behavior.
 - **Coordinate precision:** All path coordinates rounded to 2 decimal places (0.01px resolution).
 - **Physical dimensions:** When mm or inch units are selected, `width` and `height` attributes carry unit suffixes. The `viewBox` remains in pixels.
-- **Single-line fonts:** SVG micro fonts (EMS Osmotron, Twin Sans, etc.) produce single-stroke open paths — the pen draws each character in one continuous motion without retracing.
+- **Single-line fonts:** the Plotterm SVG micro fonts produce single-stroke open paths — the pen draws each character in one continuous motion without retracing.
 - **OTF outline fonts:** Macro fonts (H74 series) produce closed-path outlines rendered as strokes — the pen traces the letter contour.
 
 ### 18.9 Plotter Workflow Recommendations

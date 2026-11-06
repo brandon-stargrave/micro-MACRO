@@ -780,18 +780,24 @@ Fonts are organized into two tiers loaded from separate directories:
 #### Micro Fonts (`/fonts/micro/`)
 Single-line (single-stroke) SVG fonts. Glyphs are open paths rendered as strokes, not filled outlines. This produces true single-toolpath lettering, ideal for pen plotter output — the pen draws each character in one continuous or near-continuous motion.
 
-Initial set:
+The set is **Plotterm**, our own monospace single-stroke family (0.6 em advance, 0.6 em caps):
 | Font | Character | Usage |
 |---|---|---|
-| **EMSOsmotron** | Geometric, constructed, futuristic | Primary HUD labels, status text, identifiers |
-| **TwinSans** | Clean, neutral, technical | Secondary labels, value readouts, coordinates |
-| **EMSReadability** | Clear, functional, higher legibility | Dense annotation text, data readouts, terminal output |
-| **EMSSpaceRocks** | Angular, alien, decorative | Accent text, error codes, warning labels, stylized headers |
+| **Plotterm Vector** | Sharp 5×7 lattice strokes, fewest pen-downs | Default small type: labels, readouts, identifiers |
+| **Plotterm Round** | The same skeleton with filleted corners | Softer labels and annotation |
+| **Plotterm Thread** | One continuous stroke per shape | Fastest plots, dense data and terminal text |
+| **Plotterm Typewriter** | Monoline slab serif | Legible body text, data readouts |
+| **Plotterm Scan** | 5×7 bitmap drawn as raster strokes | CRT look, chosen explicitly, larger sizes |
+| **Plotterm Pin** | 5×7 dot matrix | Dot-matrix look, chosen explicitly, larger sizes |
+| **Plotterm Script** | Connected monoline cursive | Chosen explicitly |
+| **Plotterm Blackletter** | Textura-like broken strokes | Chosen explicitly |
 
-These fonts are used at all scale positions and constitute the primary typographic voice of the system.
+Auto picks among Vector, Round, Thread and Typewriter; the other four are a look to choose in the Type Engine.
+
+These fonts set **all small type** at every scale position — labels, readouts, treatments, page furniture — and constitute the primary typographic voice of the system.
 
 #### Macro Fonts (`/fonts/macro/`)
-Standard outline display fonts used only at macro scale positions (scale >= 0.6) and in limited quantities (1–2 instances per composition maximum). These provide bold, graphic typographic presence when text appears as a dominant visual element rather than annotation.
+The H74 outline display faces. They set **display type only** — hero words, index numerals, big headings — and glyph shapes (sigil arms). Below scale 0.3 they are never used; above it, type at least 6× min text size (falling to 3× by scale 0.75) may be set in them. Anything smaller is always Plotterm: an outline closes up under the pen at small sizes.
 
 - Macro font glyphs are rendered as outline strokes (the path traces the letter boundary) for pen plotter compatibility
 - User-populated directory — the user adds their own preferred display fonts
@@ -1188,7 +1194,7 @@ Primary axes for algorithmic variation. Each generated element is fully describe
 | **Organic character** | Low (pure geometry), Medium (soft curves), High (biomorphic) |
 | **Rotational motion feel** | Static, Directional (arrow-implied), Spinning (pinwheel arms) |
 | **Font selection** | Auto, or any loaded font from `/fonts/micro/` and `/fonts/macro/` directories |
-| **Font tier** | Micro fonts (single-line, all scales) or Macro fonts (outline, scale >= 0.6 only, 1–2 instances max) |
+| **Font tier** | Micro fonts (Plotterm, single-line, all small type at every scale) or Macro fonts (H74 outline, display-size type only) |
 | **Archetype probability weights** | 0.0–1.0 per archetype (relative weighting) |
 | **Soft edge filtering** | On (gradual probability falloff at range edges), Off (hard cutoff) |
 
