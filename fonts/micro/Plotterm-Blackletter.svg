@@ -6,6 +6,8 @@ Font name:               Plotterm Blackletter
 Version:                 0.2
 Design:                  monospace single-stroke font for ASCII art on pen plotters
                          (curve skeleton; line glyphs join across cells)
+Copyright:               Copyright 2026 Brandon Stargrave (https://github.com/brandon-stargrave)
+License:                 SIL Open Font License 1.1 (OFL.txt, https://openfontlicense.org)
 </metadata>
 <defs>
 <font id="PlottermBlackletter" horiz-adv-x="600" >
