@@ -131,7 +131,7 @@ Parallel line patterns simulate filled regions. Configurable parameters:
 | Enabled | boolean | Master toggle for hatch fills |
 | Angle | 0-180 degrees | Direction of hatch lines |
 | Spacing | 0-20 px | Distance between parallel lines |
-| Pen Diameter | 0.05-5 mm | Physical pen tip width -- hatch spacing must exceed this to avoid overlap |
+| Pen Diameter | 0.05-5 mm | Physical pen tip width -- hatch spacing must exceed this to avoid overlap; also sets the text floor (section 8) |
 | Gradient | boolean | Enable variable spacing for tonal gradient effect |
 | Gradient Range | 0-1 | How much spacing varies across the region (0 = uniform, 1 = full range) |
 
@@ -206,6 +206,8 @@ A global floor for all text rendering, settable in mm, inches, or pixels. Defaul
 **Enforcement:** Centralized clamping in all text drawing and measurement functions. The clamp is applied before any rendering or layout calculation, ensuring that compositions never allocate space for text that would be too small to plot.
 
 **Interaction with DPI:** The minimum converts to pixels via the current DPI setting. At 96 DPI, 2mm = ~7.6px. At 300 DPI, 2mm = ~23.6px. Higher-DPI compositions automatically produce larger text in pixel terms, which is correct -- the same 2mm physical text requires more pixels at higher resolution.
+
+**Pen tip floor:** The pen tip (Pen Diameter, under Hatch Fill) raises the floor: text is never smaller than `pen_diameter × 1.5 / 0.18` of em (8.3× the pen, 2.5mm for a 0.3mm pen). Plotterm's tightest counters (Typewriter's A, m, 4) are 0.18 em between stroke centres, and at 1.5× the pen's width they keep half a nib of paper between the inks. The larger of the two floors wins; the panel says when the pen is the one setting it. Whole glyphs in treatment clones keep the same floor; single-stroke marks (slashes, ticks) may go smaller. Clip-sheet text (frame labels, footer, title) is set in Plotterm Round by cap height and keeps the floor too; the label band grows with it. The Stvrpype hub's marks are lettered by Stvrpype at its own fixed sizes.
 
 ---
 

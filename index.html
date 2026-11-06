@@ -1152,16 +1152,17 @@
       </div>
       <hr class="divider">
       <div class="control-group">
-        <label>Min Text Size</label>
+        <label data-tip="Smallest text, as the em. The pen tip (Pen ⌀ under Hatch Fill) raises it so letters' counters stay open under the nib.">Min Text Size</label>
         <div class="row">
           <input type="number" id="plotter-min-text" min="0.1" max="20" step="0.1" value="2"
-            onchange="updateState('plotter.minTextSize', +this.value)">
-          <select id="plotter-min-text-unit" style="width:60px" onchange="updateState('plotter.minTextSizeUnit', this.value)">
+            onchange="updateState('plotter.minTextSize', +this.value); refreshMinTextHint()">
+          <select id="plotter-min-text-unit" style="width:60px" onchange="updateState('plotter.minTextSizeUnit', this.value); refreshMinTextHint()">
             <option value="mm" selected>mm</option>
             <option value="in">in</option>
             <option value="px">px</option>
           </select>
         </div>
+        <div class="hint" id="min-text-hint"></div>
       </div>
       <div class="check-row">
         <input type="checkbox" id="plotter-reg-marks" onchange="updateState('plotter.registrationMarks', this.checked)">
@@ -1199,9 +1200,9 @@
       </div>
       <div class="row">
         <div class="control-group">
-          <label>Pen ⌀ (mm)</label>
+          <label data-tip="The pen tip's width. Sets the hatch spacing, the plot preview's line, and the smallest text (see Min Text Size).">Pen ⌀ (mm)</label>
           <input type="number" id="hatch-pen-dia" min="0.05" max="5" step="0.05" value="0.3"
-            onchange="updateState('plotter.hatch.penDiameter', +this.value)">
+            onchange="updateState('plotter.hatch.penDiameter', +this.value); refreshMinTextHint()">
         </div>
         <div class="control-group">
           <label>Spacing (px)</label>
@@ -1447,9 +1448,29 @@ function formatUnitVal(px, unit, dpi) {
   return Math.round(v).toString();
 }
 
+// Text never sets smaller than the pen tip can draw. Plotterm's tightest
+// counters (Typewriter's A, m, 4) are 0.18 em between stroke centres; at
+// 1.5x the tip's width they keep half a nib of paper between the inks.
+const TEXT_PEN_PITCH_EM = 0.18, TEXT_PEN_CLEAR = 1.5;
+function getPenTextFloorPx() {
+  let pen = unitToPx(+state.plotter.hatch.penDiameter || 0, 'mm', state.plotter.dpi);
+  return pen * TEXT_PEN_CLEAR / TEXT_PEN_PITCH_EM;
+}
+
 function getMinTextSizePx() {
   let p = state.plotter;
-  return unitToPx(p.minTextSize, p.minTextSizeUnit, p.dpi);
+  return Math.max(unitToPx(p.minTextSize, p.minTextSizeUnit, p.dpi), getPenTextFloorPx());
+}
+
+// Says when the pen tip, not the Min Text Size field, sets the smallest text.
+function refreshMinTextHint() {
+  let el = document.getElementById('min-text-hint');
+  if (!el) return;
+  let p = state.plotter, set = unitToPx(p.minTextSize, p.minTextSizeUnit, p.dpi), floor = getPenTextFloorPx();
+  let u = p.minTextSizeUnit === 'px' ? 'mm' : p.minTextSizeUnit;
+  el.textContent = floor > set + 1e-6
+    ? `Pen ⌀ ${(+p.hatch.penDiameter).toFixed(2)} mm raises this to ${formatUnitVal(floor, u, p.dpi)} ${u}`
+    : `Pen ⌀ ${(+p.hatch.penDiameter).toFixed(2)} mm needs at least ${formatUnitVal(floor, u, p.dpi)} ${u}`;
 }
 
 function setPlotterUnit(unit) {
@@ -1497,6 +1518,7 @@ function refreshDimensionDisplays() {
     let el = document.getElementById(id);
     if (el) el.value = formatUnitVal(state.margin[id.split('-')[1]], u, dpi);
   });
+  refreshMinTextHint();
 }
 
 function getHatchSpacing() {
@@ -3217,7 +3239,10 @@ function clipLayout() {
   let c = state.clip, [PW, PH] = clipPaperMM();
   let aspect = state.height / state.width;
   let capture = c.layout === 'capture';
-  let labelH = capture || c.labels ? 4.5 : 0;
+  // The label band grows when the pen tip raises the labels' cap height
+  // (a '/' rises a third above it); 4.5 mm holds the 2.4 mm labels.
+  let labelCap = Math.max(2.4, getPenTextFloorPx() * CLIP_CAP_EM * 25.4 / state.plotter.dpi);
+  let labelH = capture || c.labels ? Math.max(4.5, labelCap * 4 / 3 + 1.3) : 0;
   let titleH = !capture && c.title ? 7 : 0;
   let m = Math.max(0, +c.margin || 0), gap = Math.max(0, +c.gap || 0);
   let CW = PW - m * 2, CH = PH - m * 2 - titleH;
@@ -3260,17 +3285,37 @@ function clipLayout() {
   return { PW, PH, w, h, cols, rows, perPage, slots, labelH, titleH, margin: m, frames, pages, warnings, capture, hub: null };
 }
 
-// Single-stroke text from the built-in glyphs, as polylines (page px).
-function clipTextStrokes(str, x, y, size, align) {
+// Single-stroke text as polylines (page px), sized by its cap height in Plotterm
+// Round as Stvrpype letters it; the built-in line glyphs stand in before the
+// fonts load. `own`: micro-MACRO's own sheet text, which keeps the pen tip's
+// floor (the hub's marks preview Stvrpype's fixed lettering as it will draw).
+const CLIP_CAP_EM = 0.6; // Plotterm Round's cap height
+function clipTextStrokes(str, x, y, cap, align, own) {
+  if (own) cap = Math.max(cap, getPenTextFloorPx() * CLIP_CAP_EM);
+  let f = loadedFonts.ready && loadedFonts.micro.find(f2 => f2.name === 'Plotterm Round');
+  let out = [];
+  if (f) {
+    let size = cap / CLIP_CAP_EM, sc = size / f.em;
+    let width = measureSVGFontText(str, size, f);
+    if (align === 'right') x -= width; else if (align === 'center') x -= width / 2;
+    for (let ch of str) {
+      let g = f.glyphs.get(ch) || f.glyphs.get(ch.toUpperCase());
+      if (g && g.d) {
+        if (!g.polys) g.polys = parsePathToPolylines(g.d);
+        for (let poly of g.polys) out.push(poly.map(q => [x + q[0] * sc, y - q[1] * sc]));
+      }
+      x += g ? g.advance * sc : size * 0.7;
+    }
+    return out;
+  }
   let spacing = state.typeEngine ? state.typeEngine.charSpacing : 0.82;
-  let charW = size * spacing, sx = (size * 0.7) / 5, sy = size / 7;
+  let charW = cap * spacing, sx = (cap * 0.7) / 5, sy = cap / 7;
   let width = str.length * charW;
   if (align === 'right') x -= width; else if (align === 'center') x -= width / 2;
-  let out = [];
   for (let i = 0; i < str.length; i++) {
     let g = FALLBACK_GLYPHS[str[i].toUpperCase()] || FALLBACK_GLYPHS['?'] || [];
     let ox = x + i * charW;
-    for (let s of g) out.push([[ox + s[0] * sx, y + s[1] * sy - size], [ox + s[2] * sx, y + s[3] * sy - size]]);
+    for (let s of g) out.push([[ox + s[0] * sx, y + s[1] * sy - cap], [ox + s[2] * sx, y + s[3] * sy - cap]]);
   }
   return out;
 }
@@ -3357,8 +3402,8 @@ function clipAssemble(L, dims) {
       } else if (L.labelH) {
         let ts = 2.4 * k, by = y1 + (L.labelH - 0.9) * k;
         let inset = L.capture ? 1.2 * k : 0; // clear of the corner ticks
-        for (let seg of clipTextStrokes(fname(f) + (f === null ? '' : '/' + String(total).padStart(3, '0')), ox + inset, by, ts, 'left')) line(seg);
-        if (L.capture) for (let seg of clipTextStrokes(seed, x1 - inset, by, ts, 'right')) line(seg);
+        for (let seg of clipTextStrokes(fname(f) + (f === null ? '' : '/' + String(total).padStart(3, '0')), ox + inset, by, ts, 'left', true)) line(seg);
+        if (L.capture) for (let seg of clipTextStrokes(seed, x1 - inset, by, ts, 'right', true)) line(seg);
       }
     });
     let pageLabel = `P${p + 1}/${L.pages}`;
@@ -3372,11 +3417,11 @@ function clipAssemble(L, dims) {
         line([[cx - r, cy], [cx + r, cy]]); line([[cx, cy - r], [cx, cy + r]]);
         line(Array.from({ length: 25 }, (_, i) => [cx + Math.cos(i / 24 * TWO_PI) * r * 0.55, cy + Math.sin(i / 24 * TWO_PI) * r * 0.55]));
       }
-      if (m > 4 * k) for (let seg of clipTextStrokes(`MICRO-MACRO  ${seed}  ${pageLabel}  ${range}`, PWpx / 2, PHpx - m * 0.5 + 1.2 * k, 2.4 * k, 'center')) line(seg);
+      if (m > 4 * k) for (let seg of clipTextStrokes(`MICRO-MACRO  ${seed}  ${pageLabel}  ${range}`, PWpx / 2, PHpx - m * 0.5 + 1.2 * k, 2.4 * k, 'center', true)) line(seg);
     } else if (c.title) {
       let m = L.margin * k;
-      for (let seg of clipTextStrokes(`MICRO-MACRO  ${seed}  ${range}`, m, m + 4 * k, 3.2 * k, 'left')) line(seg);
-      for (let seg of clipTextStrokes(pageLabel, PWpx - m, m + 4 * k, 3.2 * k, 'right')) line(seg);
+      for (let seg of clipTextStrokes(`MICRO-MACRO  ${seed}  ${range}`, m, m + 4 * k, 3.2 * k, 'left', true)) line(seg);
+      for (let seg of clipTextStrokes(pageLabel, PWpx - m, m + 4 * k, 3.2 * k, 'right', true)) line(seg);
     }
     let layers = [...buckets.keys()].sort((a, b) => meta[a].n - meta[b].n).map(key => {
       let strokes = buckets.get(key);
@@ -20876,10 +20921,10 @@ function applyCorruptionTreatment(intensity, rect, prng, cellData) {
             svgSetStrokeWeight(state.geometry.strokeWeight);
             if (spreadT < 0.15) {
               let decompose = spreadT / 0.15 * 0.15;
-              _drawDecomposedGlyph(srcChar, clX, clY, Math.max(2, cloneSize), decompose, hBase + cl * 31, surge);
+              _drawDecomposedGlyph(srcChar, clX, clY, Math.max(getPenTextFloorPx(), cloneSize), decompose, hBase + cl * 31, surge);
             } else if (spreadT < 0.40) {
               let decompose = 0.15 + ((spreadT - 0.15) / 0.25) * 0.35;
-              _drawDecomposedGlyph(srcChar, clX, clY, Math.max(2, cloneSize), decompose, hBase + cl * 31, surge);
+              _drawDecomposedGlyph(srcChar, clX, clY, Math.max(getPenTextFloorPx(), cloneSize), decompose, hBase + cl * 31, surge);
             } else if (spreadT < 0.65) {
               let slashIdx = Math.floor(_profileHash(hBase + cl * 13, 0x4387) * slashChars.length);
               let decompose = 0.3 + ((spreadT - 0.40) / 0.25) * 0.4;
@@ -21356,10 +21401,10 @@ const TREATMENT_PER_CELL = {
             svgSetStrokeWeight(state.geometry.strokeWeight);
             if (spreadT < 0.15) {
               let decompose = spreadT / 0.15 * 0.15;
-              _drawDecomposedGlyph(srcChar, clX, clY, Math.max(2, cloneSize), decompose, hBase + c * 31, surge);
+              _drawDecomposedGlyph(srcChar, clX, clY, Math.max(getPenTextFloorPx(), cloneSize), decompose, hBase + c * 31, surge);
             } else if (spreadT < 0.40) {
               let decompose = 0.15 + ((spreadT - 0.15) / 0.25) * 0.35;
-              _drawDecomposedGlyph(srcChar, clX, clY, Math.max(2, cloneSize), decompose, hBase + c * 31, surge);
+              _drawDecomposedGlyph(srcChar, clX, clY, Math.max(getPenTextFloorPx(), cloneSize), decompose, hBase + c * 31, surge);
             } else if (spreadT < 0.65) {
               let slashIdx = Math.floor(_profileHash(hBase + c * 13, 0x4396) * slashChars.length);
               let decompose = 0.3 + ((spreadT - 0.40) / 0.25) * 0.4;
@@ -22474,6 +22519,7 @@ function syncAllUI() {
   document.getElementById('hatch-angle').value = state.plotter.hatch.angle;
   document.getElementById('hatch-angle-val').textContent = state.plotter.hatch.angle;
   document.getElementById('hatch-pen-dia').value = state.plotter.hatch.penDiameter;
+  refreshMinTextHint();
   document.getElementById('hatch-spacing').value = state.plotter.hatch.spacing;
   document.getElementById('hatch-gradient').checked = state.plotter.hatch.gradient;
   document.getElementById('hatch-grad-range').value = state.plotter.hatch.gradientRange;

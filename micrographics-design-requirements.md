@@ -1328,6 +1328,8 @@ A global floor for all text rendering, settable in mm, inches, or pixels. Defaul
 
 **Interaction with DPI:** The minimum converts to pixels via the current DPI setting. At 96 DPI, 2mm ≈ 7.6px. At 300 DPI, 2mm ≈ 23.6px. This means higher-DPI compositions automatically produce larger text in pixel terms, which is correct — the same 2mm physical text requires more pixels at higher resolution.
 
+**Pen tip floor:** The pen tip (Pen Diameter, under Hatch Fill) raises the floor: text is never smaller than `pen_diameter × 1.5 / 0.18` of em (8.3× the pen, 2.5mm for a 0.3mm pen). Plotterm's tightest counters (Typewriter's A, m, 4) are 0.18 em between stroke centres, and at 1.5× the pen's width they keep half a nib of paper between the inks. The larger of the two floors wins; the panel says when the pen is the one setting it. Whole glyphs in treatment clones keep the same floor; single-stroke marks (slashes, ticks) may go smaller. Clip-sheet text (frame labels, footer, title) is set in Plotterm Round by cap height and keeps the floor too; the label band grows with it. The Stvrpype hub's marks are lettered by Stvrpype at its own fixed sizes.
+
 ### 18.3 Detail Scale Multiplier
 
 A size multiplier (0.5–2.0, default 1.0) applied to small detail elements throughout the composition. Unlike the greeble amount slider (which controls density/probability), detail scale controls the physical size of:
