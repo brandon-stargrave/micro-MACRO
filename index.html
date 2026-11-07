@@ -653,7 +653,7 @@
         <span id="anim-frame-display" style="font-family:monospace;font-size:11px;color:#00ff88">F01/60 | 0.0s</span>
       </div>
       <div class="slider-row">
-        <input type="range" id="anim-scrubber" min="0" max="59" step="1" value="0"
+        <input type="range" id="anim-scrubber" data-no-live min="0" max="59" step="1" value="0"
           oninput="autoEnableAndScrub(+this.value)">
       </div>
     </div>
@@ -900,7 +900,7 @@
     </details>
 
     <!-- ===== SEED ===== -->
-    <details class="collapsible" open>
+    <details class="collapsible" data-no-live open>
       <summary>Seed</summary>
       <div class="seed-row">
         <input type="text" id="seed-input" maxlength="8" value="" spellcheck="false"
@@ -914,7 +914,7 @@
     </details>
 
     <!-- ===== GENERATOR TYPES ===== -->
-    <details class="collapsible">
+    <details class="collapsible" data-no-live>
       <summary>Generator Types <label class="rand-toggle"><input type="checkbox" id="rand-generators" checked> rand</label></summary>
       <div class="quick-actions">
         <button class="sm" onclick="archetypeQuickAction('allOn')">All On</button>
@@ -1224,7 +1224,7 @@
     </details>
 
     <!-- ===== EXPORT ===== -->
-    <details class="collapsible" open>
+    <details class="collapsible" data-no-live open>
       <summary>Export</summary>
       <div class="export-row">
         <button class="secondary" onclick="exportSVG()">⬡ SVG</button>
@@ -1263,7 +1263,7 @@
     </details>
 
     <!-- ===== PRESETS ===== -->
-    <details class="collapsible">
+    <details class="collapsible" data-no-live>
       <summary>Presets</summary>
       <div class="preset-row">
         <select id="preset-select" onchange="loadPreset(this.value)">
@@ -2125,6 +2125,11 @@ let _cellOverrideVariant = null; // Set before composer call to override variant
 
 // Interactive editing state
 let _editMode = false;
+// The generator types the current composition was made with: changes in the
+// Generator Types section wait for the next generation (Generate, Randomize,
+// a new seed, a loaded preset), while the rest of the panel redraws in place
+let _composedTypes = null;
+function _composeTypes() { _composedTypes = JSON.parse(JSON.stringify(state.archetypes)); }
 let _selectedCell = null;   // cell index (not an index into _cellMeta, which skips cells), or null
 let _lastCellRects = [];    // every cell's rect from the last generate, by cell index
 // Metadata for a cell index; _cellMeta has no entry for cells that drew nothing.
@@ -20123,8 +20128,9 @@ function generate(frameIndex) {
     let forceHero = state.typeEngine.userMacroText && state.typeEngine.userMacroText.trim();
     let eligible = [];
     let weights = [];
+    let types = _composedTypes || state.archetypes;
     for (let [key, def] of Object.entries(ARCHETYPE_DEFS)) {
-      let a = state.archetypes[key];
+      let a = types[key];
       if (!a || (!a.enabled && !(forceHero && key === 'heroText'))) continue;
       let sw = softEdgeWeight(cellScale, def.range);
       if (sw <= 0) continue;
@@ -20195,7 +20201,7 @@ function generate(frameIndex) {
 
     if (eligible.length === 0) {
       for (let [key, def] of Object.entries(ARCHETYPE_DEFS)) {
-        let a = state.archetypes[key];
+        let a = types[key];
         if (!a || !a.enabled) continue;
         if (cellScale >= def.range[0] && cellScale <= def.range[1]) {
           eligible.push(key);
@@ -20339,7 +20345,10 @@ function generate(frameIndex) {
     // filled leftover space in sparse cells. Composers now lay out the whole
     // cell themselves, so those overlays only collided with their content.)
 
-    // Conservative stacking — secondary element overlay
+    // Conservative stacking — secondary element overlay. It and the treatments
+    // below leave the cell's stream as they found it, so switching them on or
+    // off redraws this composition rather than reshuffling its borders
+    let _cellStream = cellPrng.s.slice();
     if (state.stacking.enabled && cellPrng.nextFloat() < state.stacking.probability) {
       svgSetStrokeWeight(state.geometry.strokeWeight * 0.45);
       let family = getArchetypeFamily(archetype);
@@ -20362,10 +20371,14 @@ function generate(frameIndex) {
       svgRec.beginGroup('treatment-' + tx.id);
       _inkOverride = penColor(treatmentPen());
       svgSetStroke(_inkOverride);
-      try { perCellFn(tx.intensity, padded, cellScale, archetype, cellPrng, i); }
-      finally { svgRec.endGroup(); _inkOverride = null; svgSetStroke(state.fgColor); }
+      // each its own stream: one switched on or off leaves the others as they were
+      // (and the stroke weight it found, which the border goes on to use)
+      let txPrng = new PRNG(((_cellStream[0] ^ _cellStream[2] ^ seedNumber(tx.id + '#tx')) >>> 0) || 1), txWeight = svgRec.currentStrokeWeight;
+      try { perCellFn(tx.intensity, padded, cellScale, archetype, txPrng, i); }
+      finally { svgRec.endGroup(); _inkOverride = null; svgSetStroke(state.fgColor); svgSetStrokeWeight(txWeight); }
     }
     _cellTextLog = _savedTextLog;
+    cellPrng.s.set(_cellStream);
 
     // Clear content instability before border (border renders independently, always stable)
     _contentInstability = null;
@@ -20401,10 +20414,12 @@ function generate(frameIndex) {
   _cellTextLog = null;
   _inkOverride = penColor(treatmentPen());
   svgSetStroke(_inkOverride);
+  let txBase = prng.nextInt(0, 0x7FFFFFFF);
   try {
     for (let tx of state.treatmentStack) {
       if (!tx.enabled) continue;
-      applyTreatment(tx.id, tx.intensity, contentRect, prng, _cellMeta);
+      // each its own stream, so toggling or reordering one leaves the others alone
+      applyTreatment(tx.id, tx.intensity, contentRect, new PRNG(((txBase ^ seedNumber(tx.id + '#tx')) >>> 0) || 1), _cellMeta);
     }
   } finally { _inkOverride = null; svgSetStroke(state.fgColor); }
 
@@ -21469,6 +21484,7 @@ function initTreatmentDragHandles() {
             let moved = state.treatmentStack.splice(fromIdx, 1)[0];
             state.treatmentStack.splice(toIdx, 0, moved);
             renderTreatmentStackUI();
+            liveRefresh(true);
           }
         }
       }
@@ -22692,6 +22708,7 @@ function _applyStateSnapshot(data, regenerate = true) {
   for (let key in ARCHETYPE_DEFS) {
     if (!state.archetypes[key]) state.archetypes[key] = { enabled: true, weight: 0.5 };
   }
+  _composeTypes();
 
   syncAllUI();
   if (!regenerate) return;
@@ -23151,6 +23168,7 @@ function setup() {
 
   // A shared #preset= URL restores that exact state; otherwise start randomized
   if (!_loadSharedPresetFromHash()) randomizeParams(new PRNG(Date.now()));
+  _composeTypes();
   syncAllUI();
   generate();
   fixCanvasVisibility();
@@ -23217,6 +23235,7 @@ function clearCellOverrides() {
 }
 
 function doGenerate() {
+  _composeTypes();
   if (!state.lockSeed) {
     state.seed = generateSeed();
     document.getElementById('seed-input').value = state.seed;
@@ -23274,12 +23293,39 @@ window.setPenColor = setPenColor;
 window.penSettingsChanged = penSettingsChanged;
 window.syncPenUI = syncPenUI;
 
-function doGenerateKeepSeed() {
-  let locked = state.lockSeed;
-  state.lockSeed = true;
-  doGenerate();
-  state.lockSeed = locked;
+// (kept for the inline handlers that call it: a redraw of the current composition)
+function doGenerateKeepSeed() { liveRefresh(true); }
+
+// Redraw the current composition after a panel change: the same seed, cell
+// edits and generator types (those wait for the next generation, see
+// _composedTypes), the animation left on its frame. Slider drags coalesce.
+let _liveTimer = null;
+function liveRefresh(now) {
+  clearTimeout(_liveTimer);
+  let run = () => {
+    if (state.animation.enabled) generateFrame(state.animation.currentFrame || 0);
+    else { generate(); fixCanvasVisibility(); }
+  };
+  if (now) run(); else _liveTimer = setTimeout(run, 40);
 }
+window.liveRefresh = liveRefresh;
+
+// Any panel control redraws in place, except in the sections marked
+// data-no-live (Seed, Generator Types, Export, Presets), the rand toggles,
+// and text fields until they are committed
+(function () {
+  let side = document.getElementById('sidebar');
+  if (!side) return;
+  let onEdit = e => {
+    let t = e.target;
+    if (!t.matches || !t.matches('input, select, textarea')) return;
+    if (t.closest('[data-no-live]') || t.closest('.rand-toggle')) return;
+    if (e.type === 'input' && (t.type === 'text' || t.tagName === 'TEXTAREA')) return;
+    liveRefresh(e.type === 'change');
+  };
+  side.addEventListener('input', onEdit);
+  side.addEventListener('change', onEdit);
+})();
 
 function newSeed() {
   state.seed = generateSeed();
@@ -23291,7 +23337,7 @@ function newSeed() {
 // edits that state carries; only a click on the mode buttons clears them.
 function setMode(mode, keepOverrides) {
   state.mode = mode;
-  if (!keepOverrides) clearCellOverrides();
+  if (!keepOverrides) { clearCellOverrides(); liveRefresh(true); }
   document.querySelectorAll('.mode-toggle button').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.mode === mode);
   });
@@ -23423,6 +23469,7 @@ function doRandomize() {
   clearCellOverrides();
   if (state.animation.playing) stopAnimPlayback();
   randomizeParams(new PRNG(state.seed));
+  _composeTypes();
   syncAllUI();
   if (state.animation.enabled) {
     state.animation.currentFrame = 0;

@@ -733,8 +733,9 @@ const state = {
 
 ### 7.2 UI Synchronization
 - Each UI control binds to its corresponding state property via `oninput` or `onchange` handlers
-- State changes do NOT auto-trigger regeneration (generation is explicit via the Generate button)
-- Exception: the Randomize button both updates state and triggers generation
+- Panel changes redraw the current composition in place (same seed, same cell edits, the animation left on its frame); slider drags coalesce
+- Exceptions that wait for the next generation (Generate, Randomize, a new seed, a loaded preset): the Generator Types section, whose settings the current composition keeps a snapshot of, and the Seed field. Export and Presets controls never draw
+- Treatments, stacking and borders draw from their own streams, so switching a treatment on and off returns the same page
 - Controls that depend on other controls (e.g., Multi Mode params hidden when Single is selected, Treatment Intensity hidden when Treatment is "None") use conditional visibility toggled via CSS class or `style.display`
 
 ### 7.3 Preset Serialization
@@ -867,11 +868,12 @@ The single HTML file is organized into these major JavaScript sections, in order
 
 ## 10. Interaction Model
 
-- **Generate is explicit.** Changing controls does NOT regenerate. The user adjusts parameters, then presses Generate. This gives the user control over when computation happens and preserves the current output while exploring parameter changes.
-- **Randomize is the exception.** It updates parameters AND generates in one action.
+- **Controls redraw in place.** Changing a control redraws the current composition at once: same seed, same cell edits. Treatments switch on and off on the page in front of you.
+- **Generator types wait for the next generation.** The Generator Types section (and the seed) take effect when Generate or Randomize makes the next composition, so exploring them never throws away the current one.
+- **Randomize** updates parameters AND generates in one action.
 - **Seed provides reproducibility.** Users can lock a seed, adjust one parameter, and regenerate to see the isolated effect of that change.
 - **Export is always available.** After any generation, SVG and PNG export buttons immediately produce output from the current canvas state and recorded SVG data.
-- **Canvas shows the latest generation.** The canvas is not cleared until the next Generate press.
+- **Canvas shows the latest generation**, redrawn as its controls change.
 - **Initial load behavior.** On first load, the app auto-generates immediately with: scale set to 0.0 (full micro), single mode, and all other parameters randomized (seed, archetype weights, geometry params, treatment). This gives the user an immediate, visually dense result that showcases the aesthetic. The randomized parameter values are reflected in the UI controls so the user can see what was selected.
 
 ---
