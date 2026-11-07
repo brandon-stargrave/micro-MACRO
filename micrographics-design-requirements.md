@@ -1066,6 +1066,54 @@ These are exposed indirectly through existing controls (Cell Padding, Border Pad
 
 #### Other archetypes follow analogous patterns. Node/Network radiates from center. Globe/Sphere centers the sphere with optional bracket framing. Seal/Badge centers the circular form. Error Message and Terminal Block follow the Data Readout layout but with role-specific content.
 
+#### The Facility: six panels of one site
+
+Six archetypes describe one technomancer research facility: Containment Ward, Site Schematic, Event Chamber, Exo-Atmosphere, Core Lattice and Augment Diagnostic. They share a kit (the `fac*` helpers), and they quote the same place.
+
+**One site per page.** `buildFacility(seed)` deals the facility from the page seed using hashes only, so it makes no PRNG draws and moves no other cell. It sets:
+- the site name and sublevel;
+- the vault and its anomaly;
+- the incident;
+- the alert level (green, amber, red or black);
+- the shift and the clock.
+
+The first panel of each kind on a page takes the facility's own vault and anomaly (`facUnit`); later panels of that kind are neighbouring units.
+
+**Pens.** Alarm marks draw in the accent pen (`kitAccent`, pen 2). The ward draws in the detail pen (`facWard`, pen 3): inscriptions, lattices, conduits, seals and the thaumic marks. The ward script is an original single-stroke alphabet of 24 glyphs on a 3×3 node grid, dealt per facility, so every panel on a page writes the same script.
+
+**Common layout.** Each panel has:
+- a header: title, a tag (in the accent pen when alarmed) and the designation;
+- the display;
+- a panel beside it in wide cells, or under it in tall cells.
+
+`facStack` fits the panel's modules into a column or a row. It drops modules that no longer fit, and a row shares out any width left over. Most panels also add a bottom strip of traces (`facTraces`).
+
+Panel modules include:
+- tables (`_radTable`, `facColumns`);
+- bars (`facBars`);
+- lines of text (`facLines`);
+- `facTrend`: a reading, its recent trace with the ceiling ruled across it (the zone above hatched in the accent pen), and a linear scale with a pointer.
+
+The wave deliberately uses no dial gauges.
+
+**Plotter rules.** The displays are stroke-only, so:
+- door gaps are split walls, not background cuts;
+- hidden lines are clipped geometrically (`facClipConvex`, `facPolylineHidden`);
+- contours come from `facContours`, which returns the lines it draws so they can be labelled.
+
+All six pass the pen-clash sweep at 2–8% fused ink, except Augment's parallel-coordinates plot (about 9%), where crossing lines are inherent to the form.
+
+| Archetype | Range | Variants | Notes |
+|---|---|---|---|
+| Containment Ward | 0.00–0.85 | lattice, breach, fieldMap, section | The cage around the anomaly: degree scale, sector integrity, glyph band, emitter rings, field lines. Panel: dossier, protocol, emitter loads, entropy trend. Strip: the harmonic beat. Strips are drawn as friezes. |
+| Site Schematic | 0.00–0.70 | plan, wardMap, evacuation, exploded | Floor plan from a BSP. Double walls with real door gaps, a hatched shell, rooms fitted out by use, the vault behind a blast door. **plan:** lockdown, breach front, cameras clipped to rooms, personnel. **wardMap:** ley conduits, door seals, corridor script. **evacuation:** routes to exit signs, muster. **exploded:** three sublevels with hidden lines removed; falls back to the plan when too small to read. Each variant has its own legend, module and access log. |
+| Event Chamber | 0.05–0.85 | transverse, longitudinal, lego, bubble | A detector event display. **transverse:** end-on, with helices, hits, calorimeter deposits, muons, jets and missing ET. **longitudinal:** r–z, with eta lines. **lego:** eta–phi towers with hidden lines. **bubble:** a chamber photograph with vertex star, pair spirals, V0 and delta rays. In some events one track is unphysical: a trefoil knot that writes the script (ward pen). Panel: event table, hardest tracks, mass spectrum, missing-ET trend. Strip: trigger rates. Wide cells take the side-on view. |
+| Exo-Atmosphere | 0.00–0.80 | surface, polar, storm, bands | Alien weather. **surface:** synoptic map with ruled land, coast and water lines, isobars with labels, H/L, cold, warm and thaumic fronts (the last in the ward pen), geostrophic wind barbs, the facility with its disturbance. **polar:** stereographic with aurora (ward pen). **storm:** cyclone with eye seal, rain bands, lightning, track and cone. **bands:** the gas giant the world orbits, with zonal belts, vortices, rings and terminator. Panel: legend, station, skew-T sounding or zonal winds, 72 h outlook. Strip: meteogram. Strips become the surface chart. |
+| Core Lattice | 0.05–0.85 | hexCore, cutaway, rodBank, torus | The power core. **hexCore:** hex channel map with rods by insertion, sigil cores, flux contours and the hot channel. **cutaway:** containment, vessel, core and its glyph lattice, rods and drives, steam generator and pump loop with flow. **rodBank:** rod position panel with ward rods and a stuck rod. **torus:** ring core with field coils, ward seals, ports and injectors. Panel: core table, reactivity trend (or poloidal section), coolant loops, trip status. Strip: flux, period, lattice harmonic. |
+| Augment Diagnostic | 0.00–0.75 | coupling, parallel, phase, rings | Implant telemetry as abstract data, never anatomy. **coupling:** triangular channel-coupling matrix. **parallel:** parallel coordinates with non-crossing history echoes and a sync brush. **phase:** phase-portrait small multiples (limit cycle holding, Rössler attractor rejecting, still ring bound). **rings:** each implant's waveform on its own ring, out-of-tolerance stretches hatched. One implant may be rejecting (accent pen); the sigil port is in the ward pen. Panel: subject, implant sync, rejection trend. Strip: neural, cardiac and ward carrier. Tall cells take the phase grid. |
+
+Text in these panels avoids glyphs the plot fonts lack. `·` was added to the fallback glyph set, so it draws in every face.
+
 ### 12.3 Aspect Ratio Handling
 
 When a cell has a non-square aspect ratio, archetypes adapt:
