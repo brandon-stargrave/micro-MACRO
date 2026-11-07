@@ -16481,16 +16481,6 @@ function _mgBezel(rect, s, show) {
   kitWeight(bold ? 'heavy' : 'primary');
   svgPolyline(rounded(sx, sy, sw, sh, rr));
   if (bold || mn > 300) { kitWeight('fine'); svgPolyline(rounded(sx - b * 0.35, sy - b * 0.35, sw + b * 0.7, sh + b * 0.7, rr * 1.25)); }
-  // Curvature hints: inner corner arcs and a glare streak top-left
-  kitWeight('fine');
-  let ci = rr * 0.9;
-  let corners = [[sx + rr + ci * 0.2, sy + rr + ci * 0.2, PI], [sx + sw - rr - ci * 0.2, sy + rr + ci * 0.2, -HALF_PI], [sx + sw - rr - ci * 0.2, sy + sh - rr - ci * 0.2, 0], [sx + rr + ci * 0.2, sy + sh - rr - ci * 0.2, HALF_PI]];
-  for (let [cx, cy, a] of corners) svgArc(cx, cy, rr * 1.6, rr * 1.6, a + 0.25, a + HALF_PI - 0.25);
-  if (mn > 120) {
-    let gr = Math.min(sw, sh) * 0.94, gcx = sx + sw / 2, gcy = sy + sh / 2;
-    svgArc(gcx, gcy, gr, gr, PI + 0.5, PI + 0.85);
-    svgArc(gcx, gcy, gr * 0.95, gr * 0.95, PI + 0.56, PI + 0.72);
-  }
   // Bezel calibration ticks
   if (show.ticks && mn > 160) {
     let n = Math.round(sw / Math.max(6, b * 0.9));
@@ -16635,8 +16625,9 @@ function _mgBreakout(G, S, gt, seed, s, o, play) {
   G.vrect(x, top, tw, h - hudH, 1.8); G.vrect(x + w - tw, top, tw, h - hudH, 1.8); G.hrect(x + tw, top, w - tw * 2, tw, 1.8);
   let ix0 = x + tw, ix1 = x + w - tw;
   let nc = Math.max(6, Math.min(16, Math.round((ix1 - ix0) / (u * 3.1))));
-  let nr = s < 0.3 ? 8 : 6;
   let bw = (ix1 - ix0) / nc, bh = Math.max(3, Math.min(u * 1.05, (h - hudH) * 0.045));
+  // the wall takes about a third of the height (a tall cell gets more rows)
+  let nr = Math.max(s < 0.3 ? 8 : 6, Math.min(16, Math.round((h - hudH) * 0.32 / bh)));
   let by0 = top + tw + bh * 2.2;
   let alive = [];
   let tunnel = Math.floor(H(1) * nc), tunnelDepth = Math.floor(H(2) * nr * 0.7);
@@ -17085,7 +17076,8 @@ function _mgIcebreaker(G, S, gt, seed, s, o, play) {
   let top = y + o.hudH, bot = y + h - o.footH;
   let avH = bot - top;
   let target = Math.max(6, o.u * 1.15);
-  let C = Math.max(11, Math.min(31, Math.round(w / target))), R = Math.max(11, Math.min(31, Math.round(avH / target)));
+  // the maze runs the cell's length: up to 59 cells along either side
+  let C = Math.max(11, Math.min(59, Math.round(w / target))), R = Math.max(11, Math.min(59, Math.round(avH / target)));
   C -= ((C - 3) % 4 + 4) % 4; R -= ((R - 3) % 4 + 4) % 4; // both = 3 mod 4: node rows/cols at centre
   let q = Math.min(w / C, avH / R);
   let mx = x + (w - C * q) / 2, my = top + (avH - R * q) / 2;
@@ -17325,8 +17317,10 @@ function _mgSpacewalk(G, S, gt, seed, s, o, play) {
   let top = y + o.hudH, avH = h - o.hudH;
   let clear = penPx() * PEN_CLEAR;
   let T = Math.max(5, Math.min(avH / (s < 0.3 ? 13 : 10), w / (s < 0.3 ? 9 : 7)));
-  let NL = Math.ceil(w / T) * 2 + 4, P = NL * T;
+  // (a narrow cell's level still runs 36 tiles round, so it holds as much as a wide one's)
+  let NL = Math.max(36, Math.ceil(w / T) * 2 + 4), P = NL * T;
   let groundRows = 2, gY = y + h - groundRows * T;
+  let skyRows = Math.floor((gY - top) / T) - 3;   // the highest tier a panel may sit on
   // Level: runs alternate with jump spans that hold the obstacle
   let pits = new Uint8Array(NL), masts = [], panels = [], cells = [], mites = [], jumps = [];
   let tx = 3, k = 0;
@@ -17345,6 +17339,14 @@ function _mgSpacewalk(G, S, gt, seed, s, o, play) {
     else mites.push({ x: tx + span / 2, range: span * 0.25, ph: _mmHash(seed + 48, k) });
     if (_mmHash(seed + 49, k) < 0.5) for (let i = 1; i <= 3; i++) { let f = i / 4; cells.push({ x: tx + 0.5 + f * (span - 1), row: apex * 4 * f * (1 - f) + 0.9 }); }
     jumps.push({ x0: tx + 0.5, x1: tx + span - 0.5, apex });
+    // a tall cell's sky: tiers of panels every 4 rows up to the top, each a
+    // jetpack climb from the one below, a crystal on some
+    for (let row = 12, j = 0; row <= skyRows; row += 4, j++) {
+      if (_mmHash(seed + 53 + j, k) > 0.75) continue;
+      let px = tx - run + Math.floor(_mmHash(seed + 54 + j, k) * Math.max(1, run + span - 3)), n = 2 + Math.floor(_mmHash(seed + 55 + j, k) * 3);
+      for (let i = 0; i < n; i++) panels.push({ x: px + i, row, q: _mmHash(seed + 56 + j, k * 5 + i) < 0.2 });
+      if (_mmHash(seed + 57 + j, k) < 0.6) cells.push({ x: px + 0.5 + Math.floor(n / 2), row: row + 1.6 });
+    }
     tx += span; k++;
   }
   let toScreenAt = cam => lx => { let d = ((lx - cam + T * 3) % P + P) % P - T * 3; return x + d; };
@@ -17644,47 +17646,47 @@ function _mgCargoRot(t, rot) {
   let mnx = Math.min(...cells.map(c => c[0])), mny = Math.min(...cells.map(c => c[1]));
   return cells.map(([cx, cy]) => [cx - mnx, cy - mny]);
 }
-function _mgCargoDrop(grid, cells, col) {
+function _mgCargoDrop(grid, cells, col, C, R) {
   let row = -1;
-  for (let r = 0; r <= 20; r++) {
-    let ok = cells.every(([cx, cy]) => { let rr = r + cy, cc = col + cx; return cc >= 0 && cc < 10 && rr < 20 && (rr < 0 || !grid[rr * 10 + cc]); });
+  for (let r = 0; r <= R; r++) {
+    let ok = cells.every(([cx, cy]) => { let rr = r + cy, cc = col + cx; return cc >= 0 && cc < C && rr < R && (rr < 0 || !grid[rr * C + cc]); });
     if (!ok) break;
     row = r;
   }
   return row;
 }
-function _mgCargoBest(grid, t) {
+function _mgCargoBest(grid, t, C, R) {
   let best = null;
   for (let rot = 0; rot < 4; rot++) {
     let cells = _mgCargoRot(t, rot), wd = Math.max(...cells.map(c => c[0])) + 1;
-    for (let col = 0; col + wd <= 10; col++) {
-      let row = _mgCargoDrop(grid, cells, col);
+    for (let col = 0; col + wd <= C; col++) {
+      let row = _mgCargoDrop(grid, cells, col, C, R);
       if (row < 0) continue;
       let g = grid.slice();
-      cells.forEach(([cx, cy]) => { g[(row + cy) * 10 + col + cx] = t + 1; });
+      cells.forEach(([cx, cy]) => { g[(row + cy) * C + col + cx] = t + 1; });
       let lines = 0;
-      for (let r = 0; r < 20; r++) { let full = true; for (let c = 0; c < 10; c++) if (!g[r * 10 + c]) { full = false; break; } if (full) lines++; }
+      for (let r = 0; r < R; r++) { let full = true; for (let c = 0; c < C; c++) if (!g[r * C + c]) { full = false; break; } if (full) lines++; }
       let hts = [], holes = 0;
-      for (let c = 0; c < 10; c++) {
+      for (let c = 0; c < C; c++) {
         let hh = 0, seen = false;
-        for (let r = 0; r < 20; r++) { if (g[r * 10 + c]) { if (!seen) { hh = 20 - r; seen = true; } } else if (seen) holes++; }
+        for (let r = 0; r < R; r++) { if (g[r * C + c]) { if (!seen) { hh = R - r; seen = true; } } else if (seen) holes++; }
         hts.push(hh);
       }
       let agg = hts.reduce((a, b) => a + b, 0), bump = 0;
-      for (let c = 0; c < 9; c++) bump += Math.abs(hts[c] - hts[c + 1]);
+      for (let c = 0; c < C - 1; c++) bump += Math.abs(hts[c] - hts[c + 1]);
       let sc = -0.51 * agg + 0.76 * lines - 0.36 * holes - 0.18 * bump + _mmHash(agg * 131 + holes * 17 + col, rot * 7 + t) * 2.2;
       if (!best || sc > best.sc) best = { sc, rot, col, row, cells, lines };
     }
   }
   return best;
 }
-function _mgCargoClear(g) {
+function _mgCargoClear(g, C, R) {
   let cleared = [];
-  for (let r = 0; r < 20; r++) { let full = true; for (let c = 0; c < 10; c++) if (!g[r * 10 + c]) full = false; if (full) cleared.push(r); }
+  for (let r = 0; r < R; r++) { let full = true; for (let c = 0; c < C; c++) if (!g[r * C + c]) full = false; if (full) cleared.push(r); }
   if (!cleared.length) return { g, cleared };
   let keep = [];
-  for (let r = 0; r < 20; r++) if (!cleared.includes(r)) keep.push(g.slice(r * 10, r * 10 + 10));
-  while (keep.length < 20) keep.unshift(new Array(10).fill(0));
+  for (let r = 0; r < R; r++) if (!cleared.includes(r)) keep.push(g.slice(r * C, r * C + C));
+  while (keep.length < R) keep.unshift(new Array(C).fill(0));
   return { g: [].concat(...keep), cleared };
 }
 // A cell's marking, by the container's kind: ribs, bracing, plating, scrap.
@@ -17711,14 +17713,22 @@ function _mgCrateMark(G, bx, by, q, type, bold) {
 function _mgCargo(G, S, gt, seed, s, o, play) {
   let { x, y, w, h } = S;
   let K = _MG_CARGO.length;
-  let tall = h > w * 1.55;
-  let q = tall ? Math.min(h * 0.66 / 20.6, w * 0.86 / 10.8) : Math.min((h * 0.94) / 20.6, w * 0.6 / 10.8);
-  let wellW = 10 * q, wt = Math.max(2, q * 0.45, G.ins + penPx() * PEN_CLEAR);
-  let panelW = Math.min(q * 7, w - wellW - wt * 2 - q * 1.5);
-  let hasPanel = !tall && o.hud && panelW >= q * 4.5;
+  // The hold fills the cell: 20 decks down the height and as many columns as
+  // fit beside the panel (up to 40); a narrow cell keeps 8 columns and gains decks. A
+  // tall cell puts its QUEUE / BAY boxes under the hold instead of a panel.
+  let tall = h > w * 1.25, boxH = tall && o.hud ? Math.min(h * 0.2, w * 0.5) : 0;
+  let availH = h - boxH, R = 20, q = availH / (R + 1.4);
+  let panelW = !tall && o.hud ? Math.min(q * 7, w * 0.34) : 0;
+  let hasPanel = panelW >= q * 4.5;
+  if (!hasPanel) panelW = 0;
+  let room = w - (hasPanel ? q * 1.1 + panelW : 0) - q * 1.4, C = Math.floor(room / q);
+  if (C < 8) { C = 8; q = Math.min(q, room / (C + 0.2)); R = Math.max(12, Math.min(40, Math.floor(availH / q - 1.4))); }
+  C = Math.min(40, C);
+  let wellW = C * q, wt = Math.max(2, q * 0.45, G.ins + penPx() * PEN_CLEAR);
   let groupW = wellW + wt * 2 + (hasPanel ? q * 1.1 + panelW : 0);
   let wx = x + (w - groupW) / 2 + wt;
-  let wy = tall ? y + q * 0.6 : y + (h - 20 * q - wt) / 2;
+  let wy = y + (availH - R * q - wt) / 2 + q * 0.3;
+  let N2 = C * R, mid = Math.floor((C - 3) / 2);
   // A container drawn whole: one outline round its cells, each cell marked
   let drawBox = (cl, ox, oy, m, t) => {
     let set = new Set(cl.map(([a, b]) => b * 64 + a));
@@ -17731,37 +17741,37 @@ function _mgCargo(G, S, gt, seed, s, o, play) {
   // container on the crane, the queue, the bay and the decks being welded off
   let st = _mgState(play, o.sig, () => {
     // Scrap decks, then containers placed by a greedy loader from a bag
-    let grid = new Array(200).fill(0), kind = [K], serial = 0;
+    let grid = new Array(N2).fill(0), kind = [K], serial = 0;
     let garb = 1 + Math.floor(_mmHash(seed, 1) * 5);
-    for (let r = 20 - garb; r < 20; r++) { let hole = Math.floor(_mmHash(seed + 2, r) * 10); serial++; kind[serial] = K; for (let c = 0; c < 10; c++) if (c !== hole) grid[r * 10 + c] = serial; }
+    for (let r = R - garb; r < R; r++) { let hole = Math.floor(_mmHash(seed + 2, r) * C); serial++; kind[serial] = K; for (let c = 0; c < C; c++) if (c !== hole) grid[r * C + c] = serial; }
     let bag = [], bi = 0;
     let nextPiece = () => {
       if (!bag.length) { bag = Array.from({ length: K }, (_, i) => i); for (let i = K - 1; i > 0; i--) { let j = Math.floor(_mmHash(seed + 3, bi * 7 + i) * (i + 1)); [bag[i], bag[j]] = [bag[j], bag[i]]; } bi++; }
       return bag.shift();
     };
-    let N = 20 + Math.floor(_mmHash(seed, 4) * 18), stats = new Array(K).fill(0), lines = 0;
+    let N = Math.round((20 + Math.floor(_mmHash(seed, 4) * 18)) * N2 / 200), stats = new Array(K).fill(0), lines = 0;
     for (let n = 0; n < N; n++) {
-      let t = nextPiece(), b = _mgCargoBest(grid, t);
+      let t = nextPiece(), b = _mgCargoBest(grid, t, C, R);
       if (!b) break;
       stats[t]++;
       serial++; kind[serial] = t;
-      b.cells.forEach(([cx, cy]) => { grid[(b.row + cy) * 10 + b.col + cx] = serial; });
-      let cl = _mgCargoClear(grid); grid = cl.g; lines += cl.cleared.length;
-      let hmax = 0; for (let r = 0; r < 20; r++) if (grid.slice(r * 10, r * 10 + 10).some(v => v)) { hmax = 20 - r; break; }
-      if (hmax > 12) break;
+      b.cells.forEach(([cx, cy]) => { grid[(b.row + cy) * C + b.col + cx] = serial; });
+      let cl = _mgCargoClear(grid, C, R); grid = cl.g; lines += cl.cleared.length;
+      let hmax = 0; for (let r = 0; r < R; r++) if (grid.slice(r * C, r * C + C).some(v => v)) { hmax = R - r; break; }
+      if (hmax > R * 0.6) break;
     }
     let cur = nextPiece(), queue = [nextPiece(), nextPiece(), nextPiece()], hold = Math.floor(_mmHash(seed, 5) * K);
-    let best = _mgCargoBest(grid, cur);
+    let best = _mgCargoBest(grid, cur, C, R);
     serial++; kind[serial] = cur;
     // Lowering schedule: turn, traverse, lower row by row, land at 86%, weld to 100%
     let tf = Math.min(1, gt / 0.86), locked = gt >= 0.86;
-    let rot = best ? (tf > 0.05 ? best.rot : 0) : 0, col = 3;
-    if (best) { let moves = best.col - 3, n = Math.abs(moves), done = Math.min(n, Math.floor(Math.max(0, tf - 0.06) / 0.34 * (n + 0.999))); col = 3 + Math.sign(moves) * done; }
+    let rot = best ? (tf > 0.05 ? best.rot : 0) : 0, col = mid;
+    if (best) { let moves = best.col - mid, n = Math.abs(moves), done = Math.min(n, Math.floor(Math.max(0, tf - 0.06) / 0.34 * (n + 0.999))); col = mid + Math.sign(moves) * done; }
     let row = best ? Math.min(best.row, Math.floor(tf * (best.row + 1)) - 1) : 0;
     let clearing = [], tcol = col + (Math.max(..._mgCargoRot(cur, rot).map(c => c[0])) + 1) / 2;
     if (best && locked) {
-      best.cells.forEach(([cx, cy]) => { grid[(best.row + cy) * 10 + best.col + cx] = serial; });
-      for (let r = 0; r < 20; r++) if (grid.slice(r * 10, r * 10 + 10).every(v => v)) clearing.push(r);
+      best.cells.forEach(([cx, cy]) => { grid[(best.row + cy) * C + best.col + cx] = serial; });
+      for (let r = 0; r < R; r++) if (grid.slice(r * C, r * C + C).every(v => v)) clearing.push(r);
     }
     return {
       grid, kind, serial, cur: best && !locked ? { t: cur, rot, col, row, s: serial } : null, tcol,
@@ -17769,23 +17779,23 @@ function _mgCargo(G, S, gt, seed, s, o, play) {
     };
   });
   _mgRun(play, st, (st, inp, dt) => {
-    let fits = (t, rot, col, row) => _mgCargoRot(t, rot).every(([cx, cy]) => { let c = col + cx, r = row + cy; return c >= 0 && c < 10 && r < 20 && (r < 0 || !st.grid[r * 10 + c]); });
+    let fits = (t, rot, col, row) => _mgCargoRot(t, rot).every(([cx, cy]) => { let c = col + cx, r = row + cy; return c >= 0 && c < C && r < R && (r < 0 || !st.grid[r * C + c]); });
     let deal = () => {
       if (!st.bag || !st.bag.length) { st.bag = Array.from({ length: K }, (_, i) => i); for (let i = K - 1; i > 0; i--) { let j = Math.floor(_mgRand(st) * (i + 1)); [st.bag[i], st.bag[j]] = [st.bag[j], st.bag[i]]; } }
       return st.bag.shift();
     };
     let spawn = t => {
       st.serial++; st.kind[st.serial] = t;
-      st.cur = { t, rot: 0, col: 3, row: 0, s: st.serial };
+      st.cur = { t, rot: 0, col: mid, row: 0, s: st.serial };
       st.fall = 0;
       // no room for it: the hold is emptied
-      if (!fits(t, 0, 3, 0)) { st.grid = new Array(200).fill(0); st.score = 0; st.lines = 0; }
+      if (!fits(t, 0, mid, 0)) { st.grid = new Array(N2).fill(0); st.score = 0; st.lines = 0; }
     };
     if (st.clearing.length) {
       if ((st.clearF += dt / 0.35) < 1) return;
       let keep = [];
-      for (let r = 0; r < 20; r++) if (!st.clearing.includes(r)) keep.push(st.grid.slice(r * 10, r * 10 + 10));
-      while (keep.length < 20) keep.unshift(new Array(10).fill(0));
+      for (let r = 0; r < R; r++) if (!st.clearing.includes(r)) keep.push(st.grid.slice(r * C, r * C + C));
+      while (keep.length < R) keep.unshift(new Array(C).fill(0));
       st.grid = [].concat(...keep); st.clearing = []; st.clearF = 0;
     }
     if (!st.cur) { spawn(st.queue.shift()); st.queue.push(deal()); st.swapped = false; }
@@ -17799,11 +17809,11 @@ function _mgCargo(G, S, gt, seed, s, o, play) {
     if (inp.pressed.up) { let r2 = (p.rot + 1) % 4, kick = [0, -1, 1, -2, 2].find(k => fits(p.t, r2, p.col + k, p.row)); if (kick !== undefined) { p.rot = r2; p.col += kick; } }
     if (inp.pressed.alt && !st.swapped) { let t = st.hold; st.hold = p.t; st.swapped = true; spawn(t); return; }
     let lock = () => {
-      _mgCargoRot(p.t, p.rot).forEach(([cx, cy]) => { if (p.row + cy >= 0) st.grid[(p.row + cy) * 10 + p.col + cx] = p.s; });
+      _mgCargoRot(p.t, p.rot).forEach(([cx, cy]) => { if (p.row + cy >= 0) st.grid[(p.row + cy) * C + p.col + cx] = p.s; });
       st.stats[p.t]++;
       st.tcol = p.col + (Math.max(..._mgCargoRot(p.t, p.rot).map(c => c[0])) + 1) / 2;
       st.cur = null;
-      for (let r = 0; r < 20; r++) if (st.grid.slice(r * 10, r * 10 + 10).every(v => v)) st.clearing.push(r);
+      for (let r = 0; r < R; r++) if (st.grid.slice(r * C, r * C + C).every(v => v)) st.clearing.push(r);
       st.lines += st.clearing.length;
       st.score = (st.score || 0) + [10, 100, 300, 500, 800][Math.min(4, st.clearing.length)];
     };
@@ -17816,25 +17826,25 @@ function _mgCargo(G, S, gt, seed, s, o, play) {
   let cur = st.cur ? st.cur.t : 0, cells = st.cur ? _mgCargoRot(st.cur.t, st.cur.rot) : [], col = st.cur ? st.cur.col : 0, row = st.cur ? st.cur.row : 0;
   // Bay: one bulkhead outline, a rivet a deck, the floor plated, the crane rail above.
   // Its inner faces stand G.ins off the cells, so containers keep 1.5 pens from them
-  let B = wy + 20 * q, railY = wy - Math.max(q * 0.3, penPx() * PEN_CLEAR), e = G.ins;
+  let B = wy + R * q, railY = wy - Math.max(q * 0.3, penPx() * PEN_CLEAR), e = G.ins;
   kitWeight(o.bold ? 'primary' : 'secondary');
   G.poly([[wx - wt, wy], [wx - wt, B + wt], [wx + wellW + wt, B + wt], [wx + wellW + wt, wy], [wx + wellW + e, wy], [wx + wellW + e, B + e], [wx - e, B + e], [wx - e, wy]], true);
   G.line(wx - wt, railY, wx + wellW + wt, railY);
   kitWeight('fine');
-  for (let r = 0; r < 20; r++) { G.pt(wx - wt / 2, wy + (r + 0.5) * q); G.pt(wx + wellW + wt / 2, wy + (r + 0.5) * q); }
+  for (let r = 0; r < R; r++) { G.pt(wx - wt / 2, wy + (r + 0.5) * q); G.pt(wx + wellW + wt / 2, wy + (r + 0.5) * q); }
   G.line(wx - wt / 2, railY, wx - wt / 2, wy); G.line(wx + wellW + wt / 2, railY, wx + wellW + wt / 2, wy);
   G.hrect(wx - e, B + e, wellW + e * 2, wt - e, 1.8);
-  if (o.dots) for (let r = 1; r < 20; r++) for (let c = 1; c < 10; c++) if (!shown[r * 10 + c] && !shown[(r - 1) * 10 + c] && !shown[r * 10 + c - 1] && !shown[(r - 1) * 10 + c - 1]) G.pt(wx + c * q, wy + r * q);
+  if (o.dots) for (let r = 1; r < R; r++) for (let c = 1; c < C; c++) if (!shown[r * C + c] && !shown[(r - 1) * C + c] && !shown[r * C + c - 1] && !shown[(r - 1) * C + c - 1]) G.pt(wx + c * q, wy + r * q);
   // Hold
-  let gone = (c, r) => clearing.includes(r) && Math.abs(c - 4.5) < clearF * 5.5;
+  let gone = (c, r) => clearing.includes(r) && Math.abs(c - (C - 1) / 2) < clearF * (C / 2 + 0.5);
   let on = [];
-  for (let r = 0; r < 20; r++) for (let c = 0; c < 10; c++) if (shown[r * 10 + c] && !gone(c, r)) on.push([c, r]);
+  for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) if (shown[r * C + c] && !gone(c, r)) on.push([c, r]);
   kitWeight(o.bold ? 'primary' : 'secondary');
-  _mgOutline(G, on, wx, wy, q, G.ins, (c, r, c2, r2) => c2 >= 0 && c2 < 10 && r2 >= 0 && r2 < 20 && !gone(c2, r2) && shown[r2 * 10 + c2] === shown[r * 10 + c]);
-  for (let [c, r] of on) _mgCrateMark(G, wx + c * q, wy + r * q, q, kind[shown[r * 10 + c]], o.bold);
+  _mgOutline(G, on, wx, wy, q, G.ins, (c, r, c2, r2) => c2 >= 0 && c2 < C && r2 >= 0 && r2 < R && !gone(c2, r2) && shown[r2 * C + c2] === shown[r * C + c]);
+  for (let [c, r] of on) _mgCrateMark(G, wx + c * q, wy + r * q, q, kind[shown[r * C + c]], o.bold);
   // Welds along the decks being cleared, from the middle out
   for (let r of clearing) {
-    let x0 = wx + Math.max(0, 5 - clearF * 5.5) * q, x1 = wx + Math.min(10, 5 + clearF * 5.5) * q, zz = [];
+    let x0 = wx + Math.max(0, C / 2 - clearF * (C / 2 + 0.5)) * q, x1 = wx + Math.min(C, C / 2 + clearF * (C / 2 + 0.5)) * q, zz = [];
     for (let xx = x0, j = 0; xx <= x1 + 1e-6; xx += q * 0.5, j++) zz.push([xx, wy + (r + 0.5) * q + (j % 2 ? q * 0.15 : -q * 0.15)]);
     kitWeight('secondary'); G.poly(zz, false);
     if (_compBus) _compBus.gameEvent = 'score';
@@ -17842,7 +17852,7 @@ function _mgCargo(G, S, gt, seed, s, o, play) {
   // The container on the crane, its landing bracketed below it
   let pw = cells.length ? Math.max(...cells.map(c => c[0])) + 1 : 1, tx = wx + (st.cur ? col + pw / 2 : st.tcol) * q;
   if (st.cur) {
-    let ghostRow = _mgCargoDrop(grid, cells, col);
+    let ghostRow = _mgCargoDrop(grid, cells, col, C, R);
     if (ghostRow > row + 1) {
       let ph = Math.max(...cells.map(c => c[1])) + 1, X0 = wx + col * q, Y0 = wy + ghostRow * q, X1 = X0 + pw * q, Y1 = Y0 + ph * q, a = q * 0.35;
       kitWeight('fine');
@@ -17881,7 +17891,7 @@ function _mgCargo(G, S, gt, seed, s, o, play) {
       yy += sz * 3;
     }
     // The manifest: each kind loaded, as a bar
-    let statH = (wy + 20 * q) - yy;
+    let statH = (wy + R * q) - yy;
     if (o.second && statH > q * 7) {
       let rowH = Math.min(statH / (K + 0.5), q * 1.2), sm = rowH * 0.2, mx = Math.max(1, ...stats);
       kitWeight('fine'); kitText('MANIFEST', px, yy + sz, sz * 0.85);
@@ -17896,10 +17906,10 @@ function _mgCargo(G, S, gt, seed, s, o, play) {
     }
   }
   // Tall screens: QUEUE / BAY boxes under the hold
-  let by0 = wy + 20 * q + wt + q * 0.8;
+  let by0 = wy + R * q + wt + q * 0.8;
   if (tall && o.hud && y + h - by0 > q * 3.5) {
     let sz = Math.max(getMinTextSizePx(), Math.min(q * 0.75, 12));
-    let bh = Math.min(y + h - by0 - q * 0.3, q * 5), bw2 = (wellW + wt * 2 - q * 0.6) / 2;
+    let bh = Math.min(y + h - by0 - q * 0.3, Math.max(q * 5, boxH * 0.85)), bw2 = (wellW + wt * 2 - q * 0.6) / 2;
     for (let k = 0; k < 2; k++) {
       let bx = wx - wt + k * (bw2 + q * 0.6);
       kitWeight('secondary'); G.rect(bx, by0, bw2, bh);
@@ -18212,15 +18222,21 @@ function _mgSwarm(G, S, gt, seed, s, o, play) {
   let { x, y, w, h } = S, u = o.u;
   let top = y + o.hudH, bot = y + h - o.footH;
   let clear = penPx() * PEN_CLEAR;
-  let cols = Math.max(5, Math.min(11, Math.round(w / (u * 3)))), rowsN = s < 0.3 ? 5 : 4;
-  let cellW = Math.min(w * 0.72 / (cols + 0.5), (bot - top) * 0.5 / rowsN * 1.15), cellH = cellW * 0.82;
+  // Columns from the width, rows from the height (a tall cell gets a deeper
+  // formation), always leaving a quarter of the width to march in
+  let cols = Math.max(5, Math.min(16, Math.round(w / (u * 3.2))));
+  let cellW = w * 0.72 / (cols + 0.5);
+  let rowsN = Math.max(s < 0.3 ? 5 : 4, Math.min(9, Math.round((bot - top) * 0.4 / (cellW * 0.82))));
+  cellW = Math.min(cellW, (bot - top) * 0.5 / rowsN * 1.15);
+  let cellH = cellW * 0.82;
   let sz = cellW * 0.34;
   let amp = w - (cols + 0.5) * cellW - u;
   let steps = 18;
   let fy0 = top + cellH * 1.3;
   let cannonY = bot - u * 2.2;
   // The horizon: an arc of the planet, lowest at the screen's edges
-  let hzY = cannonY + u * 1.2, Rp = w * 1.4, hxC = x + w / 2, hcy = hzY + Rp;
+  // its curve sags to just above the footer at the screen's edges, whatever the cell's width
+  let hzY = cannonY + u * 1.2, sag = (bot - hzY) * 0.95, Rp = (w * w / 4) / (2 * sag) + sag / 2, hxC = x + w / 2, hcy = hzY + Rp;
   let horizon = xx => hcy - Math.sqrt(Math.max(0, Rp * Rp - (xx - hxC) * (xx - hxC)));
   let tu = u * 0.9, muzzle = xx => horizon(xx) - tu * 2.0;
   // Shield domes: an emitter, two rings of twelve segments each
