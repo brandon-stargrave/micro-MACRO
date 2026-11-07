@@ -391,7 +391,7 @@ A collapsible section exposing fine-grained control over the generation process.
 | Symmetry Bias | select | Any | Any, Radial, Bilateral, Rotational, Asymmetric | Constrains which symmetry classes the generator selects from |
 | Max Radial Arms | range slider | 12 | 3–24 | Upper limit on arm/spoke/petal count for radial elements |
 | Organic Character | range slider | 0.3 | 0.0–1.0 | How much biomorphic/curved forms are favored over pure geometry |
-| Stroke Weight | range slider | 1.5 | 0.25–5.0 px | Base stroke weight. Scales with micro-macro position. |
+| Stroke Weight | readout | Pen ⌀ in px | — | Base stroke weight: follows Pen Diameter. Role weights scale it on screen. |
 | Fill Probability | range slider | 0.0 | 0.0–1.0 | 0 = all line/outline. 1 = all solid fill. Intermediate = mixed. Overridden toward solid at macro end. |
 | Font Bias | select | Auto | Auto, + all loaded font names | "Auto" selects font per text role and scale position. Selecting a specific font weights the generator toward it. Dropdown is dynamically populated from loaded fonts in both `/fonts/micro/` and `/fonts/macro/` directories. |
 | Soft Edge Filtering | checkbox | on | — | When on, elements near the edge of their viable scale range appear at reduced probability (smooth transition). When off, hard cutoff at range boundaries. |
@@ -1330,6 +1330,10 @@ A global floor for all text rendering, settable in mm, inches, or pixels. Defaul
 
 **Pen tip floor:** The pen tip (Pen Diameter, under Hatch Fill) raises the floor: text is never smaller than `pen_diameter × 1.5 / 0.18` of em (8.3× the pen, 2.5mm for a 0.3mm pen). Plotterm's tightest counters (Typewriter's A, m, 4) are 0.18 em between stroke centres, and at 1.5× the pen's width they keep half a nib of paper between the inks. The larger of the two floors wins; the panel says when the pen is the one setting it. Whole glyphs in treatment clones keep the same floor; single-stroke marks (slashes, ticks) may go smaller. Clip-sheet text (frame labels, footer, title) is set in Plotterm Round by cap height and keeps the floor too; the label band grows with it. The Stvrpype hub's marks are lettered by Stvrpype at its own fixed sizes.
 
+**Line clearance:** Lines meant to read apart keep their centres at least 1.5 pen widths apart (`PEN_CLEAR`): half a nib of bare paper between the inks, which survives a fibre or gel pen's bleed. Hatch tone keeps the hatch rule's 1.2 pens, and a solid bar is drawn as rows under one pen apart (`penSolidRows`) so they fuse. Spacing between 1 and 1.2 pens is never right: too close to read as two lines, too open to read as one. Generators derive their gaps from the pen: graticules stop where they converge, tiles and meter segments give way by half the clearance, and dense marks thin out (fewer segments, bars or cells) rather than crowd.
+
+**Stroke Weight follows the pen:** Stroke Weight is the Pen Diameter in px; the panel shows it rather than offering a slider. Role weights (heavy, primary, secondary, fine) still scale it on screen and pick pens in a multi-pen plot, but on paper every line is one nib wide. The pen-width reference in the bottom margin prints the Pen Diameter.
+
 ### 18.3 Detail Scale Multiplier
 
 A size multiplier (0.5–2.0, default 1.0) applied to small detail elements throughout the composition. Unlike the greeble amount slider (which controls density/probability), detail scale controls the physical size of:
@@ -1413,7 +1417,7 @@ The exported SVG adheres to these plotter-compatibility requirements:
 ### 18.9 Plotter Workflow Recommendations
 
 - **Travel optimization:** Process exported SVG through vpype (`vpype read input.svg linesort write output.svg`) to minimize pen-up travel distance between paths.
-- **Gap enforcement:** When using thick pens, increase both Stroke Weight and Detail Scale together to ensure no two parallel paths are closer than the pen width.
+- **Gap enforcement:** Stroke Weight follows the pen, and generators space their lines from it (section 18.2, Line clearance); with thick pens, raising Detail Scale still gives the marks more room.
 - **Test plots:** Use the pen width reference indicator to verify stroke width before full plots. Generate a simple single-cell composition at the target paper size to test pen/paper compatibility.
 - **Multi-pen workflow:** Enable layers, export SVG, open in Inkscape, select each layer and send to plotter with the appropriate pen loaded.
 - **Paper size verification:** After selecting a paper preset, check the displayed dimensions match your physical paper. Adjust DPI if your plotter uses a non-standard resolution.

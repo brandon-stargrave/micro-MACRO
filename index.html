@@ -929,12 +929,8 @@
     <details class="collapsible">
       <summary>Geometry Parameters <label class="rand-toggle"><input type="checkbox" id="rand-geometry" checked> rand</label></summary>
       <div class="control-group">
-        <label data-tip="Base line thickness for all vector paths." >Stroke Weight</label>
-        <div class="slider-row">
-          <input type="range" id="stroke-wt" min="0.25" max="5" step="0.25" value="1.5"
-            oninput="updateState('geometry.strokeWeight', +this.value); syncVal(this, 'stroke-wt-val')">
-          <span class="slider-val" id="stroke-wt-val">1.50</span>
-        </div>
+        <label data-tip="Base line thickness for all vector paths. It is the pen tip's width (Pen ⌀, under Hatch Fill): finer and heavier lines scale it on screen, and on paper every line is one nib wide." >Stroke Weight</label>
+        <div class="hint" id="stroke-wt-val">Follows Pen ⌀</div>
       </div>
       <div class="control-group">
         <label data-tip="Chance that shapes use hatch fill instead of outline only." >Fill Probability</label>
@@ -1202,7 +1198,7 @@
         <div class="control-group">
           <label data-tip="The pen tip's width. Sets the hatch spacing, the plot preview's line, and the smallest text (see Min Text Size).">Pen ⌀ (mm)</label>
           <input type="number" id="hatch-pen-dia" min="0.05" max="5" step="0.05" value="0.3"
-            onchange="updateState('plotter.hatch.penDiameter', +this.value); refreshMinTextHint()">
+            onchange="updateState('plotter.hatch.penDiameter', +this.value); syncStrokeWeight(); refreshMinTextHint()">
         </div>
         <div class="control-group">
           <label>Spacing (px)</label>
@@ -1448,13 +1444,35 @@ function formatUnitVal(px, unit, dpi) {
   return Math.round(v).toString();
 }
 
+// Lines meant to read apart keep their centres PEN_CLEAR pen widths apart:
+// half a nib of paper between the inks. Hatch tone keeps 1.2 (getHatchSpacing)
+// and solid fills pitch under one pen on purpose.
+const PEN_CLEAR = 1.5;
+function penPx() { return unitToPx(+state.plotter.hatch.penDiameter || 0, 'mm', state.plotter.dpi); }
+// Tone pitch: a fixed step, never under the hatch rule's 1.2 pens.
+function penTone(step) { return Math.max(step, penPx() * 1.2); }
+// A bar of ink between ya and yb, x0..x1: rows under one pen apart so they
+// fuse into a solid; a single line when ya = yb.
+function penSolidRows(x0, x1, ya, yb) {
+  let n = Math.ceil(Math.abs(yb - ya) / (penPx() * 0.9) - 1e-9);
+  for (let i = 0; i <= n; i++) { let yy = ya + (yb - ya) * i / n; svgLine(x0, yy, x1, yy); }
+}
+
 // Text never sets smaller than the pen tip can draw. Plotterm's tightest
-// counters (Typewriter's A, m, 4) are 0.18 em between stroke centres; at
-// 1.5x the tip's width they keep half a nib of paper between the inks.
-const TEXT_PEN_PITCH_EM = 0.18, TEXT_PEN_CLEAR = 1.5;
+// counters (Typewriter's A, m, 4) are 0.18 em between stroke centres.
+const TEXT_PEN_PITCH_EM = 0.18;
 function getPenTextFloorPx() {
-  let pen = unitToPx(+state.plotter.hatch.penDiameter || 0, 'mm', state.plotter.dpi);
-  return pen * TEXT_PEN_CLEAR / TEXT_PEN_PITCH_EM;
+  return penPx() * PEN_CLEAR / TEXT_PEN_PITCH_EM;
+}
+
+// Lines draw at the pen tip's width, so Stroke Weight is the pen in px. Role
+// weights (KIT_WEIGHT and the like) scale it on screen and pick pens; on paper
+// every line is one nib wide.
+function syncStrokeWeight() {
+  let p = state.plotter;
+  state.geometry.strokeWeight = Math.max(0.25, unitToPx(+p.hatch.penDiameter || 0, 'mm', p.dpi));
+  let el = document.getElementById('stroke-wt-val');
+  if (el) el.textContent = `Follows Pen ⌀ ${(+p.hatch.penDiameter).toFixed(2)} mm: ${state.geometry.strokeWeight.toFixed(2)} px`;
 }
 
 function getMinTextSizePx() {
@@ -1518,6 +1536,7 @@ function refreshDimensionDisplays() {
     let el = document.getElementById(id);
     if (el) el.value = formatUnitVal(state.margin[id.split('-')[1]], u, dpi);
   });
+  syncStrokeWeight();
   refreshMinTextHint();
 }
 
@@ -6067,7 +6086,8 @@ function kitModule(r, s, prng, kind) {
         svgRect(bx, by, bw * 0.7, bh);
         if (v > 0.6 && bw > 4) { // "filled" bars: a few hatch lines instead of a fill
           kitWeight('fine');
-          for (let hy = by + 2.5; hy < by + bh - 1; hy += 2.5) svgLine(bx, hy, bx + bw * 0.7, hy);
+          let pt = penTone(2.5);
+          for (let hy = by + pt; hy < by + bh - pt * 0.99; hy += pt) svgLine(bx, hy, bx + bw * 0.7, hy);
         }
       }
       kitWeight('fine');
@@ -6342,8 +6362,10 @@ function drawQRCode(x, y, w, h, density, corruption, prng) {
 }
 
 // Draw a data matrix style 2D code — any aspect ratio
+// Modules keep 1.5 pens apart and open, so they read as squares on paper.
 function drawDataMatrix(x, y, w, h, density, prng) {
-  let cellSz = Math.max(2, Math.min(w, h) / Math.round(6 + density * 6));
+  let clear = penPx() * PEN_CLEAR;
+  let cellSz = Math.max(2, clear * 2, Math.min(w, h) / Math.round(6 + density * 6)), mod = cellSz - Math.max(cellSz * 0.15, clear);
   let cols = Math.max(2, Math.floor(w / cellSz));
   let rows = Math.max(2, Math.floor(h / cellSz));
   cols = Math.min(cols, 24); rows = Math.min(rows, 24);
@@ -6359,7 +6381,7 @@ function drawDataMatrix(x, y, w, h, density, prng) {
   for (let ry = 0; ry < rows; ry++) {
     for (let cx2 = 0; cx2 < cols; cx2++) {
       if (prng.nextFloat() < 0.44) {
-        svgRect(x + cx2 * cellSz, y + ry * cellSz, cellSz * 0.85, cellSz * 0.85);
+        svgRect(x + cx2 * cellSz, y + ry * cellSz, mod, mod);
       }
     }
   }
@@ -6451,11 +6473,13 @@ function composeStatusPanel(rect, s, prng) {
     let fill = _compBus ? _compBus.pulsePositive : prng.nextFloat();
     let segs = Math.max(8, Math.min(40, Math.floor(gw / (body * 0.9))));
     let sw = gw / segs;
+    // Segments keep 1.5 pens between them; tone a full pitch inside each
+    let si = Math.max(1, penPx() * PEN_CLEAR / 2), pt = penTone(2.5);
     for (let i = 0; i < segs; i++) {
       let on = i / segs < fill;
       kitWeight(on ? 'secondary' : 'fine');
-      svgRect(ix + i * sw + 1, curY, sw - 2, gh);
-      if (on && sw > 4) for (let hx = ix + i * sw + 2.5; hx < ix + (i + 1) * sw - 2; hx += 2.5) svgLine(hx, curY + 1, hx, curY + gh - 1);
+      svgRect(ix + i * sw + si, curY, sw - si * 2, gh);
+      if (on && sw > 4) for (let hx = ix + i * sw + si + pt; hx < ix + (i + 1) * sw - si - pt * 0.99; hx += pt) svgLine(hx, curY + 1, hx, curY + gh - 1);
     }
     kitWeight('fine');
     kitRuler(ix, curY + gh + 3, gw, { divisions: 20, major: 5, len: body * 0.5, from: 0, to: 100, labelSize: micro });
@@ -7402,8 +7426,9 @@ function meterVariant_radarChart(c) {
 // --- 3. Radial bars: polar histogram with threshold ring and peak caps ---
 function meterVariant_radialBars(c) {
   let { cx, cy, R, F } = c;
-  let n = Math.max(12, Math.min(48, Math.round((16 + F[1] * 16) * Math.min(1.5, c.d) / (c.macro ? 2 : 1))));
   let r0 = R * 0.3, r1 = R * 0.9, thr = 0.62 + F[2] * 0.2;
+  // Fewer bars when their gaps at the hub would close under 1.5 pens
+  let n = Math.max(6, Math.min(48, Math.round((16 + F[1] * 16) * Math.min(1.5, c.d) / (c.macro ? 2 : 1)), Math.floor((r0 + R * 0.02) * TWO_PI * 0.22 / (c.pen * PEN_CLEAR))));
   let gapA = TWO_PI / n * 0.22;
   let sum = 0;
   kitWeight('heavy');
@@ -7632,11 +7657,12 @@ function meterVariant_stackedArcs(c) {
     if (_compBus && _compBus.audioAmps && c.animated) fr = 0.1 + _compBus.audioAmps[Math.floor(t / n * _compBus.audioBins) % _compBus.audioBins] * 0.85;
     else fr = _mtrLive(c, fr, t);
     if (t === 0) main = fr;
-    kitWeight('fine');
-    svgArc(cx, cy, ro * 2, ro * 2, a0, a1);
-    svgArc(cx, cy, ri * 2, ri * 2, a0, a1);
-    svgLine(cx + Math.cos(a1) * ri, cy + Math.sin(a1) * ri, cx + Math.cos(a1) * ro, cy + Math.sin(a1) * ro);
+    // The track's unlit run; the lit block draws its own edges
     let e = a0 + (a1 - a0) * fr;
+    kitWeight('fine');
+    svgArc(cx, cy, ro * 2, ro * 2, e, a1);
+    svgArc(cx, cy, ri * 2, ri * 2, e, a1);
+    svgLine(cx + Math.cos(a1) * ri, cy + Math.sin(a1) * ri, cx + Math.cos(a1) * ro, cy + Math.sin(a1) * ro);
     _mtrBlock(cx, cy, ri, ro, a0, e, true, c, (t % 2 ? 45 : 135));
     if (c.show.ticks) {
       kitWeight('fine');
@@ -7666,9 +7692,11 @@ function meterVariant_segmentedLEDBar(c) {
   let { cx, cy, R, F } = c;
   let vertical = F[1] < 0.6;
   let chans = c.macro ? 2 : 2 + Math.floor(F[2] * 3);
-  let segs = c.macro ? 10 : Math.max(12, Math.min(32, Math.round(16 * Math.min(1.8, c.d))));
   let L = R * 1.8, chW = Math.min(chans <= 2 ? R * 0.36 : R * 0.28, R * 1.2 / chans);
-  let gap = chW * 0.35;
+  // Segments and channels keep 1.5 pens of paper between them
+  let clear = c.pen * PEN_CLEAR;
+  let segs = Math.max(4, Math.min(c.macro ? 10 : Math.max(12, Math.min(32, Math.round(16 * Math.min(1.8, c.d)))), Math.floor(L * 0.2 / clear)));
+  let gap = Math.max(chW * 0.35, clear);
   let blockW = chans * chW + (chans - 1) * gap;
   let redFrom = Math.floor(segs * 0.8), ambFrom = Math.floor(segs * 0.62);
   let dB = (k) => Math.round(-40 + 46 * k / segs);
@@ -9465,8 +9493,8 @@ function _txCautionFrame(x, y, B, t, phase) {
   let off = (phase || 0) * P;
   kitWeight('fine');
   for (let c0 = -P + off; c0 < B * 2 + P; c0 += P) {
-    for (let c = c0; c < c0 + P * 0.5; c += sp) {
-      // Line u + v = c in local coords, clipped to outer minus inner square
+    for (let c = c0; c < c0 + P * 0.5; c += sp * Math.SQRT2) {
+      // Line u + v = c in local coords (sp apart across the stripe), clipped to outer minus inner square
       let a = _txClip(x + c, y, x + c - B * 2, y + B * 2, x, y, B, B);
       if (!a) continue;
       let ax = x + c, ay = y, bx = x + c - B * 2, by = y + B * 2;
@@ -9527,11 +9555,12 @@ function _txRedact(x, y, w, h) {
   _txHatchRect(x, y, w, h, Math.max(1.5, h * 0.22), 1);
 }
 
-// Corrupted barcode along a vertical edge: horizontal bars of 1-3 strokes with
-// torn zones where bars shift, truncate or drop out.
+// Corrupted barcode along a vertical edge: horizontal bars 1-3 units thick with
+// torn zones where bars shift, truncate or drop out. A bar is solid ink and the
+// gaps keep 1.5 pens, so bars and spaces both read on paper.
 function _txBarcodeEdge(x, y, w, h, prng) {
   let pen = unitToPx(state.plotter.hatch.penDiameter, 'mm', state.plotter.dpi);
-  let unit = Math.max(pen * 1.3, 1.4);
+  let unit = Math.max(pen * PEN_CLEAR, 1.4);
   let tears = [prng.nextFloat(), prng.nextFloat(), prng.nextFloat()];
   let seed = prng.nextInt(1, 0xFFFFFF);
   kitWeight('fine');
@@ -9548,8 +9577,9 @@ function _txBarcodeEdge(x, y, w, h, prng) {
       sx = w * _profileHash(seed + i, 153) * 0.5;
       ex = sx + w * (0.2 + _profileHash(seed + i, 154) * 0.5);
     }
-    for (let j = 0; j < k && pos < h; j++, pos += unit) svgLine(x + sx, y + pos, x + Math.min(w, ex), y + pos);
-    pos += gap; i++;
+    let k2 = Math.min(k, Math.ceil((h - pos) / unit));
+    penSolidRows(x + sx, x + Math.min(w, ex), y + pos, y + pos + (k2 - 1) * unit);
+    pos += k2 * unit + gap; i++;
   }
 }
 
@@ -9764,7 +9794,7 @@ function composeErrorMessage(rect, s, prng) {
   }
   kitWeight('primary');
   svgRect(fx, fy, fw, fh);
-  if (S > micro * 20 && variant !== 'dialog') { kitWeight('fine'); svgRect(fx + 2.5, fy + 2.5, fw - 5, fh - 5); }
+  if (S > micro * 20 && variant !== 'dialog') { let fi = Math.max(2.5, penPx() * PEN_CLEAR); kitWeight('fine'); svgRect(fx + fi, fy + fi, fw - fi * 2, fh - fi * 2); }
 
   let ix = fx + pad, iy = fy + pad, iw = fw - pad * 2, ih = fh - pad * 2;
 
@@ -10207,7 +10237,8 @@ function _txProgRow(x, base, w, row, cw, size, v) {
   if (bw < cw * 4) return;
   let bh = size * 0.8, by = base - size * 0.82;
   _txText('[', bx - cw, base, size);
-  let cells = Math.max(6, Math.floor(bw / cw)), cwid = bw / cells;
+  // Cells keep 1.5 pens between them; fewer, wider cells when the pen is broad
+  let cells = Math.max(2, Math.min(Math.max(6, Math.floor(bw / cw)), Math.floor(bw * 0.24 / (penPx() * PEN_CLEAR)))), cwid = bw / cells;
   let on = Math.round(cells * v);
   for (let i = 0; i < cells; i++) {
     kitWeight(i < on ? 'secondary' : 'fine');
@@ -11932,14 +11963,17 @@ function composeAsciiArt(rect, s, prng) {
   // merged into long strokes, so the figure reads crisp instead of blotchy.
   if (s > 0.6 && style === 'block' && !hasWaveDisp) {
     let ink = (r, c) => r >= f0r && r <= f1r && c >= f0c && c <= f1c && typeof G[r][c] === 'number' && G[r][c] >= 9;
+    // The contour stands off the shading by 1.5 pens (its outer rows sit half
+    // a slot in from the cell edge); runs stretch by as much to meet at corners
+    let o = Math.max(0, pen * PEN_CLEAR - ch / slots.length / 2);
     let BO = _ascBatch();
     for (let r = f0r; r <= f1r; r++) for (let c = f0c; c <= f1c; c++) {
       if (!ink(r, c)) continue;
       let X0 = x + c * cw, Y0 = y + r * ch, X1 = X0 + cw, Y1 = Y0 + ch;
-      if (!ink(r - 1, c)) _ascSeg(BO, X0, Y0, X1, Y0);
-      if (!ink(r + 1, c)) _ascSeg(BO, X0, Y1, X1, Y1);
-      if (!ink(r, c - 1)) _ascSeg(BO, X0, Y0, X0, Y1);
-      if (!ink(r, c + 1)) _ascSeg(BO, X1, Y0, X1, Y1);
+      if (!ink(r - 1, c)) _ascSeg(BO, X0 - o, Y0 - o, X1 + o, Y0 - o);
+      if (!ink(r + 1, c)) _ascSeg(BO, X0 - o, Y1 + o, X1 + o, Y1 + o);
+      if (!ink(r, c - 1)) _ascSeg(BO, X0 - o, Y0 - o, X0 - o, Y1 + o);
+      if (!ink(r, c + 1)) _ascSeg(BO, X1 + o, Y0 - o, X1 + o, Y1 + o);
     }
     kitWeight('heavy');
     _ascFlush(BO);
@@ -13192,7 +13226,7 @@ function scFinder(g, s, micro, cx, cy, R, Rout, u, mic, showText, fine, placer, 
   }
   // reticle: double-line crosshair with mil ticks and a central gap
   if (detailActive('crosshairs', s)) {
-    let gap = R * 0.08, d = Math.max(1.2, R * 0.006);
+    let gap = R * 0.08, d = Math.max(1.2, R * 0.006, penPx() * PEN_CLEAR / 2);
     kitWeight('secondary');
     for (let sgn of [-1, 1]) {
       svgLine(cx - R, cy + sgn * d, cx - gap, cy + sgn * d); svgLine(cx + gap, cy + sgn * d, cx + R, cy + sgn * d);
@@ -14354,13 +14388,33 @@ function _glbScr(g, p) { return [g.cx + p.x * g.R, g.cy - p.y * g.R]; }
 
 // Draw a sampled 3D curve: visible runs solid, hidden runs dashed or skipped.
 // Surface curves (k = 1) are cut exactly at the limb; off-surface curves
-// (orbits) are hidden only where the planet is in front of them.
-function _glbCurve(g, pts, hidden, dash) {
+// (orbits) are hidden only where the planet is in front of them. sep (px, or
+// a function of the sample index) is a surface curve's true distance to its
+// family neighbour: the curve stops where foreshortening or convergence
+// brings that neighbour within k pens on screen.
+function _glbCurve(g, pts, hidden, dash, sep, k) {
   let vis = (p) => p.z >= 0 || (p.x * p.x + p.y * p.y) > 1;
+  let keep = pts.map(() => true);
+  if (sep != null) {
+    let need = (k || PEN_CLEAR) * _radPen();
+    for (let i = 0; i < pts.length; i++) {
+      let a = pts[Math.max(0, i - 1)], b = pts[Math.min(pts.length - 1, i + 1)];
+      let tx = b.x - a.x, ty = b.y - a.y, tz = b.z - a.z, tl = Math.hypot(tx, ty, tz);
+      let txy = tl > 1e-9 ? Math.hypot(tx, ty) / tl : 1;
+      let gap = (typeof sep === 'function' ? sep(i) : sep) * Math.max(0, pts[i].z) / Math.max(txy, 1e-6);
+      // ... and where it runs along the limb rather than across it
+      let r = Math.hypot(pts[i].x, pts[i].y), across = r > 1e-9 && txy > 1e-9 ? Math.abs(tx * pts[i].x + ty * pts[i].y) / (r * Math.hypot(tx, ty)) : 1;
+      keep[i] = gap >= need && (across > 0.26 || g.R * (1 - r) >= need);
+    }
+  }
   let runs = [], cur = null;
   for (let i = 0; i < pts.length; i++) {
     let p = pts[i], v = vis(p);
-    if (i > 0 && v !== vis(pts[i - 1])) {
+    if (i > 0 && keep[i] !== keep[i - 1] && v && vis(pts[i - 1])) {
+      // Too close to the neighbour: end the run here, without a hidden dash
+      cur = { v: keep[i], cut: !keep[i], pts: [] };
+      runs.push(cur);
+    } else if (i > 0 && v !== vis(pts[i - 1])) {
       // Crossing point: interpolate to z = 0 (surface) and pin it to the limb
       let q = pts[i - 1], surf = Math.abs(Math.hypot(p.x, p.y, p.z) - 1) < 0.02, t;
       if (surf) t = q.z / (q.z - p.z);
@@ -14369,15 +14423,15 @@ function _glbCurve(g, pts, hidden, dash) {
       let m = { x: q.x + (p.x - q.x) * t, y: q.y + (p.y - q.y) * t, z: q.z + (p.z - q.z) * t };
       let r = Math.hypot(m.x, m.y);
       if (surf && r > 0) { m.x /= r; m.y /= r; m.z = 0; }
-      if (cur) cur.pts.push(m);
-      cur = { v, pts: [m] };
+      if (cur && !cur.cut) cur.pts.push(m);
+      cur = { v: v && keep[i], cut: v && !keep[i], pts: [m] };
       runs.push(cur);
     }
-    if (!cur) { cur = { v, pts: [] }; runs.push(cur); }
+    if (!cur) { cur = { v: vis(p) && keep[i], cut: vis(p) && !keep[i], pts: [] }; runs.push(cur); }
     cur.pts.push(p);
   }
   for (let run of runs) {
-    if (run.pts.length < 2) continue;
+    if (run.pts.length < 2 || run.cut) continue;
     let sp = run.pts.map(p => _glbScr(g, p));
     if (run.v) svgPolyline(sp);
     else if (hidden === 'dash') _glbDashed(sp, dash || 3, (dash || 3) * 1.4);
@@ -14546,7 +14600,7 @@ function composeGlobeSpherePanel(rect, s, prng) {
     kitWeight('primary');
     svgCircle(cx, cy, (R + Math.max(pen * 2.5, R * 0.025)) * 2);
   }
-  if (show.rings && !macro) { kitWeight('fine'); svgCircle(cx, cy, R * 1.04 * 2); }
+  if (show.rings && !macro) { kitWeight('fine'); svgCircle(cx, cy, (R + Math.max(R * 0.04, pen * PEN_CLEAR)) * 2); }
 
   // ---- Night side hatch and terminator ----
   let night = _glbNightPoly(g, S);
@@ -14559,14 +14613,27 @@ function composeGlobeSpherePanel(rect, s, prng) {
   // ---- Graticule ----
   let latStep = macro ? 30 : d > 1.6 ? 15 : 30, lonStep = macro ? 45 : d > 1.6 ? 15 : 30;
   let nSmp = Math.max(48, Math.round(R * 0.5));
+  // Stripe bands (scanBands): centre and width in degrees. A graticule parallel
+  // inside one would only merge with its stripes, so it gives way.
+  let bands = [];
+  if (isBand && (show.inner || macro)) {
+    let nb = macro ? 2 : 3 + Math.floor(F[12] * 2);
+    for (let b = 0; b < nb; b++) bands.push({ c0: -60 + (b + 0.5) * 120 / nb + (F[13 + b] - 0.5) * 12, bw: (macro ? 9 : 6) + F[18 + b] * 5 });
+  }
   if (show.inner || !macro) {
     for (let la = -90 + latStep; la < 90; la += latStep) {
+      if (bands.some(B => Math.abs(la - B.c0) <= B.bw / 2 + 1)) continue;
       kitWeight(la === 0 ? 'primary' : 'fine');
-      _glbCurve(g, _glbParallel(g, la * DEG, nSmp), (show.ticks && la === 0) ? 'dash' : null, Math.max(2, R * 0.02));
+      _glbCurve(g, _glbParallel(g, la * DEG, nSmp), (show.ticks && la === 0) ? 'dash' : null, Math.max(2, R * 0.02), R * latStep * DEG);
     }
+    // Meridians close in on the poles; past 1.5 pens apart only the quarter
+    // meridians carry on, as on a printed map
+    let nMer = Math.round(nSmp / 2);
     for (let lo = 0; lo < 360; lo += lonStep) {
       kitWeight(lo === 0 ? 'secondary' : 'fine');
-      _glbCurve(g, _glbMeridian(g, lo * DEG, Math.round(nSmp / 2)), null);
+      let quarter = lo % 90 === 0;
+      _glbCurve(g, _glbMeridian(g, lo * DEG, nMer), null, null,
+        i => quarter ? R * DEG * Math.min(latStep, 30) : R * Math.cos(-HALF_PI + i / nMer * PI) * lonStep * DEG);
     }
   } else {
     kitWeight('primary');
@@ -14585,14 +14652,14 @@ function composeGlobeSpherePanel(rect, s, prng) {
   }
 
   // ---- Variant layers ----
-  if (isBand && (show.inner || macro)) {
+  if (bands.length) {
     // Stripe bands: dense parallels read as solid bands with true curvature
-    let nb = macro ? 2 : 3 + Math.floor(F[12] * 2);
-    for (let b = 0; b < nb; b++) {
-      let c0 = -60 + (b + 0.5) * 120 / nb + (F[13 + b] - 0.5) * 12, bw = (macro ? 9 : 6) + F[18 + b] * 5;
+    for (let b = 0; b < bands.length; b++) {
+      let { c0, bw } = bands[b];
       let lines = Math.max(3, Math.min(14, Math.round(bw * R / 90 / Math.max(1, pen))));
       kitWeight(macro ? 'primary' : 'secondary');
-      for (let q = 0; q <= lines; q++) _glbCurve(g, _glbParallel(g, (c0 - bw / 2 + bw * q / lines) * DEG, nSmp), null);
+      // A band reads as tone, so its stripes keep the hatch rule's 1.2 pens
+      for (let q = 0; q <= lines; q++) _glbCurve(g, _glbParallel(g, (c0 - bw / 2 + bw * q / lines) * DEG, nSmp), null, null, R * bw / lines * DEG, 1.2);
       if (show.sec && R > 80) {
         // Band tag outside the limb on the band's left edge
         let lp = _glbGeo(g, c0 * DEG, lon0 - 88 * DEG);
@@ -14619,7 +14686,7 @@ function composeGlobeSpherePanel(rect, s, prng) {
     // Auroral oval: a band of dense small circles around the visible pole
     let pole = _glbGeo(g, HALF_PI, 0).z > 0 ? 1 : -1;
     kitWeight(macro ? 'primary' : 'secondary');
-    for (let q = 0; q <= 5; q++) _glbCurve(g, _glbSmallCircle(g, pole * (88 - F[25] * 4) * DEG, F[26] * TWO_PI, (19 + q * 1.4) * DEG, nSmp), null);
+    for (let q = 0; q <= 5; q++) _glbCurve(g, _glbSmallCircle(g, pole * (88 - F[25] * 4) * DEG, F[26] * TWO_PI, (19 + q * 1.4) * DEG, nSmp), null, null, R * 1.4 * DEG);
   }
   if (isGS && (show.inner || macro)) {
     // Stations with coverage circles, a geodesic link and labels
@@ -16207,8 +16274,10 @@ function _mgCtx(R) {
     }
     return [ax + dx * t0, ay + dy * t0, ax + dx * t1, ay + dy * t1];
   }
+  // Neighbouring tiles each give way by half of PEN_CLEAR, so their outlines
+  // sit 1.5 pens apart on paper
   const G = {
-    R, inside,
+    R, inside, ins: Math.max(0.5, penPx() * PEN_CLEAR / 2),
     line(ax, ay, bx, by) {
       let c = clipSeg(ax, ay, bx, by);
       if (c && Math.abs(c[2] - c[0]) + Math.abs(c[3] - c[1]) > 0.05) svgLine(c[0], c[1], c[2], c[3]);
@@ -16238,16 +16307,17 @@ function _mgCtx(R) {
       else if (cx + r > x0 && cx - r < x1 && cy + r > y0 && cy - r < y1) G.poly(_mgCirc(cx, cy, r, 28), false);
     },
     pt(x, y) { if (inside(x, y)) svgPoint(x, y); },
-    // Horizontal hatch of an axis-aligned rect ("solid" block)
+    // Horizontal hatch of an axis-aligned rect ("solid" block): tone rows a
+    // full pitch in from the outline, never under the hatch rule's 1.2 pens
     hrect(x, y, w, h, step) {
-      step = Math.max(1.4, step);
-      let n = Math.max(1, Math.round(h / step));
-      for (let i = 0; i < n; i++) { let yy = y + (i + 0.5) * h / n; G.line(x, yy, x + w, yy); }
+      step = Math.max(1.4, step, penPx() * 1.2);
+      let n = Math.max(1, Math.round(h / step) - 1);
+      for (let i = 0; i < n; i++) { let yy = y + (i + 1) * h / (n + 1); G.line(x, yy, x + w, yy); }
     },
     vrect(x, y, w, h, step) {
-      step = Math.max(1.4, step);
-      let n = Math.max(1, Math.round(w / step));
-      for (let i = 0; i < n; i++) { let xx = x + (i + 0.5) * w / n; G.line(xx, y, xx, y + h); }
+      step = Math.max(1.4, step, penPx() * 1.2);
+      let n = Math.max(1, Math.round(w / step) - 1);
+      for (let i = 0; i < n; i++) { let xx = x + (i + 1) * w / (n + 1); G.line(xx, y, xx, y + h); }
     },
     // Hatch arbitrary closed contours (even-odd, so inner contours are holes)
     fill(contours, angle, step) {
@@ -16521,7 +16591,7 @@ function _mgBreakout(G, S, gt, seed, s, o) {
   for (let r = 0; r < nr; r++) for (let c = 0; c < nc; c++) {
     let id = r * nc + c;
     if (!alive[id] || killed[id]) continue;
-    let bx = ix0 + c * bw + 0.8, byy = by0 + r * bh + 0.8, ww = bw - 1.6, hh = bh - 1.6;
+    let bi = Math.max(0.8, G.ins), bx = ix0 + c * bw + bi, byy = by0 + r * bh + bi, ww = bw - bi * 2, hh = bh - bi * 2;
     if (rebuilding[id]) { kitWeight('fine'); G.dashed(bx, byy, bx + ww, byy, 1.5, 1.5); G.dashed(bx, byy + hh, bx + ww, byy + hh, 1.5, 1.5); continue; }
     kitWeight(o.bold ? 'primary' : 'secondary');
     G.rect(bx, byy, ww, hh);
@@ -16814,7 +16884,8 @@ function _mgPacman(G, S, gt, seed, s, o) {
   // Walls: double outline
   kitWeight(o.bold ? 'primary' : 'secondary');
   _mgPacWalls(G, mz, C, R, mx, my, q, q * 0.2);
-  if (q > 6) { kitWeight('fine'); _mgPacWalls(G, mz, C, R, mx, my, q, q * 0.42); }
+  // The inner outline only when the pair sits 1.5 pens apart
+  if (q > 6 && q * 0.22 >= penPx() * PEN_CLEAR) { kitWeight('fine'); _mgPacWalls(G, mz, C, R, mx, my, q, q * 0.42); }
   // Ghost-house gate
   kitWeight('secondary');
   let gateY = my + (mz.cy - 1) * q + q * 0.3;
@@ -16964,8 +17035,9 @@ function _mgPlatformer(G, S, gt, seed, s, o) {
       kitWeight('fine');
       for (let rr = 0; rr < groundRows; rr++) {
         let yy = gY + rr * T;
-        G.rect(rep + 0.6, yy + 0.6, T - 1.2, T - 1.2);
-        if (o.bold) G.hrect(rep + 0.6, yy + 0.6, T - 1.2, T - 1.2, 1.8);
+        let ti = Math.max(0.6, G.ins);
+        G.rect(rep + ti, yy + ti, T - ti * 2, T - ti * 2);
+        if (o.bold) G.hrect(rep + ti, yy + ti, T - ti * 2, T - ti * 2, 1.8);
         else { G.line(rep + T * 0.2, yy + T * 0.3, rep + T * 0.45, yy + T * 0.3); G.line(rep + T * 0.55, yy + T * 0.7, rep + T * 0.8, yy + T * 0.7); }
       }
       if (pits[(i + 1) % NL]) { kitWeight('secondary'); G.line(rep + T, gY, rep + T, y + h); }
@@ -16990,7 +17062,7 @@ function _mgPlatformer(G, S, gt, seed, s, o) {
     let sx = toScreen(b.x * T), by = gY - b.row * T;
     if (!onScreen(sx, T)) continue;
     kitWeight(o.bold ? 'primary' : 'secondary');
-    G.rect(sx + 0.5, by + 0.5, T - 1, T - 1);
+    G.rect(sx + G.ins, by + G.ins, T - G.ins * 2, T - G.ins * 2);
     kitWeight('fine');
     if (b.q) {
       G.rect(sx + T * 0.12, by + T * 0.12, T * 0.76, T * 0.76);
@@ -17109,14 +17181,15 @@ function _mgTetrisClear(g) {
 // One bevelled block; the inner pattern encodes the piece type
 function _mgTetroBlock(G, bx, by, q, type, bold, ghost) {
   if (ghost) { kitWeight('fine'); G.dashed(bx + 1, by + 1, bx + q - 1, by + 1, 1.5, 1.5); G.dashed(bx + q - 1, by + 1, bx + q - 1, by + q - 1, 1.5, 1.5); G.dashed(bx + q - 1, by + q - 1, bx + 1, by + q - 1, 1.5, 1.5); G.dashed(bx + 1, by + q - 1, bx + 1, by + 1, 1.5, 1.5); return; }
-  let i = q * 0.22;
+  let i = q * 0.22, o = G.ins;
   kitWeight(bold ? 'primary' : 'secondary');
-  G.rect(bx + 0.5, by + 0.5, q - 1, q - 1);
-  if (q < 6) { kitWeight('fine'); G.line(bx + 1, by + 1, bx + q - 1, by + q - 1); return; }
+  G.rect(bx + o, by + o, q - o * 2, q - o * 2);
+  // The bevel's inner square needs 1.5 pens inside the outline
+  if (q < 6 || i - o < o * 2) { kitWeight('fine'); G.line(bx + o * 2, by + o * 2, bx + q - o * 2, by + q - o * 2); return; }
   kitWeight('fine');
   G.rect(bx + i, by + i, q - 2 * i, q - 2 * i);
-  G.line(bx + 0.5, by + 0.5, bx + i, by + i); G.line(bx + q - 0.5, by + 0.5, bx + q - i, by + i);
-  G.line(bx + 0.5, by + q - 0.5, bx + i, by + q - i); G.line(bx + q - 0.5, by + q - 0.5, bx + q - i, by + q - i);
+  G.line(bx + o, by + o, bx + i, by + i); G.line(bx + q - o, by + o, bx + q - i, by + i);
+  G.line(bx + o, by + q - o, bx + i, by + q - i); G.line(bx + q - o, by + q - o, bx + q - i, by + q - i);
   let X = bx + i, Y = by + i, Q = q - 2 * i, st = Math.max(1.5, Q / 5);
   let sq = [[[X, Y], [X + Q, Y], [X + Q, Y + Q], [X, Y + Q]]];
   switch (bold ? 0 : type) {
@@ -18298,7 +18371,8 @@ function _specLegend(R, vname, size, len, seed) {
   else if (vname === 'contourMap') {
     for (let lv of [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]) { let yy = R.y + R.h - (lv - 0.05) / 0.93 * R.h; kitWeight(lv >= 0.9 ? 'primary' : 'fine'); svgLine(R.x, yy, R.x + R.w, yy); }
     kitWeight('fine');
-    for (let yy = R.y + 1.2; yy < R.y + R.h * (1 - 0.65 / 0.93); yy += 2.4) svgLine(R.x, yy, R.x + R.w, yy);
+    let pt = penTone(2.4);
+    for (let yy = R.y + pt / 2; yy < R.y + R.h * (1 - 0.65 / 0.93); yy += pt) svgLine(R.x, yy, R.x + R.w, yy);
   } else { // band strokes
     let n = Math.max(2, Math.floor(R.h / 3));
     kitWeight('secondary');
@@ -18400,9 +18474,10 @@ function _specWaterfall(P, sig, s, m, colsFor, showTicks, labels, size, len, loo
       pts.push([ox + bw * j / (nu - 1), oy - v * A]);
     }
     kitWeight(i === 0 ? (bold ? 'heavy' : 'primary') : (i % 5 === 0 || bold) ? 'secondary' : 'fine');
-    let run = [];
+    // A trace shows only where it clears the ones in front by 1.5 pens
+    let run = [], clear = Math.max(0.3, penPx() * PEN_CLEAR);
     for (let j = 0; j < nu; j++) {
-      let p = pts[j], vis = p[1] < hor[hx(p[0])] - 0.3;
+      let p = pts[j], vis = p[1] < hor[hx(p[0])] - clear;
       if (vis) run.push(p);
       else { if (run.length > 1) svgPolyline(run); run = []; }
     }
@@ -18445,7 +18520,7 @@ function _specScopeSpectrum(P, sig, s, m, colsFor, showTicks, labels, showSecond
   let RW = { x: P.x + lw, y: P.y, w: P.w - lw, h: hW };
   let RS = { x: P.x + lw, y: P.y + hW + gap, w: P.w - lw, h: hS };
   let RF = { x: P.x + lw, y: RS.y + hS + gap, w: P.w - lw, h: hF - (labels ? size * 1.7 : 0) - (showTicks ? len : 0) };
-  let pitch = Math.max(2.2, 2.8 * m);
+  let pitch = Math.max(2.2, 2.8 * m, penPx() * PEN_CLEAR);
   let nc = Math.max(10, Math.min(260, Math.round(RW.w / pitch))), nr = Math.max(8, Math.min(90, Math.round(RS.h / pitch)));
   let tc = colsFor(nc);
   let fd = _specField(sig, nc, nr, tc.Ntot, tc.k0);
@@ -18478,7 +18553,7 @@ function _specScopeSpectrum(P, sig, s, m, colsFor, showTicks, labels, showSecond
   kitWeight('fine');
   for (let db = -80; db <= -10; db += showSecond ? 10 : 30) drawDashedLine(RF.x, Y((db + 90) / 90), RF.x + RF.w, Y((db + 90) / 90), 1, 3);
   for (let hz of [100, 1000, 10000]) { let xx = RF.x + _specU(hz) * RF.w; drawDashedLine(xx, RF.y, xx, RF.y + RF.h, 1, 3); }
-  let hatchStep = Math.max(2.2, 2.6 * m), lastHx = -1e9, pts = [];
+  let hatchStep = Math.max(2.2, 2.6 * m, penPx() * 1.2), lastHx = -1e9, pts = [];
   for (let j = 0; j < nu; j++) {
     let xx = X(j), yy = Y(cur[j]);
     pts.push([xx, yy]);
@@ -18488,7 +18563,8 @@ function _specScopeSpectrum(P, sig, s, m, colsFor, showTicks, labels, showSecond
   svgPolyline(pts);
   kitWeight('fine');
   let pkPts = [];
-  for (let j = 0; j < nu; j++) pkPts.push([X(j), Y(pk[j]) - 1.5]);
+  let pkLift = Math.max(1.5, penPx() * PEN_CLEAR);
+  for (let j = 0; j < nu; j++) pkPts.push([X(j), Y(pk[j]) - pkLift]);
   for (let j = 0; j + 1 < nu; j += 3) svgLine(pkPts[j][0], pkPts[j][1], pkPts[j + 1][0], pkPts[j + 1][1]);
   kitWeight('secondary');
   svgLine(RF.x, RF.y, RF.x, RF.y + RF.h);
@@ -18527,8 +18603,10 @@ function _specBandAnalyzer(P, sig, s, m, colsFor, showTicks, labels, showSecond,
   let botH = labels ? size * 1.8 : 0;
   let topH = labels ? size * 1.6 : 0;
   let A = { x: P.x + leftW, y: P.y + topH, w: P.w - leftW - meterW, h: P.h - botH - topH };
-  let nseg = Math.max(8, Math.min(48, Math.round(A.h / (5.4 * m))));
-  let colW = A.w / nb, gapX = Math.max(1, colW * 0.18), segH = A.h / nseg;
+  // Segments keep their gaps and inner rules 1.5 pens apart
+  let pen = penPx(), clear = pen * PEN_CLEAR;
+  let nseg = Math.max(3, Math.min(48, Math.round(A.h / (5.4 * m)), Math.floor(A.h * 0.28 / clear)));
+  let colW = A.w / nb, gapX = Math.max(1, colW * 0.18, clear), segH = A.h / nseg;
   let tc = colsFor(100), K = 16;
   let bd = _specBandField(sig, centers, third ? 1 / 3 : 1, K, tc.Ntot, tc.k0 + 100 - K);
   let lvlOf = L => Math.max(0, Math.min(1, (L * 90 - 18) / 72)); // display: -72..0 dBFS
@@ -18545,8 +18623,8 @@ function _specBandAnalyzer(P, sig, s, m, colsFor, showTicks, labels, showSecond,
         svgRect(bx, sy0, bwid, sh);
         kitWeight('fine');
         let lines = bold ? 9 : zoneI === 2 ? 9 : zoneI;
-        if (lines >= 9) { for (let yy = sy0 + 1.3; yy < sy0 + sh - 0.6; yy += 1.5) svgLine(bx, yy, bx + bwid, yy); }
-        else for (let k = 1; k <= lines && sh > 3.5; k++) { let yy = sy0 + sh * k / (lines + 1); svgLine(bx + bwid * 0.12, yy, bx + bwid * 0.88, yy); }
+        if (lines >= 9) { let pt = Math.max(1.5, pen * 1.2); for (let yy = sy0 + pt; yy < sy0 + sh - pt * 0.99; yy += pt) svgLine(bx, yy, bx + bwid, yy); }
+        else for (let k = 1; k <= lines && sh / (lines + 1) >= clear; k++) { let yy = sy0 + sh * k / (lines + 1); svgLine(bx + bwid * 0.12, yy, bx + bwid * 0.88, yy); }
       } else if (!bold && detailActive('dotMatrixTextures', s)) {
         kitWeight('fine');
         svgLine(bx + bwid * 0.4, sy0 + sh / 2, bx + bwid * 0.6, sy0 + sh / 2);
@@ -18557,7 +18635,7 @@ function _specBandAnalyzer(P, sig, s, m, colsFor, showTicks, labels, showSecond,
     if (pv > 0.02) {
       let py = A.y + A.h - (pi + 1) * segH + segH * 0.14;
       kitWeight('heavy');
-      svgLine(bx - 0.5, py - 1.5, bx + bwid + 0.5, py - 1.5);
+      svgLine(bx - 0.5, py - Math.max(1.5, clear), bx + bwid + 0.5, py - Math.max(1.5, clear));
     }
   }
   kitWeight('secondary');
@@ -18589,17 +18667,21 @@ function _specBandAnalyzer(P, sig, s, m, colsFor, showTicks, labels, showSecond,
     let tot = 0; for (let b = 0; b < nb; b++) tot += lvlOf(bd.F[(K - 1) * nb + b]);
     let base = Math.max(0.05, Math.min(0.97, tot / nb + 0.12));
     let vals = [base, Math.max(0, base - 0.04 - _mmHash(sig.seed, tc.k0 & 63) * 0.06)];
-    let nm = Math.max(10, Math.round(mh / (3.4 * m)));
+    // A lit segment is a bar a quarter segment tall; bars keep 1.5 pens of
+    // pitch apart, and a bar too thin to show two lines is drawn solid
+    let nm = Math.max(4, Math.min(Math.max(10, Math.round(mh / (3.4 * m))), Math.floor(mh * 0.75 / (pen * PEN_CLEAR))));
+    let mGap = Math.max(1, pen * PEN_CLEAR);
     for (let ch = 0; ch < 2; ch++) {
       let bx = mx + ch * mw, sh2 = mh / nm;
       for (let i = 0; i < nm; i++) {
         let on = (i + 0.5) / nm < vals[ch], yy = A.y + mh - (i + 1) * sh2;
         kitWeight(on ? 'secondary' : 'fine');
-        if (on) { svgLine(bx + 1, yy + sh2 * 0.5, bx + mw - 2, yy + sh2 * 0.5); svgLine(bx + 1, yy + sh2 * 0.25, bx + mw - 2, yy + sh2 * 0.25); }
+        if (on && sh2 * 0.25 < pen * PEN_CLEAR) penSolidRows(bx + mGap, bx + mw - mGap - 1, yy + sh2 * 0.25, yy + sh2 * 0.5);
+        else if (on) { svgLine(bx + mGap, yy + sh2 * 0.5, bx + mw - mGap - 1, yy + sh2 * 0.5); svgLine(bx + mGap, yy + sh2 * 0.25, bx + mw - mGap - 1, yy + sh2 * 0.25); }
         else if (i % 2 === 0) svgPoint(bx + mw / 2, yy + sh2 * 0.5);
       }
       kitWeight('secondary');
-      svgRect(bx, A.y, mw - 1, mh);
+      svgRect(bx, A.y, mw - mGap, mh);
       if (labels) { kitWeight('fine'); kitText(ch ? 'R' : 'L', bx + mw / 2, A.y + mh + size * 1.45, size, 'center'); }
     }
     if (labels) { kitWeight('fine'); kitText('LUFS', mx + mw, P.y + size, size, 'center'); }
@@ -18728,7 +18810,7 @@ function composeSpectrogram(rect, s, prng) {
       for (let pl of _specContours(P, fieldData, Fs, levels[li])) if (pl.length > 2) svgPolyline(pl);
     }
     // Hotter level sets get denser hatching; the hottest is cross-hatched
-    let hs = Math.max(1, Math.round((bold ? 1.8 : 2.4) / (P.h / nr)));
+    let hs = Math.max(1, Math.round((bold ? 1.8 : 2.4) / (P.h / nr)), Math.ceil(penPx() * 1.2 / (P.h / nr)));
     kitWeight('fine');
     _specHatchRegion(P, fieldData, Fs, levels[levels.length - 4], hs * 5, false);
     _specHatchRegion(P, fieldData, Fs, levels[levels.length - 3], hs * 3, false);
@@ -18940,6 +19022,7 @@ function generate(frameIndex) {
   }
 
   let prng = new PRNG(state.seed);
+  syncStrokeWeight();
 
   // Randomize font selection for this generation
   randomizeFontSelection(prng);
@@ -19469,8 +19552,7 @@ function generate(frameIndex) {
   // margin can hold its label without touching the paper edge)
   if (state.plotter.unit !== 'px' && state.margin.bottom >= getMinTextSizePx() + 4) {
     let penPx = state.geometry.strokeWeight;
-    let penPhys = pxToUnit(penPx, state.plotter.unit, state.plotter.dpi);
-    let label = penPhys.toFixed(2) + state.plotter.unit;
+    let label = (+state.plotter.hatch.penDiameter).toFixed(2) + 'mm';
     // Right-aligned to the content edge and centred in the bottom margin, so
     // it never runs off the page (the label size is clamped to min text size).
     let textH = getMinTextSizePx();
@@ -21283,7 +21365,8 @@ const TREATMENT_PER_CELL = {
     let dx = (sliceDx - 0.5) * w * 0.15 * eff;
     // Displaced band
     svgLine(x, sy, x + w, sy);
-    svgLine(x + dx, sy + 1, x + sliceW * w * 0.4 + dx, sy + 1);
+    let sOff = Math.max(1, penPx() * PEN_CLEAR);
+    svgLine(x + dx, sy + sOff, x + sliceW * w * 0.4 + dx, sy + sOff);
     // Pixel-sort trail below slice
     if (eff > 0.4) {
       svgSetStrokeWeight(state.geometry.strokeWeight * 0.1);
@@ -21321,8 +21404,9 @@ const TREATMENT_PER_CELL = {
     let pen = unitToPx(state.plotter.hatch.penDiameter, 'mm', state.plotter.dpi);
     let spacing = Math.max(2, pen * 4, Math.round(4 - scanDensity * 2), h / 18);
     let count = Math.floor(h / spacing);
+    // Half a pitch in, so the first line clears the cell's top border
     for (let i = 0; i < count; i++) {
-      svgLine(x, y + i * spacing, x + w, y + i * spacing);
+      svgLine(x, y + (i + 0.5) * spacing, x + w, y + (i + 0.5) * spacing);
     }
     svgSetStrokeWeight(state.geometry.strokeWeight);
   },
@@ -22453,8 +22537,7 @@ function syncAllUI() {
   document.getElementById('border-padding').value = state.border.padding;
   document.getElementById('seed-input').value = state.seed;
   document.getElementById('lock-seed').checked = state.lockSeed;
-  document.getElementById('stroke-wt').value = state.geometry.strokeWeight;
-  document.getElementById('stroke-wt-val').textContent = state.geometry.strokeWeight.toFixed(2);
+  syncStrokeWeight();
   document.getElementById('fill-prob').value = state.geometry.fillProbability;
   document.getElementById('fill-prob-val').textContent = state.geometry.fillProbability.toFixed(2);
   document.getElementById('soft-edge').checked = state.geometry.softEdgeFiltering;

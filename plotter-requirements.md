@@ -209,6 +209,10 @@ A global floor for all text rendering, settable in mm, inches, or pixels. Defaul
 
 **Pen tip floor:** The pen tip (Pen Diameter, under Hatch Fill) raises the floor: text is never smaller than `pen_diameter × 1.5 / 0.18` of em (8.3× the pen, 2.5mm for a 0.3mm pen). Plotterm's tightest counters (Typewriter's A, m, 4) are 0.18 em between stroke centres, and at 1.5× the pen's width they keep half a nib of paper between the inks. The larger of the two floors wins; the panel says when the pen is the one setting it. Whole glyphs in treatment clones keep the same floor; single-stroke marks (slashes, ticks) may go smaller. Clip-sheet text (frame labels, footer, title) is set in Plotterm Round by cap height and keeps the floor too; the label band grows with it. The Stvrpype hub's marks are lettered by Stvrpype at its own fixed sizes.
 
+**Line clearance:** Lines meant to read apart keep their centres at least 1.5 pen widths apart (`PEN_CLEAR`): half a nib of bare paper between the inks, which survives a fibre or gel pen's bleed. Hatch tone keeps the hatch rule's 1.2 pens, and a solid bar is drawn as rows under one pen apart (`penSolidRows`) so they fuse. Spacing between 1 and 1.2 pens is never right: too close to read as two lines, too open to read as one. Generators derive their gaps from the pen: graticules stop where they converge, tiles and meter segments give way by half the clearance, and dense marks thin out (fewer segments, bars or cells) rather than crowd.
+
+**Stroke Weight follows the pen:** Stroke Weight is the Pen Diameter in px; the panel shows it rather than offering a slider. Role weights (heavy, primary, secondary, fine) still scale it on screen and pick pens in a multi-pen plot, but on paper every line is one nib wide. The pen-width reference in the bottom margin prints the Pen Diameter.
+
 ---
 
 ## 9. Detail Scale Multiplier
@@ -415,7 +419,7 @@ vpype read input.svg linesort write output.svg
 
 ### 17.2 Gap Enforcement
 
-When using thick pens, increase both Stroke Weight and Detail Scale together to ensure no two parallel paths are closer than the pen width.
+Stroke Weight follows the pen, and generators space their lines from it (section 8, Line clearance); with thick pens, raising Detail Scale still gives the marks more room.
 
 ### 17.3 Test Plots
 
