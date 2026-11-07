@@ -16267,7 +16267,7 @@ const MG_TITLES = { cargo: 'CARGO BAY', asteroids: 'DEEP BELT' };
 const MG_STEP = 1 / 60;
 const MG_LOOP_S = 8;   // seconds of play per attract loop, for ambient motion
 const MG_KEYS = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down', ' ': 'fire', Shift: 'alt' };
-let _mgPlay = null;    // { cell, game, live, st, input: { held, pressed }, steps, acc, last, raf }
+let _mgPlay = null;    // { cell, game, live, st, sig (the frieze tile it plays in), input: { held, pressed }, steps, acc, last, raf }
 
 function _mgSig(game, S) { return game + ':' + [S.x, S.y, S.w, S.h].map(v => Math.round(v * 10)).join(','); }
 // The live game for cell i, else its paused snapshot, else null (the loop)
@@ -16277,13 +16277,16 @@ function _mgPlayFor(i, game) {
   return ov && ov.game && ov.game.v === game && ov.game.st ? { st: ov.game.st } : null;
 }
 // The game's state: the live or paused one if it belongs here, else the
-// loop's at gt (scripted()). Live play starts from the frame on screen.
+// loop's at gt (scripted()). Live play starts from the frame on screen. A
+// frieze draws a cell's game in several tiles: the live game is the one tile
+// that claimed it (the first drawn, or the one its snapshot came from), and
+// the other tiles keep their loops without touching it.
 function _mgState(play, sig, scripted) {
   if (play && play.st && play.st.sig === sig) return play.st;
   let st = scripted();
   st.sig = sig;
   if (st.clock === undefined) st.clock = 0;
-  if (play && play.live) play.st = st;
+  if (play && play.live && (!play.sig || play.sig === sig)) { play.st = st; play.sig = sig; }
   return st;
 }
 // Run the live game's pending fixed steps; key presses count once
@@ -18425,7 +18428,8 @@ function composeMiniGame(rect, s, prng) {
   let size = Math.max(minT, Math.min(S.h * 0.034, 13));
   let hud = detailActive('primaryLabels', s) && S.h > size * 14 && S.w > size * 18;
   let hudH = 0, footH = 0;
-  let play = _mgPlayFor(_cellIndex, game), pst = play && play.st;
+  // (in a frieze only one tile's game is the played one; the HUD reads it there only)
+  let play = _mgPlayFor(_cellIndex, game), pst = play && play.st && play.st.sig === _mgSig(game, S) ? play.st : null;
   let score = String(pst && pst.score != null ? pst.score : _compBus ? _compBus.gameScore : Math.floor(_mmHash(elemSeed, 0x51) * 60000)).padStart(6, '0').slice(-6);
   let lives = pst && pst.lives != null ? Math.max(0, pst.lives) : _compBus ? _compBus.gameLives : 3;
   let sSeed = (elemSeed + 0x100) >>> 0;
@@ -23945,6 +23949,12 @@ function regenCell(randomize) {
   refreshCellEditor();
 }
 
+// Play on from the paused moment (as a play key does)
+function resumeCellGame() {
+  let cm = _mgSelectedGame();
+  if (cm && !_mgPlay) _mgStart(cm);
+}
+
 // Forget a mini-game's paused moment (the loop plays again)
 function clearCellGame() {
   if (_selectedCell === null) return;
@@ -24015,14 +24025,17 @@ function buildCellEditorHTML(cellMeta) {
   // Mini-games play here: the keys, and whether a paused moment is kept
   if (cellMeta.archetype === 'miniGame' && MG_VARIANTS.includes(cellMeta.variant)) {
     let live = _mgPlay && _mgPlay.cell === cellMeta.index;
-    html += `<div class="ce-section ce-play">${live ? '&#9654; PLAYING &middot; Esc pauses' : ov.game ? '&#10074;&#10074; PAUSED (this moment plots) &middot; a key resumes' : '&#9654; Arrows / Space / Shift play &middot; Esc pauses'}</div>`;
+    html += `<div class="ce-section ce-play">${live ? '&#9654; PLAYING &middot; Esc pauses' : ov.game ? '&#10074;&#10074; PAUSED (this moment plots) &middot; a key or Resume plays on' : '&#9654; Arrows / Space / Shift play &middot; Esc pauses'}</div>`;
   }
 
   // Actions
   html += '<div class="ce-actions">';
   html += '<button onclick="regenCell(false)" title="New content, same archetype">&#x27F3; Regen</button>';
   html += '<button onclick="regenCell(true)" title="New archetype and content">&#x2726; Randomize</button>';
-  if (ov.game) html += '<button onclick="clearCellGame()" title="Forget the paused moment">Unpause</button>';
+  if (ov.game && !(_mgPlay && _mgPlay.cell === cellMeta.index)) {
+    html += '<button onclick="resumeCellGame()" title="Play on from the paused moment">&#9654; Resume</button>';
+    html += '<button onclick="clearCellGame()" title="Forget the paused moment: the loop plays again">New game</button>';
+  }
   html += `<button onclick="setCellLocked(${!isLocked})" title="${isLocked ? 'Unlock' : 'Lock'}">${isLocked ? '&#x1F513; Unlock' : '&#x1F512; Lock'}</button>`;
   html += '<button onclick="copyCellStyle()" title="Copy style">Copy</button>';
   html += '<button onclick="pasteCellStyle()" title="Paste style"' + (_cellClipboard ? '' : ' disabled') + '>Paste</button>';
@@ -24368,6 +24381,7 @@ window.clearSingleCellOverride = clearSingleCellOverride;
 window.copyCellStyle = copyCellStyle;
 window.regenCell = regenCell;
 window.clearCellGame = clearCellGame;
+window.resumeCellGame = resumeCellGame;
 
 // ---- Live play: keys, the loop, pausing ----
 function _mgSelectedGame() {
@@ -24378,7 +24392,9 @@ function _mgSelectedGame() {
 function _mgStart(cm) {
   let ov = state.cellOverrides[String(cm.index)];
   let snap = ov && ov.game && ov.game.v === cm.variant ? JSON.parse(JSON.stringify(ov.game.st)) : null;
-  _mgPlay = { cell: cm.index, game: cm.variant, live: true, st: snap, input: { held: {}, pressed: {} }, steps: 0, acc: 0, last: performance.now() };
+  _mgPlay = { cell: cm.index, game: cm.variant, live: true, st: snap, sig: snap ? snap.sig : null, input: { held: {}, pressed: {} }, steps: 0, acc: 0, last: performance.now() };
+  // the panel lets go of the keys: Space would press a focused button, arrows turn a dropdown
+  if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
   _mgPlay.raf = requestAnimationFrame(_mgTick);
   refreshCellEditor();
 }
@@ -24419,7 +24435,8 @@ function _mgStop() {
 // randomize or export while a game cell is selected
 window.addEventListener('keydown', (e) => {
   let tag = (e.target.tagName || '').toUpperCase();
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  // a live game takes its keys from anything but a text field
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || (tag === 'SELECT' && !_mgPlay)) return;
   if (e.key === 'Escape') { if (_mgPlay) _mgPause(false); return; } // edit mode's Esc deselects and redraws
   let k = MG_KEYS[e.key];
   if (!k || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -24433,7 +24450,7 @@ window.addEventListener('keydown', (e) => {
 }, true);
 window.addEventListener('keyup', (e) => {
   let k = MG_KEYS[e.key];
-  if (k && _mgPlay) { _mgPlay.input.held[k] = false; e.stopImmediatePropagation(); }
+  if (k && _mgPlay) { _mgPlay.input.held[k] = false; e.preventDefault(); e.stopImmediatePropagation(); }
 }, true);
 window.addEventListener('blur', () => { if (_mgPlay) _mgPause(); });
 window.pasteCellStyle = pasteCellStyle;
