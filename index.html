@@ -3226,6 +3226,8 @@ function clipRequest() {
             gap_mm: Math.max(0, +c.gap || 0) };
   if (c.paper === 'custom') { r.paper = 'custom'; r.paper_mm = [+c.customW, +c.customH]; } else r.paper = c.paper;
   if (c.sizeMode === 'fit') r.per_page = Math.max(1, c.perPage | 0); else r.frame_width_mm = Math.max(5, +c.drawW || 50);
+  // Stvrpype letters its marks for pen 1's width: ours is the Pen diameter
+  if (marks) r.pen_mm = Math.max(0.01, +state.plotter.hatch.penDiameter || 0.3);
   return r;
 }
 
@@ -3414,9 +3416,12 @@ function clipAssemble(L, dims) {
       }
       if (L.hub) {
         if (L.labelH) {
-          let at = p * L.perPage + i, by = y1 + 3.0 * k;
-          for (let seg of clipTextStrokes(`F${String(at + 1).padStart(3, '0')}/${String(L.frames.length).padStart(3, '0')}`, ox, by, 1.4 * k, 'left')) line(seg);
-          for (let seg of clipTextStrokes(seed, x1, by, 1.4 * k, 'right')) line(seg);
+          // As Stvrpype letters it: capitals' tops 1.13 + cap/3 below the slot,
+          // and the seed only where it clears the frame number by 3 mm
+          let cap = L.hub.label_cap_mm || 1.4, at = p * L.perPage + i, by = y1 + (1.13 + cap * 4 / 3) * k;
+          let num = `F${String(at + 1).padStart(3, '0')}/${String(L.frames.length).padStart(3, '0')}`;
+          for (let seg of clipTextStrokes(num, ox, by, cap * k, 'left')) line(seg);
+          if (clipTextW(num, cap) + clipTextW(seed, cap) + 3 < L.w) for (let seg of clipTextStrokes(seed, x1, by, cap * k, 'right')) line(seg);
         }
       } else if (L.labelH) {
         let ts = 2.4 * k, by = y1 + (L.labelH - 0.9) * k;
@@ -3478,9 +3483,29 @@ function clipHubMarks(line, L, page, count, k) {
       if (!on && run !== null) { fill(x + run * mod, y + r * mod, (c - run) * mod, mod); run = null; }
     }
   }
+  // The human line, as Stvrpype sets it: right of the box, centred on it; when
+  // a wide pen's capitals run past the margin, the seed goes left of the box
+  // and the rest, if still too long, one part a line
   let first = page * L.perPage, pad = v => String(v).padStart(3, '0');
-  let human = `${String(state.seed).toUpperCase()}  P${page + 1}/${L.pages}  ` + (count ? `F${pad(first + 1)}-F${pad(first + count)}` : '');
-  for (let seg of clipTextStrokes(human, (x + s + 4) * k, (y + s / 2 + 1) * k, 2 * k, 'left')) line(seg);
+  let parts = [String(state.seed).toUpperCase(), `P${page + 1}/${L.pages}`].concat(count ? [`F${pad(first + 1)}-F${pad(first + count)}`] : []);
+  let cap = L.hub.human_cap_mm || 2, mg = L.hub.margin_mm || L.margin, right = x + s + 4, left = x - 4;
+  let stack = (lines, at, align) => {
+    let pitch = cap * (1 + 2 / 3) + 0.5, top = y + s / 2 - (cap + pitch * (lines.length - 1)) / 2;
+    lines.forEach((t, i) => { for (let seg of clipTextStrokes(t, at * k, (top + i * pitch + cap) * k, cap * k, align)) line(seg); });
+  };
+  let whole = parts.join('  ');
+  if (clipTextW(whole, cap) <= L.PW - mg - right) return stack([whole], right, 'left');
+  let rest = parts;
+  if (clipTextW(parts[0], cap) <= left - mg) { stack([parts[0]], left, 'right'); rest = parts.slice(1); }
+  let ln = rest.join('  ');
+  stack(clipTextW(ln, cap) <= L.PW - mg - right ? [ln] : rest, right, 'left');
+}
+
+// Width of clip text at a cap height (mm), from its strokes.
+function clipTextW(str, cap) {
+  let x0 = Infinity, x1 = -Infinity;
+  for (let seg of clipTextStrokes(str, 0, 0, cap, 'left')) for (let q of seg) { if (q[0] < x0) x0 = q[0]; if (q[0] > x1) x1 = q[0]; }
+  return x1 > x0 ? x1 - x0 : 0;
 }
 
 // One frame as a plot-ready SVG at the plan's frame size (mm), one layer per pen.
