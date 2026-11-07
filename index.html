@@ -1332,7 +1332,7 @@ const VARIANT_DEFS = {
   asciiArt: ['checker','altPairs','hStripes','diagStripes','zigzag','gradient','rings','cross','seq2','seq3','scatter','blockCols','maze','terrain','binaryRain','conway','spiralGalaxy'],
   datavizFragment: ['histogram','waveform','scatter','polar','hBarBank','candlestick','oscilloscope','heatmap','sankey','stackedArea'],
   spectrogram: ['stippleAudio','ditherBlock','ditherBand','waterfall','dotMatrix','waveform+spectrum','bandAnalyzer','contourMap'],
-  miniGame: ['pong','breakout','snake','pacman','platformer','tetris','asteroids','invaders'],
+  miniGame: ['pong','breakout','worm','icebreaker','spacewalk','cargo','asteroids','swarm'],
   dataReadout: ['telemetry','ledger','split','register'],
   errorMessage: ['dump','panic','dialog'],
   terminalBlock: ['shell','boot','monitor','split'],
@@ -16251,7 +16251,10 @@ function composeDatavizFragment(rect, s, prng) {
 // _mmHash on elemSeed, never from the cell PRNG, and HUD text counts never
 // depend on gt (text draws consume the cell PRNG).
 
-const MG_VARIANTS = ['pong', 'breakout', 'snake', 'pacman', 'platformer', 'tetris', 'asteroids', 'invaders'];
+const MG_VARIANTS = ['pong', 'breakout', 'worm', 'icebreaker', 'spacewalk', 'cargo', 'asteroids', 'swarm'];
+// The games' old names, so saved cell overrides still find them
+const MG_RENAMED = { snake: 'worm', pacman: 'icebreaker', platformer: 'spacewalk', tetris: 'cargo', invaders: 'swarm' };
+const MG_TITLES = { cargo: 'CARGO BAY', asteroids: 'DEEP BELT' };
 
 function _mgTri(p) { p -= Math.floor(p); return 1 - Math.abs(2 * p - 1); }
 function _mgSmooth(t) { t = Math.max(0, Math.min(1, t)); return t * t * (3 - 2 * t); }
@@ -16332,16 +16335,17 @@ function _mgCtx(R) {
       else if (cx + r > x0 && cx - r < x1 && cy + r > y0 && cy - r < y1) G.poly(_mgCirc(cx, cy, r, 28), false);
     },
     pt(x, y) { if (inside(x, y)) svgPoint(x, y); },
-    // Horizontal hatch of an axis-aligned rect ("solid" block): tone rows a
-    // full pitch in from the outline, never under the hatch rule's 1.2 pens
+    // Horizontal hatch of an axis-aligned rect ("solid" block): tone rows at
+    // least a pitch apart and a pitch in from the outline (rounding down, so
+    // never under the hatch rule's 1.2 pens)
     hrect(x, y, w, h, step) {
       step = Math.max(1.4, step, penPx() * 1.2);
-      let n = Math.max(1, Math.round(h / step) - 1);
+      let n = Math.max(1, Math.floor(h / step) - 1);
       for (let i = 0; i < n; i++) { let yy = y + (i + 1) * h / (n + 1); G.line(x, yy, x + w, yy); }
     },
     vrect(x, y, w, h, step) {
       step = Math.max(1.4, step, penPx() * 1.2);
-      let n = Math.max(1, Math.round(w / step) - 1);
+      let n = Math.max(1, Math.floor(w / step) - 1);
       for (let i = 0; i < n; i++) { let xx = x + (i + 1) * w / (n + 1); G.line(xx, y, xx, y + h); }
     },
     // Hatch arbitrary closed contours (even-odd, so inner contours are holes)
@@ -16360,25 +16364,6 @@ function _mgCtx(R) {
     }
   };
   return G;
-}
-
-// Pixel sprite drawn as horizontal scanline runs (raster-on-vector look).
-// rows: array of strings, '#' = lit. flipX mirrors.
-function _mgSprite(G, rows, x, y, px, flipX) {
-  let fr = px >= 6 ? [0.2, 0.5, 0.8] : px >= 3.2 ? [0.3, 0.72] : [0.5];
-  let W = rows[0].length;
-  for (let r = 0; r < rows.length; r++) {
-    let row = flipX ? rows[r].split('').reverse().join('') : rows[r];
-    let run = -1;
-    for (let c = 0; c <= W; c++) {
-      let on = c < W && row[c] === '#';
-      if (on && run < 0) run = c;
-      if (!on && run >= 0) {
-        for (let f of fr) G.line(x + run * px, y + (r + f) * px, x + c * px, y + (r + f) * px);
-        run = -1;
-      }
-    }
-  }
 }
 
 // Seven-segment vector digits (arcade score style).
@@ -16665,8 +16650,11 @@ function _mgBreakout(G, S, gt, seed, s, o) {
   return { telemetry: 'BRK ' + String(left).padStart(3, '0') + '/' + (nr * nc) };
 }
 
-// ---- Snake: a hamiltonian cycle from a random spanning tree ----
-function _mgSnake(G, S, gt, seed, s, o) {
+// ---- Worm: a virus on a hamiltonian cycle of memory cells ----
+// The board is memory and the worm a train of square packets behind an
+// arrowhead. Each packet's bit rides with it, the cells the tail leaves stay
+// crossed out for a few steps, and hosts are bracketed as they are infected.
+function _mgWorm(G, S, gt, seed, s, o) {
   let { x, y, w, h } = S, u = o.u;
   let top = y + o.hudH;
   let avH = h - o.hudH;
@@ -16675,6 +16663,7 @@ function _mgSnake(G, S, gt, seed, s, o) {
   cell = Math.min(w / (CW * 2), avH / (CH * 2));
   let cols = CW * 2, rows = CH * 2, L = cols * rows;
   let gx = x + (w - cols * cell) / 2, gy = top + (avH - rows * cell) / 2;
+  let clear = penPx() * PEN_CLEAR;
   // Random spanning tree (iterative DFS ordered by hash)
   let seen = new Uint8Array(CW * CH), right = new Uint8Array(CW * CH), down = new Uint8Array(CW * CH);
   let stack = [Math.floor(_mmHash(seed, 1) * CW * CH)];
@@ -16711,89 +16700,89 @@ function _mgSnake(G, S, gt, seed, s, o) {
   for (let n = 1; n < L; n++) { let nx = adj[cur][0] === prev ? adj[cur][1] : adj[cur][0]; if (nx === undefined) break; order.push(nx); prev = cur; cur = nx; }
   L = order.length;
   let ctr = k => { let c = order[((k % L) + L) % L]; return [gx + (c % cols + 0.5) * cell, gy + (Math.floor(c / cols) + 0.5) * cell]; };
-  // Board: frame + dot lattice
+  // Board: frame with a bus tick every four cells, address lattice
+  let fr = cell * 0.15;
   kitWeight(o.bold ? 'primary' : 'secondary');
-  G.rect(gx - cell * 0.15, gy - cell * 0.15, cols * cell + cell * 0.3, rows * cell + cell * 0.3);
-  if (o.dots) { kitWeight('fine'); for (let r = 0; r <= rows; r++) for (let c = 0; c <= cols; c++) G.pt(gx + c * cell, gy + r * cell); }
+  G.rect(gx - fr, gy - fr, cols * cell + fr * 2, rows * cell + fr * 2);
+  kitWeight('fine');
+  for (let c = 4; c < cols; c += 4) { G.line(gx + c * cell, gy - fr, gx + c * cell, gy); G.line(gx + c * cell, gy + rows * cell, gx + c * cell, gy + rows * cell + fr); }
+  if (o.dots) for (let r = 0; r <= rows; r++) for (let c = 0; c <= cols; c++) G.pt(gx + c * cell, gy + r * cell);
   let len = Math.max(6, Math.min(48, Math.round(L * 0.11)));
   let head = Math.floor(_mgFrac(gt + _mmHash(seed, 9)) * L);
-  // Food: fixed spots on the cycle; eaten as the head passes, back once the tail clears
+  // Hosts: fixed spots on the cycle; infected as the head passes, back once the tail clears
   let foods = [];
   for (let f = 0; f < 3; f++) foods.push(Math.floor(_mmHash(seed + 5, f) * L));
   let visFood = foods.filter(fk => { let d = ((fk - head) % L + L) % L; return d > 0 && d < L - len - 2; });
-  // Planned route to the nearest food: dotted
+  // Planned route to the nearest host: dotted
   if (o.trails && visFood.length) {
     let dmin = Math.min(...visFood.map(fk => ((fk - head) % L + L) % L));
     kitWeight('fine');
     for (let k = 1; k < Math.min(dmin, 60); k++) { let p = ctr(head + k); G.pt(p[0], p[1]); }
   }
   for (let fk of visFood) {
-    let [fx, fy] = ctr(fk), r = cell * 0.36;
+    let [fx, fy] = ctr(fk), a = cell * 0.56, b = cell * 0.2;
     kitWeight('secondary');
-    G.circle(fx, fy + r * 0.1, r * 2);
+    G.rect(fx - a / 2, fy - a / 2, a, a);
     kitWeight('fine');
-    G.fill([_mgCirc(fx, fy + r * 0.1, r * 0.92, 18)], 45, Math.max(1.5, cell * 0.11));
-    G.line(fx, fy - r * 0.8, fx + r * 0.2, fy - r * 1.35);
-    G.poly([[fx + r * 0.15, fy - r * 1.05], [fx + r * 0.7, fy - r * 1.4], [fx + r * 0.35, fy - r * 0.95]], true);
+    if ((a - b) / 2 >= clear) G.rect(fx - b / 2, fy - b / 2, b, b); else G.pt(fx, fy);
   }
-  // Body: a tapered tube around the centreline, hatched solid
+  // Corruption: the cells the tail just left, crossed out and fading
+  kitWeight('fine');
+  for (let j = 0; j < 3; j++) {
+    let [cx, cy] = ctr(head - len - j), c = cell * 0.2 * (1 - j * 0.25);
+    G.line(cx - c, cy - c, cx + c, cy + c); G.line(cx - c, cy + c, cx + c, cy - c);
+  }
+  // Body: square packets, full behind the head and shrinking to bits at the
+  // tail, a pen's clearance apart, joined by the bus
   let pts = [];
   for (let k = len - 1; k >= 0; k--) pts.push(ctr(head - k));
-  let n = pts.length, left = [], rightP = [];
-  for (let i = 0; i < n; i++) {
-    let a = pts[Math.max(0, i - 1)], b = pts[Math.min(n - 1, i + 1)];
-    let dx = b[0] - a[0], dy = b[1] - a[1], dl = Math.hypot(dx, dy) || 1;
-    let nx = -dy / dl, ny = dx / dl;
-    let wdt = cell * 0.31 * Math.min(1, 0.3 + i / Math.min(8, n) * 0.7);
-    let i0 = pts[i];
-    let turn = i > 0 && i < n - 1 && Math.abs((pts[i][0] - pts[i - 1][0]) * (pts[i + 1][1] - pts[i][1]) - (pts[i][1] - pts[i - 1][1]) * (pts[i + 1][0] - pts[i][0])) > 1e-6;
-    let k = turn ? Math.SQRT2 : 1;
-    left.push([i0[0] + nx * wdt * k, i0[1] + ny * wdt * k]);
-    rightP.push([i0[0] - nx * wdt * k, i0[1] - ny * wdt * k]);
-  }
-  let outline = left.concat(rightP.slice().reverse());
-  kitWeight('fine');
-  G.fill([outline], 135, Math.max(1.5, cell * 0.12));
-  kitWeight(o.bold ? 'heavy' : 'primary');
-  G.poly(outline, true);
-  // Scale bands between cells
-  kitWeight('fine');
-  if (cell > 9) for (let i = 1; i < n - 1; i += 1) { let a = left[i], b = rightP[i]; G.line(a[0] * 0.5 + pts[i][0] * 0.5, a[1] * 0.5 + pts[i][1] * 0.5, b[0] * 0.5 + pts[i][0] * 0.5, b[1] * 0.5 + pts[i][1] * 0.5); }
-  // Head with eyes and a flickering tongue
+  let n = pts.length;
   let hp = pts[n - 1], hq = pts[n - 2], hdx = hp[0] - hq[0], hdy = hp[1] - hq[1], hl = Math.hypot(hdx, hdy) || 1;
   hdx /= hl; hdy /= hl;
-  let hr = cell * 0.46;
-  let headPoly = [];
-  for (let k = 0; k <= 16; k++) { let a = Math.atan2(hdy, hdx) - HALF_PI + PI * k / 16; headPoly.push([hp[0] + Math.cos(a) * hr * (1 + 0.15 * Math.sin(PI * k / 16)), hp[1] + Math.sin(a) * hr]); }
-  headPoly.push([hp[0] - hdx * hr * 0.4 - hdy * hr, hp[1] - hdy * hr * 0.4 + hdx * hr], [hp[0] - hdx * hr * 0.4 + hdy * hr, hp[1] - hdy * hr * 0.4 - hdx * hr]);
-  let eyes = [-1, 1].map(sg => [hp[0] + hdx * hr * 0.25 - hdy * hr * 0.45 * sg, hp[1] + hdy * hr * 0.25 + hdx * hr * 0.45 * sg]);
+  let hr = cell * 0.62;
+  let side = i => Math.min(cell - clear, cell * (0.26 + 0.36 * Math.min(1, (i + 1) / Math.min(7, n - 1))));
+  for (let i = 0; i < n - 1; i++) {
+    let [px, py] = pts[i], [qx, qy] = pts[i + 1], a = side(i);
+    let ux = Math.sign(qx - px), uy = Math.sign(qy - py);
+    let back = i + 1 === n - 1 ? hr * 0.2 : side(i + 1) / 2;
+    kitWeight('secondary');
+    G.line(px + ux * a / 2, py + uy * a / 2, qx - ux * back, qy - uy * back);
+    if (a < clear * 1.2) { G.pt(px, py); continue; }
+    kitWeight(o.bold ? 'primary' : 'secondary');
+    G.rect(px - a / 2, py - a / 2, a, a);
+    kitWeight('fine');
+    if (_mmHash(seed + 77, n - 1 - i) < 0.5) G.hrect(px - a / 2, py - a / 2, a, a, Math.max(1.5, cell * 0.12));
+    else if (a / 2 >= clear) G.pt(px, py);
+  }
+  // Head: a notched arrowhead with a hollow core
+  let F = (f, sd) => [hp[0] + (hdx * f - hdy * sd) * hr, hp[1] + (hdy * f + hdx * sd) * hr];
+  let headPoly = [F(0.66, 0), F(0.1, 0.46), F(-0.42, 0.46), F(-0.2, 0), F(-0.42, -0.46), F(0.1, -0.46)];
+  let core = hr * 0.17 >= clear ? [F(-0.1, -0.15), F(0.2, -0.15), F(0.2, 0.15), F(-0.1, 0.15)] : null;
   kitWeight('fine');
-  G.fill([headPoly, ...eyes.map(e => _mgCirc(e[0], e[1], hr * 0.22, 10))], 45, Math.max(1.5, cell * 0.1));
+  G.fill(core ? [headPoly, core] : [headPoly], Math.atan2(hdy, hdx) * 180 / PI + 90, Math.max(1.5, cell * 0.1));
   kitWeight(o.bold ? 'heavy' : 'primary');
   G.poly(headPoly, true);
-  kitWeight('secondary');
-  for (let e of eyes) { G.circle(e[0], e[1], hr * 0.44); G.pt(e[0] + hdx * hr * 0.08, e[1] + hdy * hr * 0.08); }
+  if (core) { kitWeight('secondary'); G.poly(core, true); }
+  // A cursor blinking ahead of the tip
   if (Math.floor(gt * 24) % 2 === 0) {
     kitWeight('fine');
-    let tx = hp[0] + hdx * hr, ty = hp[1] + hdy * hr, t2x = tx + hdx * hr * 0.7, t2y = ty + hdy * hr * 0.7;
-    G.line(tx, ty, t2x, t2y);
-    G.line(t2x, t2y, t2x + (hdx - hdy) * hr * 0.3, t2y + (hdy + hdx) * hr * 0.3);
-    G.line(t2x, t2y, t2x + (hdx + hdy) * hr * 0.3, t2y + (hdy - hdx) * hr * 0.3);
+    G.line(...F(0.82, 0), ...F(1.1, 0));
+    G.line(...F(1.1, -0.2), ...F(1.1, 0.2));
   }
-  // Eat burst
+  // Infection: lock brackets round the host as the head takes it
   for (let fk of foods) {
     let since = ((head - fk) % L + L) % L;
-    if (since >= 0 && since < 2) {
-      let [fx, fy] = ctr(fk);
+    if (since < 2) {
+      let [fx, fy] = ctr(fk), a = cell * (0.58 + since * 0.06), t = cell * 0.2;
       kitWeight('fine');
-      for (let k = 0; k < 8; k++) { let a = k / 8 * TWO_PI; G.line(fx + Math.cos(a) * cell * 0.55, fy + Math.sin(a) * cell * 0.55, fx + Math.cos(a) * cell * 0.95, fy + Math.sin(a) * cell * 0.95); }
+      for (let [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) G.poly([[fx + sx * a, fy + sy * (a - t)], [fx + sx * a, fy + sy * a], [fx + sx * (a - t), fy + sy * a]], false);
       if (_compBus) _compBus.gameEvent = 'score';
     }
   }
-  return { telemetry: 'LEN ' + String(len).padStart(3, '0') + ' NODE ' + String(head).padStart(3, '0') };
+  return { telemetry: 'PKT ' + String(len).padStart(3, '0') + ' @' + head.toString(16).toUpperCase().padStart(3, '0') };
 }
-// ---- Pac-Man: mirrored braided maze, double-line walls, chase on a ring ----
-function _mgPacMaze(C, R, seed) {
+// ---- Icebreaker: a probe in a circuit maze, ICE sentries on its trail ----
+function _mgIceMaze(C, R, seed) {
   let wall = new Uint8Array(C * R).fill(1);
   let W = (c, r) => (c < 0 || r < 0 || c >= C || r >= R) ? 1 : wall[r * C + c];
   let open = (c, r) => { if (c >= 0 && r >= 0 && c < C && r < R) wall[r * C + c] = 0; };
@@ -16823,11 +16812,11 @@ function _mgPacMaze(C, R, seed) {
   }
   // Mirror left half onto right
   for (let r = 0; r < R; r++) for (let c = mid + 1; c < C; c++) wall[r * C + c] = wall[r * C + (C - 1 - c)];
-  // Ghost house in the centre, ringed by a corridor
+  // The core in the centre, ringed by a corridor
   let cy = (R - 1) / 2;
   for (let r = cy - 2; r <= cy + 2; r++) for (let c = mid - 3; c <= mid + 3; c++) open(c, r);
   for (let r = cy - 1; r <= cy + 1; r++) for (let c = mid - 2; c <= mid + 2; c++) wall[r * C + c] = 1;
-  // Pac-Man's patrol ring
+  // The probe's patrol ring
   let ra = 1 + 2 * Math.floor(_mmHash(seed, 5) * 2), rb = R - 2 - 2 * Math.floor(_mmHash(seed, 6) * 2);
   let ca = 1 + 2 * Math.floor(_mmHash(seed, 7) * Math.min(3, (mid - 3) / 2)), cb = C - 1 - ca;
   let ring = [];
@@ -16836,67 +16825,74 @@ function _mgPacMaze(C, R, seed) {
   for (let c = cb; c > ca; c--) ring.push([c, rb]);
   for (let r = rb; r > ra; r--) ring.push([ca, r]);
   for (let [c, r] of ring) open(c, r);
-  // Side tunnels on the house row
+  // Side tunnels on the core's row
   let ty = cy;
   for (let c = 0; c <= Math.min(ca, 2); c++) { open(c, ty); open(C - 1 - c, ty); }
   if (ca > 2) for (let c = 0; c <= ca; c++) { open(c, ty); open(C - 1 - c, ty); }
   return { wall, W, ring, cy, mid, ty };
 }
 
-function _mgPacWalls(G, mz, C, R, mx, my, q, e) {
-  let W = mz.W, hs = {}, vs = {};
-  let addH = (yy, a, b) => { let k = Math.round(yy * 50); (hs[k] = hs[k] || { y: yy, s: [] }).s.push([Math.min(a, b), Math.max(a, b)]); };
-  let addV = (xx, a, b) => { let k = Math.round(xx * 50); (vs[k] = vs[k] || { x: xx, s: [] }).s.push([Math.min(a, b), Math.max(a, b)]); };
+// Walls as circuit traces: wall cells joined centre to centre, a pad where a
+// trace ends, a via where three or more meet. The core is left to the chip.
+function _mgIceTraces(G, mz, C, R, mx, my, q, inCore) {
+  let W = (c, r) => c >= 0 && r >= 0 && c < C && r < R && mz.wall[r * C + c] && !inCore(c, r);
+  let at = (c, r) => [mx + (c + 0.5) * q, my + (r + 0.5) * q];
+  for (let r = 0; r < R; r++) for (let c = 0; c < C;) {
+    if (!W(c, r)) { c++; continue; }
+    let c1 = c; while (W(c1 + 1, r)) c1++;
+    if (c1 > c) G.line(...at(c, r), ...at(c1, r));
+    c = c1 + 1;
+  }
+  for (let c = 0; c < C; c++) for (let r = 0; r < R;) {
+    if (!W(c, r)) { r++; continue; }
+    let r1 = r; while (W(c, r1 + 1)) r1++;
+    if (r1 > r) G.line(...at(c, r), ...at(c, r1));
+    r = r1 + 1;
+  }
   for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) {
     if (!W(c, r)) continue;
-    let L = mx + c * q, T = my + r * q, Rr = L + q, B = T + q;
-    let endX = (sideDr, dc) => { // along a horizontal side: neighbour in direction dc
-      if (!W(c + dc, r)) return dc < 0 ? L + e : Rr - e;      // convex corner
-      if (W(c + dc, r + sideDr)) return dc < 0 ? L - e : Rr + e; // concave corner
-      return dc < 0 ? L : Rr;                                  // straight run
-    };
-    let endY = (sideDc, dr) => {
-      if (!W(c, r + dr)) return dr < 0 ? T + e : B - e;
-      if (W(c + sideDc, r + dr)) return dr < 0 ? T - e : B + e;
-      return dr < 0 ? T : B;
-    };
-    if (!W(c, r - 1)) addH(T + e, endX(-1, -1), endX(-1, 1));
-    if (!W(c, r + 1)) addH(B - e, endX(1, -1), endX(1, 1));
-    if (!W(c - 1, r)) addV(L + e, endY(-1, -1), endY(-1, 1));
-    if (!W(c + 1, r)) addV(Rr - e, endY(1, -1), endY(1, 1));
+    let deg = (W(c - 1, r) ? 1 : 0) + (W(c + 1, r) ? 1 : 0) + (W(c, r - 1) ? 1 : 0) + (W(c, r + 1) ? 1 : 0);
+    if (deg <= 1) G.circle(...at(c, r), q * 0.4);
+    else if (deg >= 3 && q > 7) G.circle(...at(c, r), q * 0.2);
   }
-  let merge = list => { list.sort((a, b) => a[0] - b[0]); let out = []; for (let s of list) { let l = out[out.length - 1]; if (l && s[0] <= l[1] + 0.01) l[1] = Math.max(l[1], s[1]); else out.push(s.slice()); } return out; };
-  for (let k in hs) for (let s of merge(hs[k].s)) G.line(s[0], hs[k].y, s[1], hs[k].y);
-  for (let k in vs) for (let s of merge(vs[k].s)) G.line(vs[k].x, s[0], vs[k].x, s[1]);
 }
 
-function _mgGhost(G, gx, gy, r, dir, mode, angle, phase) {
-  let body = [];
-  for (let k = 0; k <= 12; k++) { let a = PI + PI * k / 12; body.push([gx + Math.cos(a) * r, gy - r * 0.1 + Math.sin(a) * r]); }
-  body.push([gx + r, gy + r * 0.85]);
-  for (let k = 1; k <= 8; k++) body.push([gx + r - k * r / 4, gy + r * 0.85 - ((k + phase) % 2 ? r * 0.28 : 0)]);
-  let eyes = [-1, 1].map(sg => [gx + sg * r * 0.38 + dir[0] * r * 0.1, gy - r * 0.15 + dir[1] * r * 0.08]);
+// An ICE sentry: a kite with a slit eye and a flickering emitter under it.
+// mode: 'chase' (hatched), 'fright' (broken, dashed), 'eyes' (the eye alone).
+// angle: its hatch, level or upright, since the kite's edges run near 45 degrees
+function _mgSentry(G, gx, gy, r, dir, mode, angle, phase) {
+  let clear = penPx() * PEN_CLEAR;
+  let body = [[gx, gy - r], [gx + r * 0.8, gy - r * 0.1], [gx, gy + r * 0.7], [gx - r * 0.8, gy - r * 0.1]];
+  let ew = r * 0.4, eh = r * 0.13, ey = gy - r * 0.2;
+  let box = r * 0.2 >= clear && eh * 2 >= clear;
+  let eye = [[gx - ew, ey - eh], [gx + ew, ey - eh], [gx + ew, ey + eh], [gx - ew, ey + eh]];
+  let px = gx + dir[0] * ew * 0.55;
+  let drawEye = () => {
+    if (box) { kitWeight('secondary'); G.poly(eye, true); kitWeight('fine'); G.line(px, ey - eh, px, ey + eh); }
+    else { kitWeight('secondary'); G.line(gx - ew, ey, gx + ew, ey); }
+  };
   if (mode === 'fright') {
     kitWeight('secondary');
-    G.poly(body, true);
+    for (let k = 0; k < 4; k++) G.dashed(...body[k], ...body[(k + 1) % 4], r * 0.25, r * 0.2);
     kitWeight('fine');
-    for (let e of eyes) G.circle(e[0], e[1] + r * 0.05, r * 0.16);
-    let mp = [];
-    for (let k = 0; k <= 6; k++) mp.push([gx - r * 0.6 + k * r * 0.2, gy + r * 0.38 + (k % 2 ? -r * 0.12 : 0)]);
-    G.poly(mp, false);
+    let c = r * 0.16;
+    G.line(gx - c, ey - c, gx + c, ey + c); G.line(gx - c, ey + c, gx + c, ey - c);
     return;
   }
   if (mode !== 'eyes') {
     kitWeight('fine');
-    G.fill([body, ...eyes.map(e => _mgCirc(e[0], e[1], r * 0.3, 12))], angle, Math.max(1.5, r * 0.16));
+    G.fill(box ? [body, eye] : [body], angle, Math.max(1.5, r * 0.16));
     kitWeight('primary');
     G.poly(body, true);
+    // the emitter: spikes under the kite, long and short in turn
+    kitWeight('fine');
+    G.line(gx, gy + r * 0.7, gx, gy + r * (0.95 + 0.25 * (phase % 2)));
+    if (r * 0.4 >= clear) for (let sg of [-1, 1]) G.line(gx + sg * r * 0.4, gy + r * 0.3, gx + sg * r * 0.55, gy + r * (0.55 + 0.2 * ((phase + 1) % 2)));
   }
-  kitWeight('secondary');
-  for (let e of eyes) { G.circle(e[0], e[1], r * 0.6); G.circle(e[0] + dir[0] * r * 0.14, e[1] + dir[1] * r * 0.14, r * 0.22); }
+  drawEye();
 }
 
-function _mgPacman(G, S, gt, seed, s, o) {
+function _mgIcebreaker(G, S, gt, seed, s, o) {
   let { x, y, w, h } = S;
   let top = y + o.hudH, bot = y + h - o.footH;
   let avH = bot - top;
@@ -16905,23 +16901,24 @@ function _mgPacman(G, S, gt, seed, s, o) {
   C -= ((C - 3) % 4 + 4) % 4; R -= ((R - 3) % 4 + 4) % 4; // both = 3 mod 4: node rows/cols at centre
   let q = Math.min(w / C, avH / R);
   let mx = x + (w - C * q) / 2, my = top + (avH - R * q) / 2;
-  let mz = _mgPacMaze(C, R, seed);
-  // Walls: double outline
+  let mz = _mgIceMaze(C, R, seed);
+  let inCore = (c, r) => r >= mz.cy - 1 && r <= mz.cy + 1 && c >= mz.mid - 2 && c <= mz.mid + 2;
+  // Walls: circuit traces
   kitWeight(o.bold ? 'primary' : 'secondary');
-  _mgPacWalls(G, mz, C, R, mx, my, q, q * 0.2);
-  // The inner outline only when the pair sits 1.5 pens apart
-  if (q > 6 && q * 0.22 >= penPx() * PEN_CLEAR) { kitWeight('fine'); _mgPacWalls(G, mz, C, R, mx, my, q, q * 0.42); }
-  // Ghost-house gate
-  kitWeight('secondary');
-  let gateY = my + (mz.cy - 1) * q + q * 0.3;
-  G.line(mx + (mz.mid - 0.6) * q, gateY, mx + (mz.mid + 1.6) * q, gateY);
-  G.line(mx + (mz.mid - 0.6) * q, gateY + q * 0.18, mx + (mz.mid + 1.6) * q, gateY + q * 0.18);
+  _mgIceTraces(G, mz, C, R, mx, my, q, inCore);
+  // The core: a chip, its gate dashed on top, pins under it and a pin-1 notch
+  let kx = mx + (mz.mid - 2) * q + q * 0.15, ky = my + (mz.cy - 1) * q + q * 0.15, kw = q * 4.7, kh = q * 2.7;
+  G.poly([[kx + kw * 0.3, ky], [kx, ky], [kx, ky + kh], [kx + kw, ky + kh], [kx + kw, ky], [kx + kw * 0.7, ky]], false);
+  kitWeight('fine');
+  G.dashed(kx + kw * 0.3, ky, kx + kw * 0.7, ky, q * 0.15, q * 0.12);
+  for (let c = 0; c < 5; c++) { let px = mx + (mz.mid - 2 + c + 0.5) * q; G.line(px, ky + kh, px, ky + kh + q * 0.22); }
+  G.poly(_mgCirc(kx, ky + kh / 2, q * 0.25, 8, -HALF_PI, HALF_PI), false);
   let ctr = (c, r) => [mx + (c + 0.5) * q, my + (r + 0.5) * q];
   // Loop position on the ring
   let ring = mz.ring, Lr = ring.length;
   let pos = _mgFrac(gt + _mmHash(seed, 20)) * Lr;
   let at = p => { p = ((p % Lr) + Lr) % Lr; let i = Math.floor(p), f = p - i; let a = ctr(...ring[i]), b = ctr(...ring[(i + 1) % Lr]); return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, Math.sign(b[0] - a[0]), Math.sign(b[1] - a[1])]; };
-  // Pellets: eaten along the ring behind Pac-Man and along two old routes
+  // Bits: taken along the ring behind the probe and along two old routes
   let eaten = new Set();
   let ringIdx = new Map(ring.map((rc, i) => [rc[1] * C + rc[0], i]));
   for (let wk = 0; wk < 2; wk++) {
@@ -16949,80 +16946,142 @@ function _mgPacman(G, S, gt, seed, s, o) {
     let ri = ringIdx.get(id);
     if (ri !== undefined && ((pIdx - ri) % Lr + Lr) % Lr < Lr * 0.55) continue;
     let [px, py] = ctr(c, r);
-    let isPower = powerCells.some(([a, b]) => a === c && b === r) || ri === ppRing;
-    if (isPower) { if (blinkOn) { G.circle(px, py, q * 0.5); kitWeight('fine'); G.fill([_mgCirc(px, py, q * 0.24, 12)], 0, 1.5); kitWeight(o.bold ? 'primary' : 'secondary'); } }
-    else if (o.dots || q > 5) { if (q > 9) G.rect(px - q * 0.06, py - q * 0.06, q * 0.12, q * 0.12); else G.pt(px, py); }
+    let isKey = powerCells.some(([a, b]) => a === c && b === r) || ri === ppRing;
+    // a decryption key: a diamond round a dot, blinking
+    if (isKey) { if (blinkOn) { let d = q * 0.3; G.poly([[px, py - d], [px + d, py], [px, py + d], [px - d, py]], true); G.pt(px, py); } }
+    else if (o.dots || q > 5) { if (q > 9) { let b = q * 0.08; G.line(px - b, py, px + b, py); G.line(px, py - b, px, py + b); } else G.pt(px, py); }
   }
-  // Fright mode after Pac-Man eats the ring power pellet
+  // The sentries break once the probe takes the ring's key
   let fright = ((pIdx - ppRing) % Lr + Lr) % Lr < Lr * 0.28;
   let [pcx, pcy, ddx, ddy] = at(pos);
-  // Ghosts trail Pac-Man around the ring
+  // Sentries trail the probe around the ring
   let nG = 2 + Math.floor(_mmHash(seed, 22) * 2), gr = q * 0.44;
   let gap0 = 5 + Math.floor(_mmHash(seed, 23) * 4);
   for (let gi = 0; gi < nG; gi++) {
     let gp = at(pos - gap0 - gi * (4 + Math.floor(_mmHash(seed, 24 + gi) * 5)));
-    _mgGhost(G, gp[0], gp[1], gr, [gp[2], gp[3]], fright ? 'fright' : gi === nG - 1 && _mmHash(seed, 26) < 0.3 ? 'eyes' : 'chase', [45, 135, 90, 0][gi], Math.floor(gt * 32));
+    _mgSentry(G, gp[0], gp[1], gr, [gp[2], gp[3]], fright ? 'fright' : gi === nG - 1 && _mmHash(seed, 26) < 0.3 ? 'eyes' : 'chase', gi % 2 ? 90 : 0, Math.floor(gt * 32));
   }
-  // Ghosts waiting in the house bob in place
+  // Sentries waiting in the core bob in place
   for (let k = 0; k < 2; k++) {
     let hx = mx + (mz.mid + 0.5 + (k ? 1.3 : -1.3)) * q, hy = my + (mz.cy + 0.5) * q + Math.sin(TWO_PI * (gt * 6 + k * 0.5)) * q * 0.18;
-    _mgGhost(G, hx, hy, gr * 0.9, [0, k ? -1 : 1], fright ? 'fright' : 'chase', k ? 60 : 120, Math.floor(gt * 32) + k);
+    _mgSentry(G, hx, hy, gr * 0.9, [k ? 1 : -1, 0], fright ? 'fright' : 'chase', k ? 0 : 90, Math.floor(gt * 32) + k);
   }
-  // Pac-Man: hatched wedge, mouth chomping once per cell
+  // The probe: a hatched hexagon, its jaws closing once a cell
   let mouth = 0.06 + 0.3 * _mgTri(pos);
-  let ang = Math.atan2(ddy, ddx), pr = q * 0.46;
-  let wedge = [[pcx, pcy], ..._mgCirc(pcx, pcy, pr, 22, ang + mouth * PI, ang + TWO_PI - mouth * PI)];
+  let ang = Math.atan2(ddy, ddx), pr = q * 0.42;
+  let P = (a, r) => [pcx + Math.cos(ang + a) * r, pcy + Math.sin(ang + a) * r];
+  let hex = [0, 1, 2, 3, 4, 5].map(k => P(PI / 6 + k * PI / 3, pr * 0.72));
   kitWeight('fine');
-  G.fill([wedge], ang * 180 / PI + 90, Math.max(1.5, q * 0.1));
+  G.fill([hex], ang * 180 / PI + 90, Math.max(1.5, q * 0.1));
   kitWeight(o.bold ? 'heavy' : 'primary');
-  G.poly(wedge, true);
-  // Bonus fruit under the house mid-loop
+  G.poly(hex, true);
+  let ja = 0.08 + mouth * 1.3;
+  for (let sg of [-1, 1]) G.poly([P(sg * PI / 6, pr * 0.72), P(sg * (0.4 + mouth * 0.6), pr * 1.2), P(sg * ja, pr * 1.6)], false);
+  // A data cache under the core mid-loop: a small chip
   if (gt > 0.3 && gt < 0.62) {
-    let fx = mx + (mz.mid + 0.5) * q, fy = my + (mz.cy + 3.5) * q, cr = q * 0.22;
+    let fx = mx + (mz.mid + 0.5) * q, fy = my + (mz.cy + 3.5) * q, cs = q * 0.22;
+    kitWeight('secondary');
+    G.rect(fx - cs, fy - cs, cs * 2, cs * 2);
     kitWeight('fine');
-    for (let sg of [-1, 1]) { G.fill([_mgCirc(fx + sg * cr * 0.9, fy + cr * 0.5, cr, 12)], 45, 1.5); G.circle(fx + sg * cr * 0.9, fy + cr * 0.5, cr * 2); G.line(fx + sg * cr * 0.9, fy - cr * 0.4, fx + cr * 0.6, fy - cr * 1.8); }
+    for (let sg of [-1, 1]) for (let k of [-0.45, 0.45]) G.line(fx + sg * cs, fy + k * cs, fx + sg * cs * 1.6, fy + k * cs);
   }
-  // Footer: lives and level fruit icons
+  // Footer: spare probes and the level's caches
   if (o.footH > 0) {
     let fy = y + h - o.footH / 2, ir = Math.min(o.footH * 0.3, q * 0.42);
     kitWeight('secondary');
-    for (let k = 0; k < 3; k++) G.poly([[x + ir * 2 + k * ir * 2.8, fy], ..._mgCirc(x + ir * 2 + k * ir * 2.8, fy, ir, 14, PI + 0.6, PI + TWO_PI - 0.6)], true);
-    for (let k = 0; k < 2; k++) { let cx = x + w - ir * 2 - k * ir * 2.8; G.circle(cx - ir * 0.35, fy + ir * 0.3, ir * 0.9); G.circle(cx + ir * 0.35, fy + ir * 0.3, ir * 0.9); G.line(cx, fy - ir * 0.8, cx - ir * 0.35, fy); G.line(cx, fy - ir * 0.8, cx + ir * 0.35, fy); }
+    for (let k = 0; k < 3; k++) { let cx = x + ir * 2 + k * ir * 2.8; G.poly([0, 1, 2, 3, 4, 5].map(j => [cx + Math.cos(PI / 6 + j * PI / 3) * ir * 0.8, fy + Math.sin(PI / 6 + j * PI / 3) * ir * 0.8]), true); }
+    for (let k = 0; k < 2; k++) {
+      let cx = x + w - ir * 2 - k * ir * 2.8, cs = ir * 0.6;
+      G.rect(cx - cs, fy - cs, cs * 2, cs * 2);
+      for (let sg of [-1, 1]) for (let j of [-0.45, 0.45]) G.line(cx + sg * cs, fy + j * cs, cx + sg * cs * 1.5, fy + j * cs);
+    }
   }
-  return { telemetry: 'RING ' + String(pIdx).padStart(3, '0') + '/' + Lr + (fright ? ' FRIGHT' : ' CHASE ') };
+  return { telemetry: 'NODE ' + String(pIdx).padStart(3, '0') + '/' + Lr + (fright ? ' ICE DOWN' : ' ICE UP') };
 }
 
-// ---- Platformer: periodic scrolling level, jumps resolved by construction ----
-const _MG_HERO = {
-  run: ['...####...', '..######..', '.##....##.', '.##.##.##.', '..######..', '...####...', '.########.', '#.######.#', '#.######.#', '..######..', '..##..##..', '.##....##.', '##......##', '#........#'],
-  step: ['...####...', '..######..', '.##....##.', '.##.##.##.', '..######..', '...####...', '.########.', '#.######.#', '#.######.#', '..######..', '...####...', '...##.##..', '..##..##..', '..##...#..'],
-  jump: ['...####...', '..######..', '.##....##.', '.##.##.##.', '#.######.#', '#..####..#', '##########', '..######..', '..######..', '..######..', '..##..##..', '.##....##.', '.##.....##', '..........']
-};
-const _MG_CRAWLER = [['..####..', '.######.', '##.##.##', '#..##..#', '########', '.######.', '.##..##.'], ['..####..', '.######.', '##.##.##', '#..##..#', '########', '.######.', '##....##']];
+// ---- Spacewalk: an astronaut's run over a moon, jumps resolved by construction ----
+// Antenna masts, crevasses and mites are the obstacles; hull panels drift
+// overhead and O2 crystals spin along the jump arcs.
 
-function _mgPlatformer(G, S, gt, seed, s, o) {
+// The astronaut, facing right, feet at (fx, fy): helmet and visor, a pack, a
+// chunky suit. pose 'run' (stride phase ph) or 'jump' (tucked, the pack firing).
+function _mgAstronaut(G, fx, fy, T, pose, ph, flick, bold) {
+  let k = T * 0.92, clear = penPx() * PEN_CLEAR;
+  let P = (a, b) => [fx + a * k, fy + b * k];
+  kitWeight(bold ? 'heavy' : 'primary');
+  // the pack (open on the torso's side) and the torso, chamfered
+  G.poly([P(-0.22, -1.3), P(-0.44, -1.3), P(-0.44, -0.76), P(-0.22, -0.76)], false);
+  G.poly([P(-0.22, -1.26), P(0.18, -1.26), P(0.26, -1.18), P(0.26, -0.7), P(0.18, -0.62), P(-0.22, -0.62)], true);
+  // the helmet over the collar, its visor dark glass
+  let [hx, hy] = P(0.04, -1.56);
+  G.circle(hx, hy, k * 0.72);
+  let vis = _mgCirc(hx, hy, k * 0.26, 10, -1.15, 0.85);
+  kitWeight('fine');
+  G.fill([vis], 30, Math.max(1.5, k * 0.08));
+  if (k * 0.1 >= clear) G.poly(vis, true);
+  // limbs: suit tubes (a single line when the pen can't part the tube's sides)
+  let tube = (pts, wd) => {
+    if (wd * k < clear) { G.poly(pts.map(p => P(...p)), false); return; }
+    let Ls = [], Rs = [];
+    pts.forEach((p, i) => {
+      let a = pts[Math.max(0, i - 1)], b = pts[Math.min(pts.length - 1, i + 1)];
+      let dx = b[0] - a[0], dy = b[1] - a[1], dl = Math.hypot(dx, dy) || 1, m = 1;
+      if (i > 0 && i < pts.length - 1) {
+        let u1 = [p[0] - a[0], p[1] - a[1]], u2 = [b[0] - p[0], b[1] - p[1]];
+        let c = (u1[0] * u2[0] + u1[1] * u2[1]) / ((Math.hypot(...u1) * Math.hypot(...u2)) || 1);
+        m = Math.min(2, 1 / Math.sqrt(Math.max(0.05, (1 + c) / 2)));
+      }
+      let nx = -dy / dl * wd / 2 * m, ny = dx / dl * wd / 2 * m;
+      Ls.push(P(p[0] + nx, p[1] + ny)); Rs.push(P(p[0] - nx, p[1] - ny));
+    });
+    G.poly(Ls.concat(Rs.reverse()), true);
+  };
+  let s = Math.sin(TWO_PI * ph);
+  let limb = (hxu, hyu, a, bend, l1, l2) => {
+    let kx = hxu + Math.sin(a) * l1, ky = hyu + Math.cos(a) * l1;
+    return [[hxu, hyu], [kx, ky], [kx + Math.sin(a - bend) * l2, ky + Math.cos(a - bend) * l2]];
+  };
+  kitWeight(bold ? 'heavy' : 'primary');
+  let legs = pose === 'jump' ? [[0.5, 1.3], [-0.35, 0.45]] : [[0.55 * s, 0.7 * Math.max(0, -s)], [-0.55 * s, 0.7 * Math.max(0, s)]];
+  [[-0.08, legs[0]], [0.12, legs[1]]].forEach(([hx0, [a, bend]]) => {
+    let pts = limb(hx0, -0.64, a, bend, 0.3, 0.3), [ex, ey] = pts[2];
+    tube(pts.concat([[ex + 0.12, ey]]), 0.15);   // and the boot
+  });
+  // the near arm, from the front shoulder (the far one is behind the suit)
+  let [aa, ab] = pose === 'jump' ? [2.3, -0.4] : [0.3 + 0.35 * s, -0.5];
+  tube(limb(0.2, -1.12, aa, ab, 0.25, 0.22), 0.11);
+  // the pack firing while airborne
+  if (pose === 'jump' && flick) {
+    kitWeight('fine');
+    G.line(...P(-0.38, -0.72), ...P(-0.42, -0.36));
+    G.line(...P(-0.28, -0.72), ...P(-0.24, -0.46));
+  }
+}
+
+function _mgSpacewalk(G, S, gt, seed, s, o) {
   let { x, y, w, h } = S;
   let top = y + o.hudH, avH = h - o.hudH;
+  let clear = penPx() * PEN_CLEAR;
   let T = Math.max(5, Math.min(avH / (s < 0.3 ? 13 : 10), w / (s < 0.3 ? 9 : 7)));
   let NL = Math.ceil(w / T) * 2 + 4, P = NL * T;
   let groundRows = 2, gY = y + h - groundRows * T;
   // Level: runs alternate with jump spans that hold the obstacle
-  let pits = new Uint8Array(NL), pipes = [], blocks = [], coins = [], crawlers = [], jumps = [];
+  let pits = new Uint8Array(NL), masts = [], panels = [], cells = [], mites = [], jumps = [];
   let tx = 3, k = 0;
   while (tx < NL - 9) {
     let run = 3 + Math.floor(_mmHash(seed + 40, k) * 4);
     if (_mmHash(seed + 41, k) < 0.85) {
       let bl = 2 + Math.floor(_mmHash(seed + 42, k) * 3), bx0 = tx, q = Math.floor(_mmHash(seed + 43, k) * bl);
-      for (let i = 0; i < bl; i++) blocks.push({ x: bx0 + i, row: 4, q: i === q });
-      if (bl >= 3 && _mmHash(seed + 51, k) < 0.5) for (let i = 1; i < bl - 1; i++) blocks.push({ x: bx0 + i, row: 8, q: _mmHash(seed + 52, k + i) < 0.3 });
-      for (let i = 0; i < bl; i++) if (_mmHash(seed + 44, k * 7 + i) < 0.6) coins.push({ x: bx0 + i + 0.5, row: 5.6 });
+      for (let i = 0; i < bl; i++) panels.push({ x: bx0 + i, row: 4, q: i === q });
+      if (bl >= 3 && _mmHash(seed + 51, k) < 0.5) for (let i = 1; i < bl - 1; i++) panels.push({ x: bx0 + i, row: 8, q: _mmHash(seed + 52, k + i) < 0.3 });
+      for (let i = 0; i < bl; i++) if (_mmHash(seed + 44, k * 7 + i) < 0.6) cells.push({ x: bx0 + i + 0.5, row: 5.6 });
     }
     tx += run;
     let span = 4 + Math.floor(_mmHash(seed + 45, k) * 3), kind = Math.floor(_mmHash(seed + 46, k) * 3), apex = 2.6;
     if (kind === 0) { for (let i = 1; i < span - 1; i++) pits[tx + i] = 1; apex = 2.4 + span * 0.2; }
-    else if (kind === 1) { let ph = 2 + Math.floor(_mmHash(seed + 47, k) * 2); pipes.push({ x: tx + Math.floor(span / 2) - 1, hgt: ph }); apex = ph + 1.4; }
-    else crawlers.push({ x: tx + span / 2, range: span * 0.25, ph: _mmHash(seed + 48, k) });
-    if (_mmHash(seed + 49, k) < 0.5) for (let i = 1; i <= 3; i++) { let f = i / 4; coins.push({ x: tx + 0.5 + f * (span - 1), row: apex * 4 * f * (1 - f) + 0.9 }); }
+    else if (kind === 1) { let ph = 2 + Math.floor(_mmHash(seed + 47, k) * 2); masts.push({ x: tx + Math.floor(span / 2) - 1, hgt: ph }); apex = ph + 1.4; }
+    else mites.push({ x: tx + span / 2, range: span * 0.25, ph: _mmHash(seed + 48, k) });
+    if (_mmHash(seed + 49, k) < 0.5) for (let i = 1; i <= 3; i++) { let f = i / 4; cells.push({ x: tx + 0.5 + f * (span - 1), row: apex * 4 * f * (1 - f) + 0.9 }); }
     jumps.push({ x0: tx + 0.5, x1: tx + span - 0.5, apex });
     tx += span; k++;
   }
@@ -17030,77 +17089,46 @@ function _mgPlatformer(G, S, gt, seed, s, o) {
   let heroLX = cam + w * 0.3;
   let toScreen = lx => { let d = ((lx - cam + T * 3) % P + P) % P - T * 3; return x + d; };
   let onScreen = (sx, wd) => sx + wd > x && sx < x + w;
-  // Parallax backdrop (period P/2, scrolls at half speed)
+  // Backdrop at half speed (period P/2): a ringed planet over a ridge line, stars
   let Pb = P / 2, bcam = cam * 0.5;
-  kitWeight('fine');
-  for (let i = 0; i < 2; i++) {
-    let hx0 = (i + 0.2 + _mmHash(seed + 60, i) * 0.5) * Pb / 2, hr = T * (1.6 + _mmHash(seed + 61, i) * 1.6);
-    for (let rep = -1; rep <= 2; rep++) {
-      let sx = x + (((hx0 - bcam) % Pb + Pb) % Pb) + (rep - 1) * Pb;
-      if (!onScreen(sx - hr, hr * 2)) continue;
-      G.poly(_mgCirc(sx, gY, hr, 24, PI, TWO_PI), false);
-      if (o.dots) for (let j = 1; j <= 4; j++) { let yy = gY - hr * j / 5, hw = Math.sqrt(Math.max(0, hr * hr - (hr * j / 5) ** 2)) * 0.8; G.dashed(sx - hw, yy, sx + hw, yy, T * 0.1, T * 0.22); }
+  let pr = T * (1.3 + _mmHash(seed + 61, 0) * 0.9), pcy = top + T * 0.6 + pr;
+  let hasPlanet = gY - T * 2.4 > pcy + pr * 1.1;
+  let planets = [];
+  if (hasPlanet) for (let rep = -1; rep <= 1; rep++) {
+    let px = x + (((_mmHash(seed + 60, 0) * Pb - bcam) % Pb + Pb) % Pb) + rep * Pb;
+    if (onScreen(px - pr * 2, pr * 4)) planets.push(px);
+  }
+  if (o.dots || s < 0.3) {
+    kitWeight('fine');
+    let ns = Math.min(70, Math.round(w * (gY - top) / (T * T * 3)));
+    for (let i = 0; i < ns; i++) {
+      let sx = x + _mmHash(seed + 64, i) * w, sy = top + _mmHash(seed + 65, i) * Math.max(0, gY - top - T * 2.6);
+      if (planets.some(px => Math.hypot(sx - px, sy - pcy) < pr * 2)) continue;
+      G.pt(sx, sy);
     }
   }
-  for (let i = 0; i < 3; i++) {
-    let cx0 = _mmHash(seed + 62, i) * Pb, cy = top + T * (1.2 + _mmHash(seed + 63, i) * 2.4), cr = T * 0.55;
-    for (let rep = -1; rep <= 2; rep++) {
-      let sx = x + (((cx0 - bcam * 1.4) % Pb + Pb) % Pb) + (rep - 1) * Pb;
-      if (!onScreen(sx - cr * 3, cr * 6)) continue;
-      G.poly([..._mgCirc(sx - cr * 1.4, cy, cr * 0.8, 10, PI * 0.5, PI * 1.6), ..._mgCirc(sx, cy - cr * 0.3, cr * 1.1, 14, PI * 1.05, PI * 1.95), ..._mgCirc(sx + cr * 1.4, cy, cr * 0.8, 10, PI * 1.4, PI * 2.5), [sx - cr * 1.4, cy + cr * 0.8]], false);
-    }
-  }
-  // Ground tiles with pits
-  for (let i = 0; i < NL; i++) {
-    let sx = toScreen(i * T);
-    for (let rep of [sx]) {
-      if (!onScreen(rep, T) || pits[i]) continue;
-      kitWeight(o.bold ? 'primary' : 'secondary');
-      G.line(rep, gY, rep + T, gY);
-      kitWeight('fine');
-      for (let rr = 0; rr < groundRows; rr++) {
-        let yy = gY + rr * T;
-        let ti = Math.max(0.6, G.ins);
-        G.rect(rep + ti, yy + ti, T - ti * 2, T - ti * 2);
-        if (o.bold) G.hrect(rep + ti, yy + ti, T - ti * 2, T - ti * 2, 1.8);
-        else { G.line(rep + T * 0.2, yy + T * 0.3, rep + T * 0.45, yy + T * 0.3); G.line(rep + T * 0.55, yy + T * 0.7, rep + T * 0.8, yy + T * 0.7); }
+  for (let px of planets) {
+    kitWeight('secondary');
+    G.circle(px, pcy, pr * 2);
+    // the night side: a crescent, hatched
+    kitWeight('fine');
+    let cres = _mgCirc(px, pcy, pr, 14, -HALF_PI, HALF_PI);
+    for (let j = 0; j <= 14; j++) { let a = HALF_PI - PI * j / 14; cres.push([px + Math.cos(a) * pr * 0.35, pcy + Math.sin(a) * pr]); }
+    G.fill([cres], 45, Math.max(1.6, T * 0.12));
+    // the ring: its near half whole, its far half where the planet leaves it
+    let ring = (rx, ry) => {
+      let tilt = -0.22, run = [];
+      for (let j = 0; j <= 40; j++) {
+        let t = PI * 2 * j / 40, ex = Math.cos(t) * rx, ey = Math.sin(t) * ry;
+        let qx = px + ex * Math.cos(tilt) - ey * Math.sin(tilt), qy = pcy + ex * Math.sin(tilt) + ey * Math.cos(tilt);
+        let hidden = Math.sin(t) < 0 && Math.hypot(qx - px, qy - pcy) < pr + clear;
+        if (hidden) { G.poly(run, false); run = []; } else run.push([qx, qy]);
       }
-      if (pits[(i + 1) % NL]) { kitWeight('secondary'); G.line(rep + T, gY, rep + T, y + h); }
-      if (pits[(i - 1 + NL) % NL]) { kitWeight('secondary'); G.line(rep, gY, rep, y + h); }
-    }
-  }
-  // Pipes
-  for (let p of pipes) {
-    let sx = toScreen(p.x * T), ph = p.hgt * T, by = gY - ph;
-    if (!onScreen(sx - T * 0.2, T * 2.4)) continue;
-    kitWeight(o.bold ? 'primary' : 'secondary');
-    G.rect(sx + T * 0.15, by + T * 0.55, T * 1.7, ph - T * 0.55);
-    G.rect(sx - T * 0.05, by, T * 2.1, T * 0.55);
-    kitWeight('fine');
-    G.vrect(sx + T * 1.45, by + T * 0.6, T * 0.35, ph - T * 0.6, 1.6);
-    G.vrect(sx + T * 1.55, by + T * 0.05, T * 0.45, T * 0.45, 1.6);
-    G.line(sx + T * 0.4, by + T * 0.6, sx + T * 0.4, gY);
-    G.line(sx + T * 0.55, by + T * 0.6, sx + T * 0.55, gY);
-  }
-  // Floating bricks and ? blocks
-  for (let b of blocks) {
-    let sx = toScreen(b.x * T), by = gY - b.row * T;
-    if (!onScreen(sx, T)) continue;
-    kitWeight(o.bold ? 'primary' : 'secondary');
-    G.rect(sx + G.ins, by + G.ins, T - G.ins * 2, T - G.ins * 2);
-    kitWeight('fine');
-    if (b.q) {
-      G.rect(sx + T * 0.12, by + T * 0.12, T * 0.76, T * 0.76);
-      G.poly([..._mgCirc(sx + T * 0.5, by + T * 0.38, T * 0.16, 10, PI * 1.05, PI * 2.4), [sx + T * 0.5, by + T * 0.62]], false);
-      G.line(sx + T * 0.5, by + T * 0.7, sx + T * 0.5, by + T * 0.76);
-      for (let [cx, cy] of [[0.2, 0.2], [0.8, 0.2], [0.2, 0.8], [0.8, 0.8]]) G.pt(sx + T * cx, by + T * cy);
-    } else {
-      G.line(sx, by + T * 0.5, sx + T, by + T * 0.5);
-      G.line(sx + T * 0.5, by, sx + T * 0.5, by + T * 0.5);
-      G.line(sx + T * 0.25, by + T * 0.5, sx + T * 0.25, by + T);
-      G.line(sx + T * 0.75, by + T * 0.5, sx + T * 0.75, by + T);
-      if (o.bold) G.hrect(sx + 1, by + 1, T - 2, T - 2, 2);
-    }
+      G.poly(run, false);
+    };
+    kitWeight('secondary');
+    ring(pr * 1.9, pr * 0.42);
+    if (pr * 0.42 * 0.2 >= clear) { kitWeight('fine'); ring(pr * 1.9 * 0.8, pr * 0.42 * 0.8); }
   }
   // Hero kinematics from the jump table
   let heroScreenX = x + w * 0.3, heroH = 0, airborne = false, jNow = null;
@@ -17108,59 +17136,185 @@ function _mgPlatformer(G, S, gt, seed, s, o) {
     let d = ((heroLX - j.x0 * T) % P + P) % P / T, span = j.x1 - j.x0;
     if (d >= 0 && d <= span) { let f = d / span; heroH = j.apex * 4 * f * (1 - f) * T; airborne = true; jNow = j; }
   }
-  // Coins: collected once the hero passes (they respawn off-screen)
-  for (let c of coins) {
+  // The ridge: one jagged line, periodic in the backdrop
+  kitWeight('fine');
+  let rstep = T / 2;
+  let ridgeH = i => { let j = ((i % NL) + NL) % NL, f = j / NL; return T * (1.0 + 0.55 * Math.sin(TWO_PI * (2 * f + _mmHash(seed + 66, 0))) + 0.3 * Math.sin(TWO_PI * (5 * f + _mmHash(seed + 66, 1))) + 0.35 * _mmHash(seed + 67, j)); };
+  let rp = [], i0 = Math.floor(bcam / rstep) - 1;
+  for (let i = i0; i <= i0 + Math.ceil(w / rstep) + 2; i++) rp.push([x + i * rstep - bcam, gY - ridgeH(i)]);
+  // What stands in front of it (the hero, masts, mites, crystals) cuts it
+  let cuts = [[heroScreenX - T * 0.55, gY - heroH - T * 1.9, T * 1.25, T * 1.95]];
+  for (let m of masts) cuts.push([toScreen(m.x * T) + T * 0.2, gY - m.hgt * T - T * 0.85, T * 1.6, m.hgt * T + T * 0.85]);
+  for (let mt of mites) { let mr = T * 0.34, mx0 = toScreen((mt.x + Math.sin(TWO_PI * (gt * 4 + mt.ph)) * mt.range) * T); cuts.push([mx0 - mr * 1.4, gY - mr * 1.7, mr * 2.8, mr * 1.7]); }
+  for (let c of cells) { let sx = toScreen(c.x * T); if (sx >= heroScreenX + T * 0.5) cuts.push([sx - T * 0.25, gY - c.row * T - T * 0.4, T * 0.5, T * 0.8]); }
+  cuts = cuts.map(([rx, ry, rw, rh]) => [rx - clear / 2, ry - clear / 2, rw + clear, rh + clear]);
+  let runs = [[]];
+  for (let i = 0; i + 1 < rp.length; i++) {
+    let [ax, ay] = rp[i], [bx, by] = rp[i + 1], dx = bx - ax, dy = by - ay, ins = [];
+    for (let [rx, ry, rw, rh] of cuts) {
+      let t0 = 0, t1 = 1, ok = true;
+      for (let [pp, qq] of [[-dx, ax - rx], [dx, rx + rw - ax], [-dy, ay - ry], [dy, ry + rh - ay]]) {
+        if (Math.abs(pp) < 1e-12) { if (qq < 0) { ok = false; break; } continue; }
+        let r = qq / pp;
+        if (pp < 0) { if (r > t1) { ok = false; break; } t0 = Math.max(t0, r); }
+        else { if (r < t0) { ok = false; break; } t1 = Math.min(t1, r); }
+      }
+      if (ok && t1 > t0) ins.push([t0, t1]);
+    }
+    ins.sort((a, b) => a[0] - b[0]);
+    let t = 0, at = f => [ax + dx * f, ay + dy * f], cur = runs[runs.length - 1];
+    for (let [s0, s1] of ins) {
+      if (s0 > t) { if (!cur.length) cur.push(at(t)); cur.push(at(s0)); }
+      runs.push(cur = []);
+      t = Math.max(t, s1);
+    }
+    if (t < 1) { if (!cur.length) cur.push(at(t)); cur.push(at(1)); }
+  }
+  for (let r of runs) G.poly(r, false);
+  // Ground: regolith tiles with crevasses
+  let edge = (ex, dir) => { let pts = [[ex, gY]]; for (let j = 1; j <= 4; j++) pts.push([ex + dir * T * (0.12 * (j % 2) + 0.05 * j), gY + j * T * 0.5]); G.poly(pts, false); };
+  for (let i = 0; i < NL; i++) {
+    let rep = toScreen(i * T);
+    if (!onScreen(rep, T) || pits[i]) continue;
+    kitWeight(o.bold ? 'primary' : 'secondary');
+    G.line(rep, gY, rep + T, gY);
+    if (pits[(i + 1) % NL]) edge(rep + T, -1);
+    if (pits[(i - 1 + NL) % NL]) edge(rep, 1);
+    // two pebbles and a stratum a tile, dealt by the tile's index
+    kitWeight('fine');
+    let peb = [0, 1].map(j => [rep + T * (0.25 + 0.5 * _mmHash(seed + 70 + j, i)), gY + T * (0.5 + 1.15 * _mmHash(seed + 72 + j, i)), T * (0.06 + 0.07 * _mmHash(seed + 74 + j, i))]);
+    for (let [px, py, r] of peb) G.circle(px, py, r * 2);
+    if (o.bold) G.fill([[[rep, gY + T * 0.3], [rep + T, gY + T * 0.3], [rep + T, gY + T * 2], [rep, gY + T * 2]], ...peb.map(([px, py, r]) => _mgCirc(px, py, r + clear, 10))], 45, 2.4);
+    else { let sy = gY + T * (0.3 + 1.4 * _mmHash(seed + 76, i)); G.line(rep + T * 0.1, sy, rep + T * 0.45, sy); }
+  }
+  // Antenna masts: tapered lattice towers, a dish and a beacon on top
+  let blink = Math.floor(gt * 12) % 2 === 0;
+  for (let m of masts) {
+    let sx = toScreen(m.x * T), mh = m.hgt * T, by = gY - mh;
+    if (!onScreen(sx - T * 0.4, T * 2.8)) continue;
+    let l0 = [sx + T * 0.3, gY], l1 = [sx + T * 0.75, by + T * 0.3], r0 = [sx + T * 1.7, gY], r1 = [sx + T * 1.25, by + T * 0.3];
+    let Lf = f => [l0[0] + (l1[0] - l0[0]) * f, l0[1] + (l1[1] - l0[1]) * f], Rf = f => [r0[0] + (r1[0] - r0[0]) * f, r0[1] + (r1[1] - r0[1]) * f];
+    kitWeight(o.bold ? 'primary' : 'secondary');
+    G.line(...l0, ...l1); G.line(...r0, ...r1); G.line(...l1, ...r1);
+    kitWeight('fine');
+    for (let b = 0; b < m.hgt; b++) {
+      let f0 = b / m.hgt, f1 = (b + 1) / m.hgt;
+      G.line(...Lf(f0), ...Rf(f1)); G.line(...Rf(f0), ...Lf(f1));
+      if (b < m.hgt - 1) G.line(...Lf(f1), ...Rf(f1));
+    }
+    let dx = sx + T, top0 = by + T * 0.3;
+    kitWeight('secondary');
+    G.line(dx, top0, dx, by - T * 0.15);
+    G.poly(_mgCirc(dx, by - T * 0.75, T * 0.6, 10, PI * 0.3, PI * 0.7), false);
+    kitWeight('fine');
+    G.line(dx, by - T * 0.15, dx, by - T * 0.5);
+    if (blink) G.circle(dx, by - T * 0.58, T * 0.16);
+  }
+  // Hull panels drifting overhead; a beacon pod among them
+  for (let b of panels) {
+    let sx = toScreen(b.x * T), by = gY - b.row * T, e = G.ins;
+    if (!onScreen(sx, T)) continue;
+    kitWeight(o.bold ? 'primary' : 'secondary');
+    G.rect(sx + e, by + e, T - e * 2, T - e * 2);
+    kitWeight('fine');
+    if (b.q) {
+      let cx = sx + T / 2, cy = by + T / 2, lr = T * 0.22;
+      G.circle(cx, cy, lr * 2);
+      G.fill([_mgCirc(cx, cy, lr * 0.8, 14)], 45, Math.max(1.5, T * 0.1));
+      if (blink) for (let j = 1; j <= 2; j++) G.poly(_mgCirc(cx, by - T * 0.05, T * 0.18 * j, 8, PI * 1.25, PI * 1.75), false);
+    } else {
+      if (T * 0.5 - e >= clear) G.line(sx + e, by + T * 0.5, sx + T - e, by + T * 0.5);
+      for (let [cx, cy] of [[0.22, 0.25], [0.78, 0.25], [0.22, 0.75], [0.78, 0.75]]) G.pt(sx + T * cx, by + T * cy);
+      if (o.bold) G.hrect(sx + e, by + e, T - e * 2, T * 0.5 - e, 2);
+    }
+  }
+  // O2 crystals: taken once the hero passes (they come back off-screen)
+  for (let c of cells) {
     let sx = toScreen(c.x * T), cy = gY - c.row * T;
     if (!onScreen(sx - T, T * 2)) continue;
-    if (sx < heroScreenX) {
-      if (heroScreenX - sx < T * 0.8) { kitWeight('fine'); let sp = (heroScreenX - sx) / T; for (let a = 0; a < 4; a++) { let an = a * HALF_PI + 0.4; G.line(sx + Math.cos(an) * T * 0.15, cy + Math.sin(an) * T * 0.15, sx + Math.cos(an) * T * (0.3 + sp * 0.4), cy + Math.sin(an) * T * (0.3 + sp * 0.4)); } }
+    if (sx < heroScreenX + T * 0.5) {
+      if (heroScreenX - sx > T * 0.55 && heroScreenX - sx < T * 1.2) { kitWeight('fine'); let sp = (heroScreenX - sx) / T - 0.55; for (let a = 0; a < 4; a++) { let an = a * HALF_PI + 0.4; G.line(sx + Math.cos(an) * T * 0.15, cy + Math.sin(an) * T * 0.15, sx + Math.cos(an) * T * (0.3 + sp * 0.4), cy + Math.sin(an) * T * (0.3 + sp * 0.4)); } }
       continue;
     }
     let spin = Math.abs(Math.cos(TWO_PI * (gt * 8 + c.x * 0.13)));
-    let rx = T * 0.26 * Math.max(0.15, spin), ry = T * 0.36;
+    let rx = T * 0.2 * Math.max(0.15, spin), ry = T * 0.34;
     kitWeight('secondary');
-    G.poly(_mgCirc(0, 0, 1, 20).map(p => [sx + p[0] * rx, cy + p[1] * ry]), false);
+    G.poly([[sx, cy - ry], [sx + rx, cy - ry * 0.25], [sx, cy + ry], [sx - rx, cy - ry * 0.25]], true);
     kitWeight('fine');
-    G.line(sx, cy - ry * 0.55, sx, cy + ry * 0.55);
+    if (rx > 1) G.line(sx - rx, cy - ry * 0.25, sx + rx, cy - ry * 0.25);
   }
-  // Crawlers pace inside their span
-  for (let cr of crawlers) {
-    let px = T * 0.14, sx = toScreen((cr.x + Math.sin(TWO_PI * (gt * 4 + cr.ph)) * cr.range) * T) - 4 * px;
-    if (!onScreen(sx, 8 * px)) continue;
-    kitWeight('secondary');
-    _mgSprite(G, _MG_CRAWLER[Math.floor(gt * 48) % 2], sx, gY - 7 * px, px, false);
+  // Mites pace inside their span: a domed shell on two pairs of legs, an eye on a stalk
+  for (let mt of mites) {
+    let ph = TWO_PI * (gt * 4 + mt.ph), mx0 = toScreen((mt.x + Math.sin(ph) * mt.range) * T), mr = T * 0.34, base = gY - mr * 0.35;
+    if (!onScreen(mx0 - mr * 1.5, mr * 3)) continue;
+    let face = Math.cos(ph) >= 0 ? 1 : -1, stp = Math.floor(gt * 48) % 2;
+    let dome = _mgCirc(mx0, base, mr, 12, PI, TWO_PI);
+    kitWeight('fine');
+    if (o.bold) G.fill([dome], 135, 1.8);
+    kitWeight(o.bold ? 'primary' : 'secondary');
+    G.poly(dome, true);
+    for (let j = 0; j < 2; j++) for (let sg of [-1, 1]) {
+      let hx = mx0 + sg * mr * (0.35 + j * 0.45), lift = (j + stp + (sg > 0 ? 1 : 0)) % 2 ? mr * 0.18 : 0;
+      G.line(hx, base, hx + sg * mr * 0.25, gY - lift);
+    }
+    kitWeight('fine');
+    let [ex, ey] = [mx0 + face * mr * 0.5, base - mr * 0.87];
+    G.line(ex, ey, ex + face * mr * 0.25, ey - mr * 0.45);
+    G.circle(ex + face * mr * 0.25, ey - mr * 0.45 - mr * 0.14, mr * 0.28);
   }
-  // Hero sprite + dotted jump arc + speed lines
-  let hp = T * 1.75 / 14;
-  let hx = heroScreenX - 5 * hp, hy = gY - heroH - 14 * hp;
+  // Hero + dotted jump arc + kicked-up dust
   if (o.trails && jNow) {
     kitWeight('fine');
     let span = jNow.x1 - jNow.x0;
-    for (let k = 0; k <= 16; k++) { let f = k / 16, lx = (jNow.x0 + f * span) * T, sx = toScreen(lx); G.pt(sx, gY - jNow.apex * 4 * f * (1 - f) * T - T * 0.85); }
+    for (let j = 0; j <= 16; j++) { let f = j / 16, sx = toScreen((jNow.x0 + f * span) * T); G.pt(sx, gY - jNow.apex * 4 * f * (1 - f) * T - T * 0.85); }
   }
-  let frame = airborne ? _MG_HERO.jump : (Math.floor(heroLX / (T * 0.45)) % 2 ? _MG_HERO.run : _MG_HERO.step);
-  kitWeight(o.bold ? 'primary' : 'secondary');
-  _mgSprite(G, frame, hx, hy, hp, false);
-  if (!airborne) { kitWeight('fine'); for (let k = 0; k < 3; k++) G.line(hx - T * (0.25 + k * 0.12), hy + hp * (6 + k * 2.5), hx - T * (0.05 + k * 0.08), hy + hp * (6 + k * 2.5)); }
-  return { telemetry: 'X ' + String(Math.round(heroLX / T)).padStart(4, '0') + ' ALT ' + (heroH / T).toFixed(1) };
+  let ph = _mgFrac(heroLX / (T * 1.4));
+  _mgAstronaut(G, heroScreenX, gY - heroH, T, airborne ? 'jump' : 'run', ph, Math.floor(gt * 40) % 2 === 0, o.bold);
+  if (!airborne) { kitWeight('fine'); for (let j = 0; j < 3; j++) G.circle(heroScreenX - T * (0.4 + j * 0.22), gY - T * (0.16 + j * 0.1), T * (0.18 - j * 0.04) * (1 - ph * 0.4)); }
+  return { telemetry: 'EVA ' + String(Math.round(heroLX / T)).padStart(4, '0') + ' ALT ' + (heroH / T).toFixed(1) };
 }
-// ---- Tetris: AI-built stack, falling piece + ghost, NEXT/HOLD/stats panel ----
-const _MG_TETRO = [
-  [[0, 1], [1, 1], [2, 1], [3, 1]], // I
-  [[1, 0], [2, 0], [1, 1], [2, 1]], // O
-  [[1, 0], [0, 1], [1, 1], [2, 1]], // T
-  [[1, 0], [2, 0], [0, 1], [1, 1]], // S
-  [[0, 0], [1, 0], [1, 1], [2, 1]], // Z
-  [[0, 0], [0, 1], [1, 1], [2, 1]], // J
-  [[2, 0], [0, 1], [1, 1], [2, 1]]  // L
+
+// Outline of each region of grid cells, inset by e so neighbouring regions
+// keep 2e apart; same(c, r, c2, r2) says whether (c2, r2) is in (c, r)'s region.
+function _mgOutline(G, cells, ox, oy, q, e, same) {
+  let hs = {}, vs = {};
+  let addH = (yy, a, b) => { let k = Math.round(yy * 50); (hs[k] = hs[k] || { y: yy, s: [] }).s.push([Math.min(a, b), Math.max(a, b)]); };
+  let addV = (xx, a, b) => { let k = Math.round(xx * 50); (vs[k] = vs[k] || { x: xx, s: [] }).s.push([Math.min(a, b), Math.max(a, b)]); };
+  for (let [c, r] of cells) {
+    let W = (dc, dr) => same(c, r, c + dc, r + dr);
+    let L = ox + c * q, T = oy + r * q, Rr = L + q, B = T + q;
+    // along a side: convex corner, concave corner, or a straight run on
+    let endX = (sd, dc) => !W(dc, 0) ? (dc < 0 ? L + e : Rr - e) : W(dc, sd) ? (dc < 0 ? L - e : Rr + e) : (dc < 0 ? L : Rr);
+    let endY = (sd, dr) => !W(0, dr) ? (dr < 0 ? T + e : B - e) : W(sd, dr) ? (dr < 0 ? T - e : B + e) : (dr < 0 ? T : B);
+    if (!W(0, -1)) addH(T + e, endX(-1, -1), endX(-1, 1));
+    if (!W(0, 1)) addH(B - e, endX(1, -1), endX(1, 1));
+    if (!W(-1, 0)) addV(L + e, endY(-1, -1), endY(-1, 1));
+    if (!W(1, 0)) addV(Rr - e, endY(1, -1), endY(1, 1));
+  }
+  let merge = list => { list.sort((a, b) => a[0] - b[0]); let out = []; for (let s of list) { let l = out[out.length - 1]; if (l && s[0] <= l[1] + 0.01) l[1] = Math.max(l[1], s[1]); else out.push(s.slice()); } return out; };
+  for (let k in hs) for (let s of merge(hs[k].s)) G.line(s[0], hs[k].y, s[1], hs[k].y);
+  for (let k in vs) for (let s of merge(vs[k].s)) G.line(vs[k].x, s[0], vs[k].x, s[1]);
+}
+
+// ---- Cargo Bay: containers lowered by a crane, packed by a greedy loader ----
+// Containers of two to five cells; a crane on the bay's top rail lowers each
+// one, a bracket marks where it will land, and full decks are welded off.
+const _MG_CARGO = [
+  [[0, 0], [1, 0]],                          // a pair
+  [[0, 0], [1, 0], [2, 0]],                  // a short rail
+  [[0, 0], [0, 1], [1, 1]],                  // an elbow
+  [[0, 0], [1, 0], [0, 1], [1, 1]],          // a square
+  [[0, 0], [1, 0], [0, 1], [1, 1], [0, 2]],  // a P
+  [[0, 0], [2, 0], [0, 1], [1, 1], [2, 1]],  // a U
+  [[0, 0], [0, 1], [0, 2], [0, 3], [1, 3]]   // a long L
 ];
-function _mgTetroRot(t, rot) {
-  let cells = _MG_TETRO[t].map(c => c.slice());
+function _mgCargoRot(t, rot) {
+  let cells = _MG_CARGO[t].map(c => c.slice());
   for (let k = 0; k < rot; k++) cells = cells.map(([cx, cy]) => [-cy, cx]);
   let mnx = Math.min(...cells.map(c => c[0])), mny = Math.min(...cells.map(c => c[1]));
   return cells.map(([cx, cy]) => [cx - mnx, cy - mny]);
 }
-function _mgTetrisDrop(grid, cells, col) {
+function _mgCargoDrop(grid, cells, col) {
   let row = -1;
   for (let r = 0; r <= 20; r++) {
     let ok = cells.every(([cx, cy]) => { let rr = r + cy, cc = col + cx; return cc >= 0 && cc < 10 && rr < 20 && (rr < 0 || !grid[rr * 10 + cc]); });
@@ -17169,12 +17323,12 @@ function _mgTetrisDrop(grid, cells, col) {
   }
   return row;
 }
-function _mgTetrisBest(grid, t) {
+function _mgCargoBest(grid, t) {
   let best = null;
   for (let rot = 0; rot < 4; rot++) {
-    let cells = _mgTetroRot(t, rot), wd = Math.max(...cells.map(c => c[0])) + 1;
+    let cells = _mgCargoRot(t, rot), wd = Math.max(...cells.map(c => c[0])) + 1;
     for (let col = 0; col + wd <= 10; col++) {
-      let row = _mgTetrisDrop(grid, cells, col);
+      let row = _mgCargoDrop(grid, cells, col);
       if (row < 0) continue;
       let g = grid.slice();
       cells.forEach(([cx, cy]) => { g[(row + cy) * 10 + col + cx] = t + 1; });
@@ -17194,8 +17348,8 @@ function _mgTetrisBest(grid, t) {
   }
   return best;
 }
-function _mgTetrisClear(g) {
-  let out = [], cleared = [];
+function _mgCargoClear(g) {
+  let cleared = [];
   for (let r = 0; r < 20; r++) { let full = true; for (let c = 0; c < 10; c++) if (!g[r * 10 + c]) full = false; if (full) cleared.push(r); }
   if (!cleared.length) return { g, cleared };
   let keep = [];
@@ -17203,130 +17357,164 @@ function _mgTetrisClear(g) {
   while (keep.length < 20) keep.unshift(new Array(10).fill(0));
   return { g: [].concat(...keep), cleared };
 }
-// One bevelled block; the inner pattern encodes the piece type
-function _mgTetroBlock(G, bx, by, q, type, bold, ghost) {
-  if (ghost) { kitWeight('fine'); G.dashed(bx + 1, by + 1, bx + q - 1, by + 1, 1.5, 1.5); G.dashed(bx + q - 1, by + 1, bx + q - 1, by + q - 1, 1.5, 1.5); G.dashed(bx + q - 1, by + q - 1, bx + 1, by + q - 1, 1.5, 1.5); G.dashed(bx + 1, by + q - 1, bx + 1, by + 1, 1.5, 1.5); return; }
-  let i = q * 0.22, o = G.ins;
-  kitWeight(bold ? 'primary' : 'secondary');
-  G.rect(bx + o, by + o, q - o * 2, q - o * 2);
-  // The bevel's inner square needs 1.5 pens inside the outline
-  if (q < 6 || i - o < o * 2) { kitWeight('fine'); G.line(bx + o * 2, by + o * 2, bx + q - o * 2, by + q - o * 2); return; }
+// A cell's marking, by the container's kind: ribs, bracing, plating, scrap.
+// Only where it keeps 1.5 pens inside the outline.
+function _mgCrateMark(G, bx, by, q, type, bold) {
+  let i = q * 0.26, X = bx + i, Y = by + i, Q = q - 2 * i, st = Math.max(1.5, Q / 4);
+  if (i - G.ins < penPx() * PEN_CLEAR) return;
   kitWeight('fine');
-  G.rect(bx + i, by + i, q - 2 * i, q - 2 * i);
-  G.line(bx + o, by + o, bx + i, by + i); G.line(bx + q - o, by + o, bx + q - i, by + i);
-  G.line(bx + o, by + q - o, bx + i, by + q - i); G.line(bx + q - o, by + q - o, bx + q - i, by + q - i);
-  let X = bx + i, Y = by + i, Q = q - 2 * i, st = Math.max(1.5, Q / 5);
   let sq = [[[X, Y], [X + Q, Y], [X + Q, Y + Q], [X, Y + Q]]];
-  switch (bold ? 0 : type) {
-    case 0: G.hrect(X, Y, Q, Q, st * 0.7); break;
-    case 1: G.hrect(X, Y, Q, Q, st); G.vrect(X, Y, Q, Q, st); break;
+  switch (bold ? -1 : type) {
+    case -1: G.hrect(X, Y, Q, Q, st * 0.7); break;
+    case 0: G.vrect(X, Y, Q, Q, st); break;
+    case 1: G.hrect(X, Y, Q, Q, st); break;
     case 2: G.fill(sq, 45, st); break;
-    case 3: G.vrect(X, Y, Q, Q, st); break;
-    case 4: G.fill(sq, 135, st); break;
-    case 5: G.rect(X + Q * 0.3, Y + Q * 0.3, Q * 0.4, Q * 0.4); break;
-    case 6: G.pt(X + Q / 2, Y + Q / 2); G.rect(X + Q * 0.2, Y + Q * 0.2, Q * 0.6, Q * 0.6); break;
+    case 3: G.line(X, Y, X + Q, Y + Q); G.line(X + Q, Y, X, Y + Q); break;
+    case 4: G.rect(X, Y, Q, Q); break;
+    case 5: G.rect(X + Q * 0.25, Y + Q * 0.25, Q * 0.5, Q * 0.5); break;
+    case 6: G.fill(sq, 135, st); break;
     default: G.fill(sq, 45, st); G.fill(sq, 135, st * 1.4);
   }
 }
 
-function _mgTetris(G, S, gt, seed, s, o) {
+function _mgCargo(G, S, gt, seed, s, o) {
   let { x, y, w, h } = S;
+  let K = _MG_CARGO.length;
   let tall = h > w * 1.55;
   let q = tall ? Math.min(h * 0.66 / 20.6, w * 0.86 / 10.8) : Math.min((h * 0.94) / 20.6, w * 0.6 / 10.8);
-  let wellW = 10 * q, wt = Math.max(2, q * 0.45);
+  let wellW = 10 * q, wt = Math.max(2, q * 0.45, G.ins + penPx() * PEN_CLEAR);
   let panelW = Math.min(q * 7, w - wellW - wt * 2 - q * 1.5);
   let hasPanel = !tall && o.hud && panelW >= q * 4.5;
   let groupW = wellW + wt * 2 + (hasPanel ? q * 1.1 + panelW : 0);
   let wx = x + (w - groupW) / 2 + wt;
   let wy = tall ? y + q * 0.6 : y + (h - 20 * q - wt) / 2;
-  let drawMini = (t, cx, cy, m) => { let cl = _mgTetroRot(t, 0), mw = (Math.max(...cl.map(c => c[0])) + 1) * m, mh = (Math.max(...cl.map(c => c[1])) + 1) * m; for (let [a, b] of cl) _mgTetroBlock(G, cx - mw / 2 + a * m, cy - mh / 2 + b * m, m, t, o.bold, false); };
-  // Stack: garbage rows, then pieces placed by a greedy AI from a 7-bag
-  let grid = new Array(200).fill(0);
+  // A container drawn whole: one outline round its cells, each cell marked
+  let drawBox = (cl, ox, oy, m, t) => {
+    let set = new Set(cl.map(([a, b]) => b * 64 + a));
+    kitWeight(o.bold ? 'primary' : 'secondary');
+    _mgOutline(G, cl, ox, oy, m, Math.min(G.ins, m * 0.2), (c, r, c2, r2) => c2 >= 0 && r2 >= 0 && c2 < 64 && set.has(r2 * 64 + c2));
+    for (let [a, b] of cl) _mgCrateMark(G, ox + a * m, oy + b * m, m, t, o.bold);
+  };
+  let drawMini = (t, cx, cy, m) => { let cl = _mgCargoRot(t, 0), mw = (Math.max(...cl.map(c => c[0])) + 1) * m, mh = (Math.max(...cl.map(c => c[1])) + 1) * m; drawBox(cl, cx - mw / 2, cy - mh / 2, m, t); };
+  // Hold: scrap decks, then containers placed by a greedy loader from a bag.
+  // The grid holds each container's serial, kind[] its type (K = scrap).
+  let grid = new Array(200).fill(0), kind = [K], serial = 0;
   let garb = 1 + Math.floor(_mmHash(seed, 1) * 5);
-  for (let r = 20 - garb; r < 20; r++) { let hole = Math.floor(_mmHash(seed + 2, r) * 10); for (let c = 0; c < 10; c++) if (c !== hole) grid[r * 10 + c] = 8; }
+  for (let r = 20 - garb; r < 20; r++) { let hole = Math.floor(_mmHash(seed + 2, r) * 10); serial++; kind[serial] = K; for (let c = 0; c < 10; c++) if (c !== hole) grid[r * 10 + c] = serial; }
   let bag = [], bi = 0;
   let nextPiece = () => {
-    if (!bag.length) { bag = [0, 1, 2, 3, 4, 5, 6]; for (let i = 6; i > 0; i--) { let j = Math.floor(_mmHash(seed + 3, bi * 7 + i) * (i + 1)); [bag[i], bag[j]] = [bag[j], bag[i]]; } bi++; }
+    if (!bag.length) { bag = Array.from({ length: K }, (_, i) => i); for (let i = K - 1; i > 0; i--) { let j = Math.floor(_mmHash(seed + 3, bi * 7 + i) * (i + 1)); [bag[i], bag[j]] = [bag[j], bag[i]]; } bi++; }
     return bag.shift();
   };
-  let N = 24 + Math.floor(_mmHash(seed, 4) * 22), stats = [0, 0, 0, 0, 0, 0, 0], linesTotal = 0;
+  let N = 20 + Math.floor(_mmHash(seed, 4) * 18), stats = new Array(K).fill(0), linesTotal = 0;
   for (let n = 0; n < N; n++) {
-    let t = nextPiece(), b = _mgTetrisBest(grid, t);
+    let t = nextPiece(), b = _mgCargoBest(grid, t);
     if (!b) break;
     stats[t]++;
-    b.cells.forEach(([cx, cy]) => { grid[(b.row + cy) * 10 + b.col + cx] = t + 1; });
-    let cl = _mgTetrisClear(grid); grid = cl.g; linesTotal += cl.cleared.length;
+    serial++; kind[serial] = t;
+    b.cells.forEach(([cx, cy]) => { grid[(b.row + cy) * 10 + b.col + cx] = serial; });
+    let cl = _mgCargoClear(grid); grid = cl.g; linesTotal += cl.cleared.length;
     let hmax = 0; for (let r = 0; r < 20; r++) if (grid.slice(r * 10, r * 10 + 10).some(v => v)) { hmax = 20 - r; break; }
     if (hmax > 12) break;
   }
-  let cur = nextPiece(), queue = [nextPiece(), nextPiece(), nextPiece()], hold = Math.floor(_mmHash(seed, 5) * 7);
-  let best = _mgTetrisBest(grid, cur);
-  // Fall schedule: rotate, slide, drop row by row, lock at 86%, clear to 100%
+  let cur = nextPiece(), queue = [nextPiece(), nextPiece(), nextPiece()], hold = Math.floor(_mmHash(seed, 5) * K);
+  let best = _mgCargoBest(grid, cur);
+  let curSerial = ++serial; kind[curSerial] = cur;
+  // Lowering schedule: turn, traverse, lower row by row, land at 86%, weld to 100%
   let tf = Math.min(1, gt / 0.86), locked = gt >= 0.86;
-  let rot = best ? (tf > 0.05 ? best.rot : 0) : 0, cells = _mgTetroRot(cur, rot);
+  let rot = best ? (tf > 0.05 ? best.rot : 0) : 0, cells = _mgCargoRot(cur, rot);
   let col = 3;
   if (best) { let moves = best.col - 3, n = Math.abs(moves), done = Math.min(n, Math.floor(Math.max(0, tf - 0.06) / 0.34 * (n + 0.999))); col = 3 + Math.sign(moves) * done; }
   let land = best ? best.row : 0;
   let row = best ? Math.min(land, Math.floor(tf * (land + 1)) - 1) : 0;
   let shown = grid.slice(), clearing = [];
   if (best && locked) {
-    best.cells.forEach(([cx, cy]) => { shown[(best.row + cy) * 10 + best.col + cx] = cur + 1; });
+    best.cells.forEach(([cx, cy]) => { shown[(best.row + cy) * 10 + best.col + cx] = curSerial; });
     for (let r = 0; r < 20; r++) if (shown.slice(r * 10, r * 10 + 10).every(v => v)) clearing.push(r);
   }
-  // Well: brick walls
+  // Bay: one bulkhead outline, a rivet a deck, the floor plated, the crane rail above.
+  // Its inner faces stand G.ins off the cells, so containers keep 1.5 pens from them
+  let B = wy + 20 * q, railY = wy - Math.max(q * 0.3, penPx() * PEN_CLEAR), e = G.ins;
   kitWeight(o.bold ? 'primary' : 'secondary');
-  G.rect(wx - wt, wy, wt, 20 * q + wt); G.rect(wx + wellW, wy, wt, 20 * q + wt); G.rect(wx, wy + 20 * q, wellW, wt);
+  G.poly([[wx - wt, wy], [wx - wt, B + wt], [wx + wellW + wt, B + wt], [wx + wellW + wt, wy], [wx + wellW + e, wy], [wx + wellW + e, B + e], [wx - e, B + e], [wx - e, wy]], true);
+  G.line(wx - wt, railY, wx + wellW + wt, railY);
   kitWeight('fine');
-  for (let r = 0; r < 20; r++) { G.line(wx - wt, wy + r * q, wx, wy + r * q); G.line(wx + wellW, wy + r * q, wx + wellW + wt, wy + r * q); }
-  G.hrect(wx, wy + 20 * q, wellW, wt, 1.8);
-  if (o.dots) for (let r = 1; r < 20; r++) for (let c = 1; c < 10; c++) if (!shown[r * 10 + c] && !shown[(r - 1) * 10 + c]) G.pt(wx + c * q, wy + r * q);
-  // Stack
+  for (let r = 0; r < 20; r++) { G.pt(wx - wt / 2, wy + (r + 0.5) * q); G.pt(wx + wellW + wt / 2, wy + (r + 0.5) * q); }
+  G.line(wx - wt / 2, railY, wx - wt / 2, wy); G.line(wx + wellW + wt / 2, railY, wx + wellW + wt / 2, wy);
+  G.hrect(wx - e, B + e, wellW + e * 2, wt - e, 1.8);
+  if (o.dots) for (let r = 1; r < 20; r++) for (let c = 1; c < 10; c++) if (!shown[r * 10 + c] && !shown[(r - 1) * 10 + c] && !shown[r * 10 + c - 1] && !shown[(r - 1) * 10 + c - 1]) G.pt(wx + c * q, wy + r * q);
+  // Hold
   let clearF = locked ? (gt - 0.86) / 0.14 : 0;
-  for (let r = 0; r < 20; r++) for (let c = 0; c < 10; c++) {
-    let v = shown[r * 10 + c];
-    if (!v) continue;
-    if (clearing.includes(r) && Math.abs(c - 4.5) < clearF * 5.5) continue;
-    _mgTetroBlock(G, wx + c * q, wy + r * q, q, v - 1, o.bold, false);
+  let gone = (c, r) => clearing.includes(r) && Math.abs(c - 4.5) < clearF * 5.5;
+  let on = [];
+  for (let r = 0; r < 20; r++) for (let c = 0; c < 10; c++) if (shown[r * 10 + c] && !gone(c, r)) on.push([c, r]);
+  kitWeight(o.bold ? 'primary' : 'secondary');
+  _mgOutline(G, on, wx, wy, q, G.ins, (c, r, c2, r2) => c2 >= 0 && c2 < 10 && r2 >= 0 && r2 < 20 && !gone(c2, r2) && shown[r2 * 10 + c2] === shown[r * 10 + c]);
+  for (let [c, r] of on) _mgCrateMark(G, wx + c * q, wy + r * q, q, kind[shown[r * 10 + c]], o.bold);
+  // Welds along the decks being cleared, from the middle out
+  for (let r of clearing) {
+    let x0 = wx + Math.max(0, 5 - clearF * 5.5) * q, x1 = wx + Math.min(10, 5 + clearF * 5.5) * q, zz = [];
+    for (let xx = x0, j = 0; xx <= x1 + 1e-6; xx += q * 0.5, j++) zz.push([xx, wy + (r + 0.5) * q + (j % 2 ? q * 0.15 : -q * 0.15)]);
+    kitWeight('secondary'); G.poly(zz, false);
+    if (_compBus) _compBus.gameEvent = 'score';
   }
-  for (let r of clearing) { kitWeight('secondary'); G.dashed(wx, wy + (r + 0.5) * q, wx + wellW, wy + (r + 0.5) * q, q * 0.3, q * 0.2); if (_compBus) _compBus.gameEvent = 'score'; }
-  // Falling piece + ghost
+  // The container on the crane, its landing bracketed below it
+  let pw = Math.max(...cells.map(c => c[0])) + 1, tx = wx + (col + pw / 2) * q;
   if (best && !locked) {
-    let ghostRow = _mgTetrisDrop(grid, cells, col);
-    if (ghostRow > row + 1) for (let [cx, cy] of cells) _mgTetroBlock(G, wx + (col + cx) * q, wy + (ghostRow + cy) * q, q, cur, false, true);
-    for (let [cx, cy] of cells) if (row + cy >= 0) _mgTetroBlock(G, wx + (col + cx) * q, wy + (row + cy) * q, q, cur, o.bold, false);
-    if (o.trails) { kitWeight('fine'); let cx0 = wx + (col + 1) * q; for (let yy = wy + Math.max(0, row) * q; yy > wy; yy -= q * 0.5) G.pt(cx0, yy); }
+    let ghostRow = _mgCargoDrop(grid, cells, col);
+    if (ghostRow > row + 1) {
+      let ph = Math.max(...cells.map(c => c[1])) + 1, X0 = wx + col * q, Y0 = wy + ghostRow * q, X1 = X0 + pw * q, Y1 = Y0 + ph * q, a = q * 0.35;
+      kitWeight('fine');
+      for (let [cx, cy, sx, sy] of [[X0, Y0, 1, 1], [X1, Y0, -1, 1], [X1, Y1, -1, -1], [X0, Y1, 1, -1]]) G.poly([[cx, cy + sy * a], [cx, cy], [cx + sx * a, cy]], false);
+    }
+    let vis = cells.filter(([cx, cy]) => row + cy >= 0).map(([cx, cy]) => [col + cx, row + cy]);
+    if (vis.length) drawBox(vis.map(([c, r]) => [c, r]), wx, wy, q, cur);
+    let topY = wy + row * q, spY = topY - q * 0.3;
+    if (spY > railY + q * 0.2) {
+      let tops = cells.filter(c => c[1] === 0).map(c => c[0]);
+      let sl = wx + (col + 0.15) * q, sr = wx + (col + pw - 0.15) * q;
+      kitWeight('secondary');
+      G.line(tx, railY, tx, spY);
+      G.line(sl, spY, sr, spY);
+      kitWeight('fine');
+      G.line(sl, spY, wx + (col + Math.min(...tops) + 0.5) * q, topY + G.ins);
+      G.line(sr, spY, wx + (col + Math.max(...tops) + 0.5) * q, topY + G.ins);
+    }
   }
+  // The trolley: two wheels on the rail
+  kitWeight('secondary');
+  for (let sg of [-1, 1]) G.circle(tx + sg * q * 0.28, railY - q * 0.13, q * 0.26);
   // Panel
   if (hasPanel) {
-    let px = wx + wellW + wt + q * 1.1, pw = Math.min(panelW, x + w - px - q * 0.3), sz = Math.max(getMinTextSizePx(), Math.min(q * 0.75, 12));
+    let px = wx + wellW + wt + q * 1.1, pw2 = Math.min(panelW, x + w - px - q * 0.3), sz = Math.max(getMinTextSizePx(), Math.min(q * 0.75, 12));
     let mini = q * 0.55, yy = wy;
-    let box = (label, hgt) => { kitWeight('secondary'); G.rect(px, yy, pw, hgt); kitWeight('fine'); kitText(label, px + sz * 0.4, yy + sz * 1.15, sz); G.line(px, yy + sz * 1.6, px + pw, yy + sz * 1.6); let r = { y: yy + sz * 1.6, h: hgt - sz * 1.6 }; yy += hgt + q * 0.5; return r; };
-    let nb = box('NEXT', sz * 1.6 + mini * 8.6);
-    queue.forEach((t, i) => drawMini(t, px + pw / 2, nb.y + mini * (1.5 + i * 2.8), i ? mini * 0.8 : mini));
-    let hb = box('HOLD', sz * 1.6 + mini * 3.4);
-    drawMini(hold, px + pw / 2, hb.y + hb.h / 2, mini);
-    let rows = [['SCORE', String(_compBus ? _compBus.gameScore : 1200 + Math.floor(_mmHash(seed, 6) * 9000)).padStart(6, '0'), 'bus:gameScore'], ['LEVEL', 'LV.' + (_compBus ? _compBus.gameLevel : 1 + Math.floor(_mmHash(seed, 7) * 9)), 'bus:gameLevel'], ['LINES', String(linesTotal + 10 + Math.floor(_mmHash(seed, 8) * 40)).padStart(3, '0'), 'counter']];
+    let box = (label, hgt) => { kitWeight('secondary'); G.rect(px, yy, pw2, hgt); kitWeight('fine'); kitText(label, px + sz * 0.4, yy + sz * 1.15, sz); G.line(px, yy + sz * 1.6, px + pw2, yy + sz * 1.6); let r = { y: yy + sz * 1.6, h: hgt - sz * 1.6 }; yy += hgt + q * 0.5; return r; };
+    let nb = box('QUEUE', sz * 1.6 + mini * 12.8);
+    queue.forEach((t, i) => drawMini(t, px + pw2 / 2, nb.y + mini * (2.2 + i * 4.2), i ? mini * 0.8 : mini));
+    let hb = box('BAY', sz * 1.6 + mini * 4.6);
+    drawMini(hold, px + pw2 / 2, hb.y + hb.h / 2, mini);
+    let rows = [['TONS', String(_compBus ? _compBus.gameScore : 1200 + Math.floor(_mmHash(seed, 6) * 9000)).padStart(6, '0'), 'bus:gameScore'], ['DECK', 'LV.' + (_compBus ? _compBus.gameLevel : 1 + Math.floor(_mmHash(seed, 7) * 9)), 'bus:gameLevel'], ['SEALED', String(linesTotal + 10 + Math.floor(_mmHash(seed, 8) * 40)).padStart(3, '0'), 'counter']];
     for (let [lab, val, hint] of rows) {
       kitWeight('fine'); kitText(lab, px, yy + sz, sz * 0.85);
-      kitWeight('secondary'); kitText(val, px + pw, yy + sz * 2.2, sz, 'right', (seed + lab.length * 97) >>> 0, hint);
+      kitWeight('secondary'); kitText(val, px + pw2, yy + sz * 2.2, sz, 'right', (seed + lab.length * 97) >>> 0, hint);
       yy += sz * 3;
     }
-    // Piece statistics histogram
+    // The manifest: each kind loaded, as a bar
     let statH = (wy + 20 * q) - yy;
     if (o.second && statH > q * 7) {
-      let rowH = Math.min(statH / 7.5, q * 1.2), sm = rowH * 0.32, mx = Math.max(1, ...stats);
-      kitWeight('fine'); kitText('STATS', px, yy + sz, sz * 0.85);
+      let rowH = Math.min(statH / (K + 0.5), q * 1.2), sm = rowH * 0.2, mx = Math.max(1, ...stats);
+      kitWeight('fine'); kitText('MANIFEST', px, yy + sz, sz * 0.85);
       yy += sz * 1.4;
-      for (let t = 0; t < 7; t++) {
+      for (let t = 0; t < K; t++) {
         let cy = yy + (t + 0.5) * rowH;
-        drawMini(t, px + sm * 2.2, cy, sm);
-        let bl = (pw - sm * 5) * stats[t] / mx;
-        kitWeight('secondary'); G.rect(px + sm * 4.6, cy - rowH * 0.18, Math.max(1, bl), rowH * 0.36);
-        kitWeight('fine'); G.hrect(px + sm * 4.6, cy - rowH * 0.18, Math.max(1, bl), rowH * 0.36, 1.6);
+        drawMini(t, px + sm * 2.6, cy, sm);
+        let bl = (pw2 - sm * 6) * stats[t] / mx;
+        kitWeight('secondary'); G.rect(px + sm * 5.6, cy - rowH * 0.18, Math.max(1, bl), rowH * 0.36);
+        kitWeight('fine'); G.hrect(px + sm * 5.6, cy - rowH * 0.18, Math.max(1, bl), rowH * 0.36, 1.6);
       }
     }
   }
-  // Tall screens: NEXT / HOLD boxes under the well
+  // Tall screens: QUEUE / BAY boxes under the hold
   let by0 = wy + 20 * q + wt + q * 0.8;
   if (tall && o.hud && y + h - by0 > q * 3.5) {
     let sz = Math.max(getMinTextSizePx(), Math.min(q * 0.75, 12));
@@ -17334,61 +17522,144 @@ function _mgTetris(G, S, gt, seed, s, o) {
     for (let k = 0; k < 2; k++) {
       let bx = wx - wt + k * (bw2 + q * 0.6);
       kitWeight('secondary'); G.rect(bx, by0, bw2, bh);
-      kitWeight('fine'); kitText(k ? 'HOLD' : 'NEXT', bx + sz * 0.4, by0 + sz * 1.15, sz);
-      let m = Math.min(q * 0.6, (bh - sz * 2) / 3, bw2 / 5);
+      kitWeight('fine'); kitText(k ? 'BAY' : 'QUEUE', bx + sz * 0.4, by0 + sz * 1.15, sz);
+      let m = Math.min(q * 0.6, (bh - sz * 2) / 4, bw2 / 5);
       if (m > 1.5) drawMini(k ? hold : queue[0], bx + bw2 / 2, by0 + sz * 1.6 + (bh - sz * 1.6) / 2, m);
     }
   }
-  return { telemetry: 'PCS ' + String(N).padStart(3, '0') + ' LN ' + linesTotal };
+  return { telemetry: 'CTR ' + String(N).padStart(3, '0') + ' DECK ' + linesTotal };
 }
 
-// ---- Asteroids: pure vector rocks wrapping the screen, rotating ship ----
+// ---- Asteroids: organic rocks wrapping the screen round a mining ship ----
+// The ship's hull: a low-poly miner (nose, wings, two engine pods, a
+// keel), as (right, forward, up), with its edges.
+const _MG_HULL = (() => {
+  const top = [[0, 0.12, 1], [0.22, 0.14, 0.45], [0.85, 0.05, -0.15], [0.8, 0.05, -0.45], [0.3, 0.1, -0.35], [0.26, 0.12, -0.8], [-0.26, 0.12, -0.8], [-0.3, 0.1, -0.35], [-0.8, 0.05, -0.45], [-0.85, 0.05, -0.15], [-0.22, 0.14, 0.45]];
+  const n = top.length, bot = top.map(([a, b, c]) => [a, -b - 0.05, c]), keel = [[0, 0.32, 0.25], [0, 0.3, -0.55]];
+  const v = top.concat(bot, keel).map(([a, b, c]) => [a, c, b]);
+  const e = [];
+  for (let i = 0; i < n; i++) e.push([i, (i + 1) % n], [n + i, n + (i + 1) % n], [i, n + i]);
+  const k0 = 2 * n, k1 = 2 * n + 1;
+  e.push([k0, 0], [k0, 1], [k0, 10], [k0, k1], [k1, 4], [k1, 7], [k1, 5], [k1, 6]);
+  return { v, e, n };
+})();
+
+// The hull in wireframe at (cx, cy), nose along screen angle `ang`, tipped
+// `tilt` toward the viewer; the nearer half of its edges in `near`. A small
+// hull leaves out its underside, whose edges would crowd the top's (the two
+// rings part by 0.31 x the tilt's sine; edges along that offset part by less).
+function _mgHull(G, cx, cy, scale, ang, tilt, near, far) {
+  let { v, e, n } = _MG_HULL;
+  let fx = Math.cos(ang), fy = Math.sin(ang), ct = Math.cos(tilt), st = Math.sin(tilt), cam = 6;
+  let p = v.map(([r, f, up]) => {
+    let X = fx * f - fy * r, Y = fy * f + fx * r;
+    let z = up * ct + Y * st, k = cam / (cam - z);
+    return [cx + X * scale * k, cy + (Y * ct - up * st) * scale * k, z];
+  });
+  let full = scale * 0.31 * st >= penPx() * PEN_CLEAR * 2.5;
+  let zs = e.map(([a, b]) => (p[a][2] + p[b][2]) / 2), mid = zs.slice().sort((a, b) => a - b)[zs.length >> 1];
+  let under = i => i >= n && i < 2 * n;
+  e.forEach(([a, b], i) => {
+    if (!full && (under(a) || under(b))) return;
+    kitWeight(zs[i] >= mid ? near : far);
+    G.line(p[a][0], p[a][1], p[b][0], p[b][1]);
+  });
+  return p;
+}
+
 function _mgAsteroids(G, S, gt, seed, s, o) {
   let { x, y, w, h } = S, u = o.u;
   let top = y + o.hudH * 0.2;
   let H2 = k => _mmHash(seed + 90, k);
+  let clear = penPx() * PEN_CLEAR;
   // Sparse stars
   if (o.dots) { kitWeight('fine'); for (let i = 0; i < 40; i++) G.pt(x + H2(i) * w, y + H2(i + 100) * h); }
-  // Rocks: integer screens of drift and integer spins per loop
+  // Rocks: integer screens of drift and integer spins per loop. Their shapes
+  // are three harmonics round a circle, pitted when there is room
   let nR = Math.round((4 + H2(200) * 4) * (0.7 + o.dens * 0.22) * (o.bold ? 0.7 : 1));
+  // The ship sits in front: a rock's outline breaks a pen short of it
+  let sx = x + w * (0.45 + H2(1) * 0.1), sy = y + h * (0.5 + H2(2) * 0.1), sz = u * 2.4;
+  let keep = sz * 1.1 + clear;
+  let cutRound = pts => {
+    let runs = [[]], step = Math.max(0.5, clear);
+    pts.concat([pts[0]]).forEach((b, j, all) => {
+      if (!j) return;
+      let a = all[j - 1], n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / step));
+      for (let m = j === 1 ? 0 : 1; m <= n; m++) {
+        let q = [a[0] + (b[0] - a[0]) * m / n, a[1] + (b[1] - a[1]) * m / n];
+        if (Math.hypot(q[0] - sx, q[1] - sy) < keep) { if (runs[runs.length - 1].length) runs.push([]); }
+        else runs[runs.length - 1].push(q);
+      }
+    });
+    return runs;
+  };
+  let tgt = Math.floor(H2(1300) * nR), tgtAt = null;
   for (let i = 0; i < nR; i++) {
     let size = [2.8, 1.7, 1.0][Math.floor(H2(300 + i) * 3)] * u * 1.1;
     let kx = [-1, 0, 1][Math.floor(H2(400 + i) * 3)], ky = [-1, 0, 1][Math.floor(H2(500 + i) * 3)];
     if (!kx && !ky) kx = 1;
     let px = x + _mgFrac(H2(600 + i) + kx * gt) * w, py = y + _mgFrac(H2(700 + i) + ky * gt) * h;
     let rot = H2(800 + i) * TWO_PI + (H2(900 + i) < 0.5 ? -1 : 1) * TWO_PI * gt;
-    let nv = 10 + Math.floor(H2(1000 + i) * 3), poly = [];
-    for (let v = 0; v < nv; v++) { let a = rot + v / nv * TWO_PI, rr = size * (0.72 + 0.32 * _mmHash(seed + 1100 + i, v)); poly.push([Math.cos(a) * rr, Math.sin(a) * rr]); }
+    let f1 = H2(1000 + i) * TWO_PI, f2 = H2(1050 + i) * TWO_PI, f3 = H2(1080 + i) * TWO_PI, poly = [];
+    for (let v = 0; v < 18; v++) { let a = v / 18 * TWO_PI, rr = size * (0.86 + 0.13 * Math.sin(2 * a + f1) + 0.08 * Math.sin(3 * a + f2) + 0.05 * Math.sin(5 * a + f3)); poly.push([Math.cos(a + rot) * rr, Math.sin(a + rot) * rr]); }
+    let pits = [];
+    if (size > u * 1.5) for (let k = 0; k < 1 + Math.floor(H2(1100 + i) * 2.99); k++) {
+      let a = H2(1120 + i * 3 + k) * TWO_PI + rot, d = size * (0.12 + 0.24 * H2(1140 + i * 3 + k)), pr = size * (0.1 + 0.07 * H2(1160 + i * 3 + k));
+      let pit = [Math.cos(a) * d, Math.sin(a) * d, pr];
+      if (size * 0.6 - d - pr < clear || pr < clear) continue;
+      if (pits.some(([qx, qy, qr]) => Math.hypot(qx - pit[0], qy - pit[1]) < qr + pr + clear)) continue;
+      pits.push(pit);
+    }
+    if (i === tgt) tgtAt = [px, py, size];
     for (let dx of [-w, 0, w]) for (let dy of [-h, 0, h]) {
       let cx = px + dx, cy = py + dy;
       if (cx + size < x || cx - size > x + w || cy + size < y || cy - size > y + h) continue;
       let pp = poly.map(p => [cx + p[0], cy + p[1]]);
-      if (o.bold) { kitWeight('fine'); G.fill([pp], 45 + i * 30, 2); }
+      let holes = pits.map(([qx, qy, qr]) => _mgCirc(cx + qx, cy + qy, qr, 12));
+      let near = pp.some(q => Math.hypot(q[0] - sx, q[1] - sy) < keep + size);
+      if (o.bold && !near) { kitWeight('fine'); G.fill([pp, ...holes], 45 + i * 30, 2); }
       kitWeight(o.bold ? 'heavy' : 'primary');
-      G.poly(pp, true);
-      if (!o.bold && size > u * 2) { kitWeight('fine'); G.poly(pp.map(p => [cx + (p[0] - cx) * 0.82, cy + (p[1] - cy) * 0.82]), true); }
+      if (near) for (let run of cutRound(pp)) G.poly(run, false); else G.poly(pp, true);
+      kitWeight('fine');
+      for (let [qx, qy, qr] of pits) {
+        if (Math.hypot(cx + qx - sx, cy + qy - sy) < keep + qr) continue;
+        G.circle(cx + qx, cy + qy, qr * 2);
+        if (qr * 0.35 >= clear) G.poly(_mgCirc(cx + qx, cy + qy, qr * 0.6, 8, rot + 0.4, rot + 2.2), false);
+      }
     }
   }
-  // Ship: oscillating aim, flickering thrust
-  let sx = x + w * (0.45 + H2(1) * 0.1), sy = y + h * (0.5 + H2(2) * 0.1), sz = u * 1.3;
+  // Ship: the miner at the centre, aim swinging, both pods firing in turn
   let aimAt = t => H2(3) * TWO_PI + 1.1 * Math.sin(TWO_PI * (t * 2 + H2(4)));
   let ang = aimAt(gt);
-  let rp = (a, r) => [sx + Math.cos(ang + a) * r, sy + Math.sin(ang + a) * r];
-  let ship = [rp(0, sz), rp(2.5, sz * 0.9), rp(PI, sz * 0.45), rp(-2.5, sz * 0.9)];
-  kitWeight(o.bold ? 'heavy' : 'primary');
-  G.poly(ship, true);
-  if (Math.floor(gt * 40) % 2 === 0) { kitWeight('secondary'); G.poly([rp(2.75, sz * 0.62), rp(PI, sz * (0.95 + 0.25 * _mmHash(seed, Math.floor(gt * 40)))), rp(-2.75, sz * 0.62)], false); }
-  // Bullets fired on a fixed clock, wrapping the screen
-  let nf = 12, life = 0.13, spd = Math.max(w, h) * 3.2;
+  let hull = _mgHull(G, sx, sy, sz, ang, 0.45, o.bold ? 'heavy' : 'primary', 'fine');
+  if (Math.floor(gt * 40) % 2 === 0) {
+    kitWeight('secondary');
+    for (let k of [5, 6]) {
+      let [px, py] = hull[k], L = sz * (0.3 + 0.25 * _mmHash(seed + k, Math.floor(gt * 40) % 40));
+      G.line(px - Math.cos(ang) * sz * 0.1, py - Math.sin(ang) * sz * 0.1, px - Math.cos(ang) * L, py - Math.sin(ang) * L);
+    }
+  }
+  // Its scanner ring, and a bracket on the rock it is working
+  if (o.trails) {
+    kitWeight('fine');
+    for (let k = 0; k < 16; k++) G.poly(_mgCirc(sx, sy, sz * 2.1, 3, k / 16 * TWO_PI, (k + 0.6) / 16 * TWO_PI), false);
+  }
+  if (tgtAt) {
+    let [tx, ty, ts] = tgtAt, a = ts * 1.2, t = ts * 0.35;
+    kitWeight('secondary');
+    for (let [qx, qy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) G.poly([[tx + qx * a, ty + qy * (a - t)], [tx + qx * a, ty + qy * a], [tx + qx * (a - t), ty + qy * a]], false);
+  }
+  // Bolts fired on a fixed clock, wrapping the screen
+  let nf = 12, life = 0.13, spd = Math.max(w, h) * 3.2, bl = Math.max(1.6, u * 0.45);
   kitWeight('secondary');
   for (let i = 0; i < nf; i++) {
     let tfire = i / nf, age = _mgFrac(gt - tfire);
     if (age > life) continue;
-    let a = aimAt(tfire), d = age * spd;
-    let bx = sx + Math.cos(a) * (sz + d), by = sy + Math.sin(a) * (sz + d);
+    let a = aimAt(tfire), d = age * spd, ca = Math.cos(a), sa = Math.sin(a);
+    let bx = sx + ca * (sz * 1.15 + bl + d), by = sy + sa * (sz * 1.15 + bl + d);
     bx = x + _mgFrac((bx - x) / w) * w; by = y + _mgFrac((by - y) / h) * h;
-    G.circle(bx, by, Math.max(1.6, u * 0.22));
-    if (o.trails) { kitWeight('fine'); for (let k = 1; k <= 4; k++) { let d2 = d - k * u * 0.7; if (d2 < 0) break; let tx = sx + Math.cos(a) * (sz + d2), ty = sy + Math.sin(a) * (sz + d2); G.pt(x + _mgFrac((tx - x) / w) * w, y + _mgFrac((ty - y) / h) * h); } kitWeight('secondary'); }
+    G.line(bx - ca * bl, by - sa * bl, bx + ca * bl, by + sa * bl);
+    if (o.trails) { kitWeight('fine'); for (let k = 1; k <= 4; k++) { let d2 = d - k * u * 0.7; if (d2 < 0) break; let tx = sx + ca * (sz * 1.15 + bl + d2), ty = sy + sa * (sz * 1.15 + bl + d2); G.pt(x + _mgFrac((tx - x) / w) * w, y + _mgFrac((ty - y) / h) * h); } kitWeight('secondary'); }
   }
   // Explosion debris: once per loop
   let te = H2(5), ea = _mgFrac(gt - te);
@@ -17398,16 +17669,22 @@ function _mgAsteroids(G, S, gt, seed, s, o) {
     for (let k = 0; k < 10; k++) { let a = _mmHash(seed + 1200, k) * TWO_PI, r = u * (0.5 + 3.5 * f) * (0.6 + 0.6 * _mmHash(seed + 1201, k)); G.line(ex + Math.cos(a) * r, ey + Math.sin(a) * r, ex + Math.cos(a + 0.4) * (r + u * 0.4), ey + Math.sin(a + 0.4) * (r + u * 0.4)); }
     if (_compBus) _compBus.gameEvent = 'hit';
   }
-  // Saucer crossing once per loop
+  // A pirate crossing once per loop, hostile corners round it
   let ua = _mgFrac(gt + H2(8));
   if (ua < 0.45) {
     let ux = x - w * 0.1 + ua / 0.45 * w * 1.2, uy = y + h * (0.22 + H2(9) * 0.15), us = u * 1.2;
+    const RAT = [[1, 0], [0.15, 0.32], [-0.2, 0.78], [-0.55, 0.78], [-0.35, 0.22], [-0.62, 0], [-0.35, -0.22], [-0.55, -0.78], [-0.2, -0.78], [0.15, -0.32]];
     kitWeight('primary');
-    G.poly([[ux - us, uy], [ux - us * 0.45, uy - us * 0.35], [ux + us * 0.45, uy - us * 0.35], [ux + us, uy], [ux + us * 0.45, uy + us * 0.35], [ux - us * 0.45, uy + us * 0.35]], true);
-    G.line(ux - us, uy, ux + us, uy);
-    G.poly([[ux - us * 0.45, uy - us * 0.35], [ux - us * 0.25, uy - us * 0.7], [ux + us * 0.25, uy - us * 0.7], [ux + us * 0.45, uy - us * 0.35]], false);
+    G.poly(RAT.map(([a, b]) => [ux + a * us, uy + b * us]), true);
+    kitWeight('fine');
+    G.line(ux + us * 0.45, uy, ux - us * 0.2, uy);
+    let d = us * 1.4, V = [[ux + d, uy], [ux, uy + d], [ux - d, uy], [ux, uy - d]];
+    V.forEach((v, k) => {
+      let a = V[(k + 3) % 4], b = V[(k + 1) % 4];
+      G.poly([[v[0] + (a[0] - v[0]) * 0.25, v[1] + (a[1] - v[1]) * 0.25], v, [v[0] + (b[0] - v[0]) * 0.25, v[1] + (b[1] - v[1]) * 0.25]], false);
+    });
   }
-  // Vector-digit score and reserve ships
+  // Vector-digit score and reserve hulls
   if (o.hud) {
     let dh = Math.max(6, Math.min(h * 0.06, u * 1.5));
     let sc = String(_compBus ? _compBus.gameScore : Math.floor(_mmHash(seed, 10) * 90000)).padStart(5, '0').slice(-5);
@@ -17416,107 +17693,156 @@ function _mgAsteroids(G, S, gt, seed, s, o) {
     kitWeight('secondary');
     _mgDigits(G, String(10000 + Math.floor(_mmHash(seed, 11) * 80000)), x + w / 2, top + dh * 0.4, dh * 0.55, 'center', false);
     let lives = _compBus ? _compBus.gameLives : 3;
-    for (let k = 0; k < Math.max(1, lives); k++) {
-      let lx = x + w * 0.08 + k * dh * 0.75 + dh * 0.25, ly = top + dh * 2.2;
-      G.poly([[lx, ly - dh * 0.4], [lx + dh * 0.25, ly + dh * 0.35], [lx, ly + dh * 0.2], [lx - dh * 0.25, ly + dh * 0.35]], true);
-    }
+    for (let k = 0; k < Math.max(1, lives); k++) _mgHull(G, x + w * 0.08 + k * dh * 0.95 + dh * 0.4, top + dh * 2.2, dh * 0.42, -HALF_PI, 0, 'secondary', 'secondary');
   }
   return { telemetry: 'HDG ' + String(Math.round((((ang * 180 / PI) % 360) + 360) % 360)).padStart(3, '0') + ' ROCKS ' + nR };
 }
 
-// ---- Invaders: marching formation, eroded bunkers, cannon picking a target ----
-const _MG_ALIENS = [
-  [['..#####..', '.#######.', '##..#..##', '#########', '.#.#.#.#.', '#.......#', '.#.....#.'], ['..#####..', '.#######.', '##..#..##', '#########', '.#.#.#.#.', '..#...#..', '.#.....#.']],
-  [['#.........#', '.#..###..#.', '..#######..', '.##.###.##.', '###########', '..#.#.#.#..', '.#.......#.', '#.........#'], ['...........', '#...###...#', '#.#######.#', '.##.###.##.', '###########', '..#.#.#.#..', '..#.....#..', '.#.......#.']],
-  [['....####....', '..########..', '.##########.', '###..##..###', '############', '...##..##...', '..##.##.##..', '##........##'], ['....####....', '..########..', '.##########.', '###..##..###', '############', '...##..##...', '..##....##..', '...##..##...']]
-];
-const _MG_CANNON = ['......#......', '.....###.....', '.###########.', '#############', '#############'];
+// ---- Swarm: a drone formation over a curved horizon, a turret under shield domes ----
+// One drone, nose down: 0 a swept dart, 1 a hexagon on legs round an eye,
+// 2 an orb in a ring trailing tendrils. frame flexes wings, legs and tendrils.
+// angle: the hatch, kept off the body's edges (upright for the dart and hexagon)
+function _mgDrone(G, cx, cy, sz, type, frame, bold, angle) {
+  let clear = penPx() * PEN_CLEAR;
+  let P = pts => pts.map(([a, b]) => [cx + a * sz, cy + b * sz]);
+  let mir = half => half.concat(half.slice().reverse().filter(([a]) => a !== 0).map(([a, b]) => [-a, b]));
+  let st = Math.max(1.5, sz * 0.3), fill = sz > 3;
+  let line = kitWeight.bind(null, bold ? 'primary' : 'secondary');
+  if (type === 0) {
+    let body = P(mir([[0, -0.35], [0.3, -0.55], [1.0, -0.45 + frame * 0.35], [0.45, 0.05], [0, 0.75]]));
+    if (fill) { kitWeight('fine'); G.fill([body], angle, st); }
+    line(); G.poly(body, true);
+  } else if (type === 1) {
+    let hex = P([0, 1, 2, 3, 4, 5].map(k => [Math.cos(k * PI / 3) * 0.55, Math.sin(k * PI / 3) * 0.55]));
+    let eye = sz * 0.33 >= clear ? P([[-0.15, -0.15], [0.15, -0.15], [0.15, 0.15], [-0.15, 0.15]]) : null;
+    if (fill) { kitWeight('fine'); G.fill(eye ? [hex, eye] : [hex], angle, st); }
+    line(); G.poly(hex, true);
+    if (eye) G.poly(eye, true);
+    for (let sg of [-1, 1]) {
+      G.poly(P([[sg * 0.55, 0], [sg * 0.85, 0.2 - frame * 0.25], [sg * 1.0, 0.45 - frame * 0.25]]), false);
+      G.poly(P([[sg * 0.275, 0.476], [sg * 0.45, 0.8], [sg * (0.4 + frame * 0.15), 1.0]]), false);
+    }
+  } else {
+    let r = 0.42, orb = P(_mgCirc(0, 0, r, 16));
+    if (fill) { kitWeight('fine'); G.fill([orb], angle, st); }
+    line(); G.poly(orb, false);
+    // the ring, tipped one way then the other, cut where the orb hides it
+    let tilt = frame ? 0.18 : -0.18, run = [];
+    for (let j = 0; j <= 28; j++) {
+      let t = TWO_PI * j / 28, ex = Math.cos(t) * 0.95, ey = Math.sin(t) * 0.25;
+      let qx = ex * Math.cos(tilt) - ey * Math.sin(tilt), qy = ex * Math.sin(tilt) + ey * Math.cos(tilt);
+      if (Math.hypot(qx, qy) < r + clear / sz) { G.poly(P(run), false); run = []; } else run.push([qx, qy]);
+    }
+    G.poly(P(run), false);
+    kitWeight('fine');
+    G.line(...P([[0, r]])[0], ...P([[0, 0.8 + frame * 0.15]])[0]);
+    for (let sg of [-1, 1]) G.line(...P([[sg * 0.25, 0.34]])[0], ...P([[sg * 0.5, 0.75 - frame * 0.12]])[0]);
+  }
+}
 
-function _mgInvaders(G, S, gt, seed, s, o) {
+// The turret: a hull on two legs, a dome and a barrel, tilted with the ground
+function _mgTurret(G, bx, by, r, tilt, weight) {
+  let c = Math.cos(tilt), s = Math.sin(tilt);
+  let P = (a, b) => [bx + (a * c - b * s) * r, by + (a * s + b * c) * r];
+  kitWeight(weight);
+  G.poly([P(-1.1, -0.35), P(1.1, -0.35), P(0.75, -0.75), P(-0.75, -0.75)], true);
+  G.poly(_mgCirc(0, -0.75, 0.6, 10, PI, TWO_PI).map(([a, b]) => P(a, b)), false);
+  G.line(...P(0, -1.35), ...P(0, -2.0));
+  for (let sg of [-1, 1]) G.line(...P(sg * 0.8, -0.35), ...P(sg * 1.05, -0.08));
+}
+
+function _mgSwarm(G, S, gt, seed, s, o) {
   let { x, y, w, h } = S, u = o.u;
   let top = y + o.hudH, bot = y + h - o.footH;
+  let clear = penPx() * PEN_CLEAR;
   let cols = Math.max(5, Math.min(11, Math.round(w / (u * 3)))), rowsN = s < 0.3 ? 5 : 4;
-  let cellW = Math.min(w * 0.72 / cols, (bot - top) * 0.5 / rowsN * 1.15), cellH = cellW * 0.82;
-  let px = cellW / 14;
-  let amp = w - cols * cellW - u;
+  let cellW = Math.min(w * 0.72 / (cols + 0.5), (bot - top) * 0.5 / rowsN * 1.15), cellH = cellW * 0.82;
+  let sz = cellW * 0.34;
+  let amp = w - (cols + 0.5) * cellW - u;
   let steps = 18, stepI = Math.floor(gt * steps * 2);
-  let march = Math.round(_mgTri(gt) * steps) / steps;
-  let fx0 = x + u * 0.5 + march * amp, fy0 = top + cellH * 1.3;
+  let fy0 = top + cellH * 1.3;
   let frame = stepI % 2;
-  let alienPos = (c, r, t) => { let m = Math.round(_mgTri(t) * steps) / steps; return [x + u * 0.5 + m * amp + (c + 0.5) * cellW, fy0 + (r + 0.5) * cellH]; };
+  // Odd rows sit half a cell over; every drone bobs on its own phase
+  let alienPos = (c, r, t) => { let m = Math.round(_mgTri(t) * steps) / steps; return [x + u * 0.5 + m * amp + (c + 0.5 + (r % 2) * 0.5) * cellW, fy0 + (r + 0.5) * cellH + Math.sin(TWO_PI * (t * 4 + c * 0.13)) * cellH * 0.08]; };
   // Target and shot timing
   let tc = Math.floor(_mmHash(seed, 1) * cols), tr = rowsN - 1, th = 0.3 + _mmHash(seed, 2) * 0.4;
   let cannonY = bot - u * 2.2;
+  // The horizon: an arc of the planet, lowest at the screen's edges
+  let hzY = cannonY + u * 1.2, Rp = w * 1.4, hxC = x + w / 2, hcy = hzY + Rp;
+  let horizon = xx => hcy - Math.sqrt(Math.max(0, Rp * Rp - (xx - hxC) * (xx - hxC)));
   let travel = 0.07, tfire = th - travel;
   let tgtX = alienPos(tc, tr, th)[0];
-  // Cannon waypoints (periodic, smooth)
+  // Turret waypoints (periodic, smooth)
   let wps = [[0, 0.3], [tfire - 0.18, 0.15 + _mmHash(seed, 3) * 0.7], [tfire, (tgtX - x) / w], [tfire + 0.2, 0.2 + _mmHash(seed, 4) * 0.6], [1, 0.3]];
   let cxAt = t => { for (let i = 0; i + 1 < wps.length; i++) if (t >= wps[i][0] && t <= wps[i + 1][0]) return x + w * (wps[i][1] + (wps[i + 1][1] - wps[i][1]) * _mgSmooth((t - wps[i][0]) / Math.max(1e-6, wps[i + 1][0] - wps[i][0]))); return x + w * 0.3; };
+  let tu = u * 0.9, muzzle = xx => horizon(xx) - tu * 2.0;
   // Formation
   for (let r = 0; r < rowsN; r++) for (let c = 0; c < cols; c++) {
     if (_mmHash(seed + 5, r * 31 + c) < 0.13 && !(r === tr && c === tc)) continue;
-    let [ax, ay] = [fx0 + (c + 0.5) * cellW, fy0 + (r + 0.5) * cellH];
+    let [ax, ay] = alienPos(c, r, gt);
     if (r === tr && c === tc && gt >= th && gt < 0.97) {
-      if (gt < th + 0.045) { kitWeight('secondary'); for (let k = 0; k < 8; k++) { let a = k / 8 * TWO_PI; G.line(ax + Math.cos(a) * cellW * 0.12, ay + Math.sin(a) * cellW * 0.12, ax + Math.cos(a) * cellW * 0.38, ay + Math.sin(a) * cellW * 0.38); } if (_compBus) _compBus.gameEvent = 'score'; }
+      if (gt < th + 0.045) { kitWeight('secondary'); for (let k = 0; k < 6; k++) { let a = k / 6 * TWO_PI + 0.3; G.line(ax + Math.cos(a) * cellW * 0.12, ay + Math.sin(a) * cellW * 0.12, ax + Math.cos(a) * cellW * 0.38, ay + Math.sin(a) * cellW * 0.38); } if (_compBus) _compBus.gameEvent = 'score'; }
       continue;
     }
-    let type = r === 0 ? 0 : r < 3 ? 1 : 2;
-    let spr = _MG_ALIENS[type][frame], sw = spr[0].length;
-    kitWeight(o.bold ? 'primary' : 'secondary');
-    _mgSprite(G, spr, ax - sw * px / 2, ay - spr.length * px / 2, px, false);
+    let type = r === 0 ? 2 : r < 3 ? 1 : 0;
+    _mgDrone(G, ax, ay, sz, type, (frame + c) % 2, o.bold, [90, 90, 45][type]);
   }
-  // Bunkers with erosion
-  let nb = w > u * 20 ? 4 : 3, bpx = Math.max(1.2, px * 0.9), bw = 20, bh = 14;
+  // Shield domes: an emitter and a broken arc (doubled when the pen leaves room)
+  let nb = w > u * 20 ? 4 : 3, rs = Math.min(u * 2.4, w / nb * 0.32);
   for (let b = 0; b < nb; b++) {
-    let bx = x + w * (b + 0.5) / nb - bw * bpx / 2, by = cannonY - u * 1.5 - bh * bpx;
-    let rows = [];
-    for (let r = 0; r < bh; r++) {
-      let line = '';
-      for (let c = 0; c < bw; c++) {
-        let inArch = r > bh * 0.6 && c > bw * 0.3 && c < bw * 0.7;
-        let corner = r < 4 && (c < 4 - r || c > bw - 5 + r);
-        let erode = _mmHash(seed + 7 + b, r * 41 + c) < (r < 4 ? 0.28 : 0.08);
-        line += inArch || corner || erode ? '.' : '#';
+    let bx = x + w * (b + 0.5) / nb, by = horizon(bx) - u * 3.2, e = Math.max(1.5, u * 0.3);
+    kitWeight('secondary');
+    G.poly([[bx, by - e], [bx + e, by], [bx, by + e], [bx - e, by]], true);
+    for (let [rr, wt, key] of [[rs, o.bold ? 'primary' : 'secondary', 0], [rs * 0.78, 'fine', 1]]) {
+      if (key && rs * 0.22 < clear) continue;
+      kitWeight(wt);
+      let ns = 12, a0 = PI + 0.25, a1 = TWO_PI - 0.25;
+      for (let k = 0; k < ns; k++) {
+        if (_mmHash(seed + 7 + b * 2 + key, k) < (key ? 0.3 : 0.18)) continue;
+        let aa = a0 + (a1 - a0) * k / ns, ab = a0 + (a1 - a0) * (k + 0.82) / ns;
+        G.poly(_mgCirc(bx, by, rr, 3, aa, ab), false);
       }
-      rows.push(line);
     }
-    kitWeight('fine');
-    _mgSprite(G, rows, bx, by, bpx, false);
   }
-  // Player shot
+  // Turret shot: a bolt with a chevron head
   let sa = gt - tfire;
   if (sa >= 0 && sa < travel) {
-    let bx = cxAt(tfire), by = cannonY - (cannonY - alienPos(tc, tr, th)[1]) * sa / travel;
+    let bx = cxAt(tfire), y0 = muzzle(bx), by = y0 - (y0 - alienPos(tc, tr, th)[1]) * sa / travel;
     kitWeight('primary'); G.line(bx, by, bx, by + u * 0.8);
-    if (o.trails) { kitWeight('fine'); for (let yy = by + u * 1.3; yy < cannonY; yy += u * 0.6) G.pt(bx, yy); }
+    G.poly([[bx - u * 0.18, by + u * 0.25], [bx, by], [bx + u * 0.18, by + u * 0.25]], false);
+    if (o.trails) { kitWeight('fine'); for (let yy = by + u * 1.3; yy < y0; yy += u * 0.6) G.pt(bx, yy); }
   }
-  // Alien bombs (zigzag)
+  // Plasma drops from the bottom row
   kitWeight('secondary');
   for (let k = 0; k < 3; k++) {
     let bc = Math.floor(_mmHash(seed + 9, k) * cols), ph = _mgFrac(gt * 2 + _mmHash(seed + 10, k));
-    let bx = fx0 + (bc + 0.5) * cellW, y0b = fy0 + rowsN * cellH, by = y0b + ph * (cannonY - y0b);
-    let zz = []; for (let i = 0; i <= 4; i++) zz.push([bx + (i % 2 ? 1 : -1) * u * 0.18 * (Math.floor(gt * 60) % 2 ? 1 : -1), by + i * u * 0.22]);
-    G.poly(zz, false);
+    let [bx, y0b] = alienPos(bc, rowsN - 1, gt), r = Math.max(1.2, u * 0.18);
+    let by = y0b + sz + ph * (horizon(bx) - r - y0b - sz);
+    G.poly([[bx, by - r * 1.6], [bx + r, by], [bx, by + r], [bx - r, by]], true);
+    if (o.trails) { kitWeight('fine'); G.pt(bx, by - r * 2.8); G.pt(bx, by - r * 4.2); kitWeight('secondary'); }
   }
-  // Cannon, ground line
-  let cx = cxAt(gt), cpx = Math.max(1.2, px * 1.5);
+  // Turret on the horizon, and the horizon itself
+  let cx = cxAt(gt), gy0 = horizon(cx);
+  _mgTurret(G, cx, gy0, tu, Math.atan2(cx - hxC, hcy - gy0), o.bold ? 'primary' : 'secondary');
   kitWeight(o.bold ? 'primary' : 'secondary');
-  _mgSprite(G, _MG_CANNON, cx - 6.5 * cpx, cannonY - 2 * cpx, cpx, false);
-  G.line(x, cannonY + 4 * cpx, x + w, cannonY + 4 * cpx);
-  // Mystery ship
+  // (it stops where it would dip into the footer)
+  let hp = []; for (let k = 0; k <= 32; k++) { let xx = x + w * k / 32; hp.push([xx, horizon(xx)]); }
+  G.poly(hp.filter(p => p[1] <= bot), false);
+  if (o.dots) { kitWeight('fine'); for (let k = 0; k < 32; k += 2) if (hp[k + 1][1] + u * 0.6 <= bot && hp[k][1] + u * 0.6 <= bot) G.line(hp[k][0], hp[k][1] + u * 0.6, hp[k + 1][0], hp[k + 1][1] + u * 0.6); }
+  // A carrier crossing once a loop, its beam down partway over
   let ua = _mgFrac(gt + _mmHash(seed, 11));
   if (ua < 0.35) {
-    let ux = x + w * 1.05 - ua / 0.35 * w * 1.1, uy = top + cellH * 0.45, us = cellW * 0.42;
+    let ux = x + w * 1.05 - ua / 0.35 * w * 1.1, uy = top + cellH * 0.45, us = cellW * 0.5;
     kitWeight('secondary');
-    G.poly([..._mgCirc(ux, uy, us, 12, PI, TWO_PI), [ux + us * 1.3, uy + us * 0.35], [ux - us * 1.3, uy + us * 0.35], [ux - us, uy]], false);
+    G.poly([[ux - us * 1.6, uy], [ux - us * 1.1, uy - us * 0.4], [ux + us * 1.1, uy - us * 0.4], [ux + us * 1.6, uy], [ux + us * 1.1, uy + us * 0.3], [ux - us * 1.1, uy + us * 0.3]], true);
     kitWeight('fine');
-    for (let k = -1; k <= 1; k++) G.pt(ux + k * us * 0.6, uy + us * 0.15);
+    for (let k = -2; k <= 2; k++) G.pt(ux + k * us * 0.45, uy - us * 0.05);
+    if (ua > 0.12 && ua < 0.22) for (let sg of [-1, 1]) G.dashed(ux + sg * us * 0.4, uy + us * 0.3, ux + sg * us * 1.0, uy + us * 2.6, us * 0.2, us * 0.15);
   }
-  // Footer: reserve cannons
+  // Footer: reserve turrets
   if (o.footH > 0) {
-    let lp = Math.max(1, o.footH * 0.09);
-    kitWeight('secondary');
-    for (let k = 0; k < 2; k++) _mgSprite(G, _MG_CANNON, x + u + k * 15 * lp, y + h - o.footH / 2 - 2.5 * lp, lp, false);
+    let lr = Math.max(1.5, o.footH * 0.18);
+    for (let k = 0; k < 2; k++) _mgTurret(G, x + u + lr * 1.4 + k * lr * 3.2, y + h - o.footH / 2 + lr * 0.9, lr, 0, 'secondary');
   }
   return { telemetry: 'WAVE ' + (1 + Math.floor(_mmHash(seed, 12) * 9)) + ' STEP ' + String(stepI).padStart(2, '0') };
 }
@@ -17559,12 +17885,12 @@ function composeMiniGame(rect, s, prng) {
   if (hud) {
     let items = null;
     if (game === 'breakout') items = [{ label: 'SCORE', value: score, align: 'left', seed: sSeed, hint: 'bus:gameScore' }, { label: 'HI-SCORE', value: String(hiScore).padStart(6, '0'), align: 'center' }, { label: 'BALLS', value: 'x' + (_compBus ? _compBus.gameLives : 3), align: 'right', seed: sSeed + 1, hint: 'bus:gameLives' }];
-    else if (game === 'snake') items = [{ label: 'SCORE', value: score, align: 'left', seed: sSeed, hint: 'bus:gameScore' }, { label: 'HI', value: String(hiScore).padStart(6, '0'), align: 'center' }, { label: 'STAGE', value: 'LV.' + (_compBus ? _compBus.gameLevel : 1), align: 'right', seed: sSeed + 2, hint: 'bus:gameLevel' }];
-    else if (game === 'pacman') items = [{ label: '1UP', value: score, align: 'left', seed: sSeed, hint: 'bus:gameScore' }, { label: 'HIGH SCORE', value: String(hiScore).padStart(6, '0'), align: 'center' }];
-    else if (game === 'platformer') items = [{ label: 'SCORE', value: score, align: 'left', seed: sSeed, hint: 'bus:gameScore' }, { label: 'COINS', value: 'x' + String(credit + 10), align: 'center', dx: -S.w * 0.14, seed: sSeed + 3, hint: 'counter' }, { label: 'WORLD', value: 'LV.' + (_compBus ? _compBus.gameLevel : 1), align: 'center', dx: S.w * 0.14, seed: sSeed + 2, hint: 'bus:gameLevel' }, { label: 'TIME', value: String(300 + versionPatch), align: 'right', seed: sSeed + 4, hint: 'counter' }];
-    else if (game === 'invaders') items = [{ label: 'SCORE<1>', value: score.slice(-4), align: 'left', seed: sSeed, hint: 'bus:gameScore' }, { label: 'HI-SCORE', value: String(hiScore).slice(-4), align: 'center' }, { label: 'SCORE<2>', value: '0000', align: 'right' }];
+    else if (game === 'worm') items = [{ label: 'SCORE', value: score, align: 'left', seed: sSeed, hint: 'bus:gameScore' }, { label: 'HI', value: String(hiScore).padStart(6, '0'), align: 'center' }, { label: 'STAGE', value: 'LV.' + (_compBus ? _compBus.gameLevel : 1), align: 'right', seed: sSeed + 2, hint: 'bus:gameLevel' }];
+    else if (game === 'icebreaker') items = [{ label: 'BITS', value: score, align: 'left', seed: sSeed, hint: 'bus:gameScore' }, { label: 'BEST', value: String(hiScore).padStart(6, '0'), align: 'center' }];
+    else if (game === 'spacewalk') items = [{ label: 'SCORE', value: score, align: 'left', seed: sSeed, hint: 'bus:gameScore' }, { label: 'O2', value: 'x' + String(credit + 10), align: 'center', dx: -S.w * 0.14, seed: sSeed + 3, hint: 'counter' }, { label: 'SECTOR', value: 'LV.' + (_compBus ? _compBus.gameLevel : 1), align: 'center', dx: S.w * 0.14, seed: sSeed + 2, hint: 'bus:gameLevel' }, { label: 'FUEL', value: String(300 + versionPatch), align: 'right', seed: sSeed + 4, hint: 'counter' }];
+    else if (game === 'swarm') items = [{ label: 'SCORE', value: score, align: 'left', seed: sSeed, hint: 'bus:gameScore' }, { label: 'HI', value: String(hiScore).padStart(6, '0'), align: 'center' }, { label: 'WAVE', value: 'W.' + (1 + Math.floor(_mmHash(elemSeed, 12) * 9)), align: 'right' }];
     if (items) hudH = _mgHud(S, items, size);
-    if (game === 'pacman' || game === 'invaders') footH = size * 2.2;
+    if (game === 'icebreaker' || game === 'swarm') footH = size * 2.2;
   }
   let u = Math.max(3, Math.min(S.w, S.h) / 34) * (1 + Math.max(0, s - 0.2) * 1.6);
   let o = { u, dens: kitDensity(S), bold: s >= 0.4, trails: detailActive('connectorLines', s), dots: detailActive('dotMatrixTextures', s),
@@ -17574,12 +17900,12 @@ function composeMiniGame(rect, s, prng) {
   switch (game) {
     case 'pong': info = _mgPong(G, S, gt, elemSeed, s, o); break;
     case 'breakout': info = _mgBreakout(G, S, gt, elemSeed, s, o); break;
-    case 'snake': info = _mgSnake(G, S, gt, elemSeed, s, o); break;
-    case 'pacman': info = _mgPacman(G, S, gt, elemSeed, s, o); break;
-    case 'platformer': info = _mgPlatformer(G, S, gt, elemSeed, s, o); break;
-    case 'tetris': info = _mgTetris(G, S, gt, elemSeed, s, o); break;
+    case 'worm': info = _mgWorm(G, S, gt, elemSeed, s, o); break;
+    case 'icebreaker': info = _mgIcebreaker(G, S, gt, elemSeed, s, o); break;
+    case 'spacewalk': info = _mgSpacewalk(G, S, gt, elemSeed, s, o); break;
+    case 'cargo': info = _mgCargo(G, S, gt, elemSeed, s, o); break;
     case 'asteroids': info = _mgAsteroids(G, S, gt, elemSeed, s, o); break;
-    default: info = _mgInvaders(G, S, gt, elemSeed, s, o);
+    default: info = _mgSwarm(G, S, gt, elemSeed, s, o);
   }
 
   // Cabinet legends on the bottom bezel: credits left, version + telemetry right
@@ -17589,7 +17915,7 @@ function composeMiniGame(rect, s, prng) {
       let ty = bb.y + bb.h / 2 + ts * 0.36;
       kitWeight('fine');
       kitText('CREDIT ' + String(credit).padStart(2, '0'), bb.x + ts, ty, ts, 'left', sSeed + 5, 'counter');
-      let ver = game.toUpperCase() + ' V2.' + versionMinor + '.' + String(versionPatch).padStart(2, '0');
+      let ver = (MG_TITLES[game] || game.toUpperCase()) + ' V2.' + versionMinor + '.' + String(versionPatch).padStart(2, '0');
       kitText(ver, bb.x + bb.w / 2, ty, ts, 'center');
       _mgText(info.telemetry, bb.x + bb.w - ts, ty, ts, 'right', 0, null, detailActive('annotationTexture', s));
     }
@@ -21770,7 +22096,7 @@ function _sanitizeCellOverrides(ov) {
     let clean = {};
     for (let [f, val] of Object.entries(v)) {
       if (f === 'archetype') { if (ARCHETYPE_DEFS[val]) clean.archetype = val; }
-      else if (f === 'variant') { if (typeof val === 'string' && Object.values(VARIANT_DEFS).some(l => l && l.includes(val))) clean.variant = val; }
+      else if (f === 'variant') { if (typeof val === 'string' && MG_RENAMED[val]) val = MG_RENAMED[val]; if (typeof val === 'string' && Object.values(VARIANT_DEFS).some(l => l && l.includes(val))) clean.variant = val; }
       else if (typeof val === 'number' || typeof val === 'boolean' || val === null) clean[f] = val;
     }
     out[k] = clean;
