@@ -351,6 +351,10 @@
     .scale-zones span { transition: color 0.2s, text-shadow 0.2s; }
     .scale-zones span.active { color: #00ff88; text-shadow: 0 0 6px #00ff8855; }
     .scale-value { font-family: monospace; font-size: 0.82em; color: #00e5ff; float: right; }
+    .hero-slider-head { display: flex; align-items: baseline; gap: 10px; }
+    .hero-slider-head .rand-toggle { float: none; margin-left: auto; font-size: 0.72em; font-weight: normal; color: #5a6a80; }
+    .hero-slider-head .rand-toggle:hover { color: #00e5ff; }
+    .hero-slider-head .scale-value { float: none; }
     /* Archetype rows */
     .archetype-row {
       display: flex; align-items: center; gap: 6px; margin-bottom: 6px;
@@ -612,7 +616,11 @@
 
     <!-- ===== MICRO-MACRO SLIDER ===== -->
     <div class="hero-slider-wrap">
-      <label data-tip="Controls visual complexity. Micro = dense detail panels. Macro = bold iconic glyphs.">Scale <span class="scale-value" id="scale-value">0.00</span></label>
+      <div class="hero-slider-head">
+        <label data-tip="Controls visual complexity. Micro = dense detail panels. Macro = bold iconic glyphs.">Scale</label>
+        <label class="rand-toggle" data-tip="Off: Randomize leaves the scale where you set it."><input type="checkbox" id="rand-scale" checked> rand</label>
+        <span class="scale-value" id="scale-value">0.00</span>
+      </div>
       <input type="range" id="scale-slider" min="0" max="1" step="0.01" value="0"
         oninput="updateScale(this.value)">
       <div class="scale-zones">
@@ -782,80 +790,6 @@
             <span class="slider-val" id="multi-bias-val">0.00</span>
           </div>
         </div>
-      </div>
-    </details>
-
-    <!-- ===== OUTPUT DIMENSIONS ===== -->
-    <details class="collapsible">
-      <summary>Output Dimensions</summary>
-      <div class="row">
-        <div class="control-group">
-          <label>Unit</label>
-          <select id="plotter-unit" onchange="setPlotterUnit(this.value)">
-            <option value="px">Pixels</option>
-            <option value="mm">mm</option>
-            <option value="in">Inches</option>
-          </select>
-        </div>
-        <div class="control-group" id="dpi-group" style="display:none">
-          <label>DPI</label>
-          <input type="number" id="plotter-dpi" min="72" max="2400" value="96"
-            onchange="setPlotterDPI(+this.value)">
-        </div>
-      </div>
-      <div class="control-group">
-        <label>Paper Size</label>
-        <select id="paper-preset" onchange="applyPaperPreset(this.value)">
-          <option value="custom">Custom</option>
-          <option value="A5">A5 (148 x 210 mm)</option>
-          <option value="A4">A4 (210 x 297 mm)</option>
-          <option value="A3">A3 (297 x 420 mm)</option>
-          <option value="letter">Letter (8.5 x 11 in)</option>
-        </select>
-      </div>
-      <div class="row">
-        <div class="control-group">
-          <label>Width</label>
-          <input type="number" id="out-width" min="1" max="20000" step="any" value="800"
-            onchange="state.width = dimInputToState('width', this.value); refreshDimensionDisplays()">
-        </div>
-        <div class="control-group">
-          <label>Height</label>
-          <input type="number" id="out-height" min="1" max="20000" step="any" value="800"
-            onchange="state.height = dimInputToState('height', this.value); refreshDimensionDisplays()">
-        </div>
-      </div>
-      <div class="control-group">
-        <label>Margin</label>
-        <div class="row">
-          <input type="number" id="out-margin" min="0" max="2000" step="any" value="20"
-            onchange="updateMargin(dimInputToState('margin', this.value))">
-          <div class="check-row" style="min-width:80px">
-            <input type="checkbox" id="margin-link" checked onchange="updateState('margin.linked', this.checked); syncMarginLinkUI()">
-            <label for="margin-link" style="font-size:0.75em">Linked</label>
-          </div>
-        </div>
-      </div>
-      <div id="margin-individual" style="display:none">
-        <div class="row">
-          <div class="control-group"><label>Top</label><input type="number" id="margin-top" min="0" max="2000" step="any" value="20" onchange="updateState('margin.top', dimInputToState('mt', this.value))"></div>
-          <div class="control-group"><label>Right</label><input type="number" id="margin-right" min="0" max="2000" step="any" value="20" onchange="updateState('margin.right', dimInputToState('mr', this.value))"></div>
-        </div>
-        <div class="row">
-          <div class="control-group"><label>Bottom</label><input type="number" id="margin-bottom" min="0" max="2000" step="any" value="20" onchange="updateState('margin.bottom', dimInputToState('mb', this.value))"></div>
-          <div class="control-group"><label>Left</label><input type="number" id="margin-left" min="0" max="2000" step="any" value="20" onchange="updateState('margin.left', dimInputToState('ml', this.value))"></div>
-        </div>
-      </div>
-      <hr class="divider">
-      <div class="color-row">
-        <label>Background</label>
-        <input type="color" id="bg-color" value="#0a0612" onchange="updateState('bgColor', this.value); document.getElementById('bg-color-val').textContent=this.value">
-        <span class="color-value" id="bg-color-val">#0a0612</span>
-      </div>
-      <div class="color-row">
-        <label>Foreground</label>
-        <input type="color" id="fg-color" value="#d0d8e8" onchange="updateState('fgColor', this.value); document.getElementById('fg-color-val').textContent=this.value; syncPenUI()">
-        <span class="color-value" id="fg-color-val">#d0d8e8</span>
       </div>
     </details>
 
@@ -1076,6 +1010,80 @@
       <summary>Treatments <label class="rand-toggle"><input type="checkbox" id="rand-treatment" checked> rand</label></summary>
       <div id="treatment-stack-container"></div>
       <div class="hint">Enable treatments and drag to reorder. They apply in order.</div>
+    </details>
+
+    <!-- ===== OUTPUT DIMENSIONS ===== -->
+    <details class="collapsible">
+      <summary>Output Dimensions</summary>
+      <div class="row">
+        <div class="control-group">
+          <label>Unit</label>
+          <select id="plotter-unit" onchange="setPlotterUnit(this.value)">
+            <option value="px">Pixels</option>
+            <option value="mm">mm</option>
+            <option value="in">Inches</option>
+          </select>
+        </div>
+        <div class="control-group" id="dpi-group" style="display:none">
+          <label>DPI</label>
+          <input type="number" id="plotter-dpi" min="72" max="2400" value="96"
+            onchange="setPlotterDPI(+this.value)">
+        </div>
+      </div>
+      <div class="control-group">
+        <label>Paper Size</label>
+        <select id="paper-preset" onchange="applyPaperPreset(this.value)">
+          <option value="custom">Custom</option>
+          <option value="A5">A5 (148 x 210 mm)</option>
+          <option value="A4">A4 (210 x 297 mm)</option>
+          <option value="A3">A3 (297 x 420 mm)</option>
+          <option value="letter">Letter (8.5 x 11 in)</option>
+        </select>
+      </div>
+      <div class="row">
+        <div class="control-group">
+          <label>Width</label>
+          <input type="number" id="out-width" min="1" max="20000" step="any" value="800"
+            onchange="state.width = dimInputToState('width', this.value); refreshDimensionDisplays()">
+        </div>
+        <div class="control-group">
+          <label>Height</label>
+          <input type="number" id="out-height" min="1" max="20000" step="any" value="800"
+            onchange="state.height = dimInputToState('height', this.value); refreshDimensionDisplays()">
+        </div>
+      </div>
+      <div class="control-group">
+        <label>Margin</label>
+        <div class="row">
+          <input type="number" id="out-margin" min="0" max="2000" step="any" value="20"
+            onchange="updateMargin(dimInputToState('margin', this.value))">
+          <div class="check-row" style="min-width:80px">
+            <input type="checkbox" id="margin-link" checked onchange="updateState('margin.linked', this.checked); syncMarginLinkUI()">
+            <label for="margin-link" style="font-size:0.75em">Linked</label>
+          </div>
+        </div>
+      </div>
+      <div id="margin-individual" style="display:none">
+        <div class="row">
+          <div class="control-group"><label>Top</label><input type="number" id="margin-top" min="0" max="2000" step="any" value="20" onchange="updateState('margin.top', dimInputToState('mt', this.value))"></div>
+          <div class="control-group"><label>Right</label><input type="number" id="margin-right" min="0" max="2000" step="any" value="20" onchange="updateState('margin.right', dimInputToState('mr', this.value))"></div>
+        </div>
+        <div class="row">
+          <div class="control-group"><label>Bottom</label><input type="number" id="margin-bottom" min="0" max="2000" step="any" value="20" onchange="updateState('margin.bottom', dimInputToState('mb', this.value))"></div>
+          <div class="control-group"><label>Left</label><input type="number" id="margin-left" min="0" max="2000" step="any" value="20" onchange="updateState('margin.left', dimInputToState('ml', this.value))"></div>
+        </div>
+      </div>
+      <hr class="divider">
+      <div class="color-row">
+        <label>Background</label>
+        <input type="color" id="bg-color" value="#0a0612" onchange="updateState('bgColor', this.value); document.getElementById('bg-color-val').textContent=this.value">
+        <span class="color-value" id="bg-color-val">#0a0612</span>
+      </div>
+      <div class="color-row">
+        <label>Foreground</label>
+        <input type="color" id="fg-color" value="#d0d8e8" onchange="updateState('fgColor', this.value); document.getElementById('fg-color-val').textContent=this.value; syncPenUI()">
+        <span class="color-value" id="fg-color-val">#d0d8e8</span>
+      </div>
     </details>
 
     <!-- ===== PLOTTER ===== -->
@@ -1342,7 +1350,7 @@ const VARIANT_DEFS = {
   spectrogram: ['stippleAudio','ditherBlock','ditherBand','waterfall','dotMatrix','waveform+spectrum','bandAnalyzer','contourMap'],
   miniGame: ['pong','breakout','worm','icebreaker','spacewalk','cargo','asteroids','swarm'],
   containmentWard: ['lattice','breach','fieldMap','section'],
-  siteSchematic: ['plan','wardMap','evacuation','exploded'],
+  siteSchematic: ['plan','wardMap','evacuation','exploded','compound'],
   eventChamber: ['transverse','longitudinal','lego','bubble'],
   exoAtmosphere: ['surface','polar','storm','bands'],
   coreLattice: ['hexCore','cutaway','rodBank','torus'],
@@ -16983,17 +16991,25 @@ function composeContainmentWard(rect, s, prng) {
 }
 
 // ---- Site Schematic ----
-// The facility's floor plan, grown from the cell's seed: double walls with
-// real door gaps, a hatched outer shell, rooms fitted out by use, the vault
-// with its ward behind a blast door. Four looks:
-//   plan        security: lockdown hatched over the vault's quarter, the breach
-//               front in minutes, ducts, cameras, people with trails and tags
-//   wardMap     the technomancy: ley conduits into the vault, seals on the doors,
-//               ward circles and corridor inscriptions
-//   evacuation  routes to the exits, assembly points, the muster count
+// The facility as its architects and its wardens draw it, grown from the
+// cell's seed. A floor is one of four plans:
+//   cross  two corridors crossing, four quarters of rooms
+//   spine  one long corridor, rooms either side, the vault at its end
+//   ring   a loop corridor round a core that holds the vault
+//   hub    a round building: the vault's rotunda, a ring corridor, spokes
+// and the schematic has five looks:
+//   plan        security: double walls with real door gaps, rooms fitted out,
+//               cameras, people, ducts, the lockdown and the breach front
+//   wardMap     the technomancy: the great ward drawn over the whole floor, ley
+//               lines and conduits into the vault, seals on the doors, the
+//               script down the corridors
+//   evacuation  rooms hatched by the exit they empty to, routes to the exits
 //   exploded    three sublevels stacked in projection, hidden lines removed,
 //               the contaminant rising in a shaft
-const SITE_VARIANTS = ['plan', 'wardMap', 'evacuation', 'exploded'];
+//   compound    the surface: terrain, the fence and its towers, the road, the
+//               buildings, the pad, the shaft head and the ward round it
+const SITE_VARIANTS = ['plan', 'wardMap', 'evacuation', 'exploded', 'compound'];
+const SITE_LAYOUTS = ['cross', 'spine', 'ring', 'hub'];
 const SITE_ROOMS = ['LAB 4A', 'SERVER', 'CRYO', 'CONTROL', 'RITUAL DECK', 'LAB 4B', 'ARMORY', 'MED BAY', 'DECON', 'OBSERVATION', 'CALIBRATION', 'STORES', 'ARCHIVE', 'SPECIMEN PREP', 'WORKSHOP', 'QUARTERS'];
 
 function _siteBsp(r, H, depth, min, k) {
@@ -17004,44 +17020,171 @@ function _siteBsp(r, H, depth, min, k) {
   return [..._siteBsp({ x: r.x, y: r.y, w: w1, h: r.h }, H, depth - 1, min, k * 2 + 1), ..._siteBsp({ x: r.x + w1, y: r.y, w: r.w - w1, h: r.h }, H, depth - 1, min, k * 2 + 2)];
 }
 
-// A floor: two corridors crossing (a spine and a cross-passage), four quarters
-// split into rooms, the vault the biggest room right of the spine, a lift and
-// stairs on the corridors, doors placed on the corridor side where there is one
-function _siteFloor(F, H, cw, depth, min) {
-  let Hc = { x: F.x, y: F.y + Math.round(F.h * 0.52) - cw / 2, w: F.w, h: cw };
-  let Vc = { x: F.x + Math.round(F.w * (0.3 + H(1) * 0.12)) - cw / 2, y: F.y, w: cw, h: F.h };
-  let quads = [
-    { x: F.x, y: F.y, w: Vc.x - F.x, h: Hc.y - F.y, q: 'TL' }, { x: Vc.x + cw, y: F.y, w: F.x + F.w - Vc.x - cw, h: Hc.y - F.y, q: 'TR' },
-    { x: F.x, y: Hc.y + cw, w: Vc.x - F.x, h: F.y + F.h - Hc.y - cw, q: 'BL' }, { x: Vc.x + cw, y: Hc.y + cw, w: F.x + F.w - Vc.x - cw, h: F.y + F.h - Hc.y - cw, q: 'BR' }];
-  let rooms = [];
-  quads.forEach((qd, i) => { for (let r of _siteBsp(qd, H, depth, min, 10 + i * 100)) rooms.push(Object.assign(r, { q: qd.q })); });
-  let near = (a, b) => Math.abs(a - b) < 1.5, ovl = (a0, a1, b0, b1) => Math.min(a1, b1) - Math.max(a0, b0);
-  let sides = r => {
-    let o = [];
-    if (near(r.y + r.h, Hc.y) && ovl(r.x, r.x + r.w, F.x, F.x + F.w) > cw) o.push('bottom');
-    if (near(r.y, Hc.y + cw) && ovl(r.x, r.x + r.w, F.x, F.x + F.w) > cw) o.push('top');
-    if (near(r.x + r.w, Vc.x) && ovl(r.y, r.y + r.h, F.y, F.y + F.h) > cw) o.push('right');
-    if (near(r.x, Vc.x + cw) && ovl(r.y, r.y + r.h, F.y, F.y + F.h) > cw) o.push('left');
-    return o;
-  };
-  let vault = rooms.filter(r => r.q === 'TR' || r.q === 'BR').sort((a, b) => b.w * b.h - a.w * a.h)[0];
+// Doors for rectangular rooms: on a side that meets a corridor (inside the
+// stretch they share), else through an inner wall into a neighbour
+function _siteDoors(rooms, corridors, F, cw, H, vault) {
+  let doors = [];
+  rooms.forEach((r, i) => {
+    let cands = [];
+    for (let C of corridors) {
+      let ox0 = Math.max(r.x, C.x), ox1 = Math.min(r.x + r.w, C.x + C.w), oy0 = Math.max(r.y, C.y), oy1 = Math.min(r.y + r.h, C.y + C.h);
+      if (Math.abs(r.y + r.h - C.y) < 1.5 && ox1 - ox0 > cw * 0.9) cands.push(['bottom', ox0, ox1]);
+      if (Math.abs(r.y - (C.y + C.h)) < 1.5 && ox1 - ox0 > cw * 0.9) cands.push(['top', ox0, ox1]);
+      if (Math.abs(r.x + r.w - C.x) < 1.5 && oy1 - oy0 > cw * 0.9) cands.push(['right', oy0, oy1]);
+      if (Math.abs(r.x - (C.x + C.w)) < 1.5 && oy1 - oy0 > cw * 0.9) cands.push(['left', oy0, oy1]);
+    }
+    r.onCorridor = cands.length > 0;
+    if (!cands.length) {
+      if (r.x > F.x + 2) cands.push(['left', r.y, r.y + r.h]); else if (r.x + r.w < F.x + F.w - 2) cands.push(['right', r.y, r.y + r.h]);
+      else if (r.y > F.y + 2) cands.push(['top', r.x, r.x + r.w]); else cands.push(['bottom', r.x, r.x + r.w]);
+    }
+    let [side, a0, a1] = cands[Math.floor(H(30 + i) * cands.length)], horiz = side === 'top' || side === 'bottom', len = a1 - a0;
+    let dw = Math.min(len * 0.36, r === vault ? cw * 0.85 : cw * 0.7), at = a0 + dw + H(60 + i) * Math.max(0, len - dw * 2);
+    doors.push({ line: side === 'bottom' ? r.y + r.h : side === 'top' ? r.y : side === 'right' ? r.x + r.w : r.x, horiz, at, half: dw / 2, room: r, side });
+  });
+  return doors;
+}
+
+// Names: the vault, a lift and stairs on a corridor, the rest from the list
+function _siteName(rooms, vault, H) {
   vault.name = 'VAULT';
-  let small = rooms.filter(r => r !== vault && sides(r).length).sort((a, b) => a.w * a.h - b.w * b.h);
+  let small = rooms.filter(r => r !== vault && !r.name && r.onCorridor !== false).sort((a, b) => (a.w * a.h || a.area) - (b.w * b.h || b.area));
   if (small[0]) small[0].name = 'LIFT';
   if (small[1]) small[1].name = 'STAIRS';
   let ni = Math.floor(H(2) * 5);
-  for (let r of rooms) if (!r.name) r.name = SITE_ROOMS[ni++ % SITE_ROOMS.length] + (ni > SITE_ROOMS.length ? ' ' + Math.ceil(ni / SITE_ROOMS.length) : '');
+  for (let r of rooms) if (!r.name) { r.name = SITE_ROOMS[ni % SITE_ROOMS.length] + (ni >= SITE_ROOMS.length ? ' ' + (1 + Math.floor(ni / SITE_ROOMS.length)) : ''); ni++; }
   rooms.forEach((r, i) => r.code = 'S' + String(i + 3).padStart(2, '0'));
-  // Doors: [line coord, 'h'|'v' (the wall runs horizontally / vertically), centre along, half width, room, side]
-  let doors = [];
-  rooms.forEach((r, i) => {
-    let sd = sides(r);
-    if (!sd.length) sd = [r.x > F.x + 2 ? 'left' : r.x + r.w < F.x + F.w - 2 ? 'right' : r.y > F.y + 2 ? 'top' : 'bottom'];
-    let side = sd[Math.floor(H(30 + i) * sd.length)], horiz = side === 'top' || side === 'bottom', len = horiz ? r.w : r.h;
-    let dw = Math.min(len * 0.36, r === vault ? cw * 0.85 : cw * 0.7), at = (horiz ? r.x : r.y) + dw + H(60 + i) * Math.max(0, len - dw * 2);
-    doors.push({ line: side === 'bottom' ? r.y + r.h : side === 'top' ? r.y : side === 'right' ? r.x + r.w : r.x, horiz, at, half: dw / 2, room: r, side });
+}
+
+// cross: two corridors crossing, four quarters of rooms, the vault the
+// biggest room right of the spine
+function _siteCross(F, H, cw, depth, min) {
+  let hy = F.y + Math.round(F.h * (0.46 + H(5) * 0.12)) - cw / 2, vx = F.x + Math.round(F.w * (0.3 + H(1) * 0.12)) - cw / 2;
+  let Hc = { x: F.x, y: hy, w: F.w, h: cw }, Vc = { x: vx, y: F.y, w: cw, h: F.h };
+  let quads = [
+    { x: F.x, y: F.y, w: vx - F.x, h: hy - F.y }, { x: vx + cw, y: F.y, w: F.x + F.w - vx - cw, h: hy - F.y },
+    { x: F.x, y: hy + cw, w: vx - F.x, h: F.y + F.h - hy - cw }, { x: vx + cw, y: hy + cw, w: F.x + F.w - vx - cw, h: F.y + F.h - hy - cw }];
+  let rooms = [];
+  quads.forEach((qd, i) => { for (let r of _siteBsp(qd, H, depth, min, 10 + i * 100)) rooms.push(Object.assign(r, { q: i })); });
+  let vault = rooms.filter(r => r.q === 1 || r.q === 3).sort((a, b) => b.w * b.h - a.w * a.h)[0];
+  let lq = quads[vault.q], jx = vx + cw / 2, jy = hy + cw / 2;
+  return {
+    kind: 'cross', rooms, vault, corridors: [Hc, Vc],
+    paths: [[[F.x, jy], [F.x + F.w, jy]], [[jx, F.y], [jx, F.y + F.h]]],
+    exits: [{ x: F.x, y: jy, a: PI, id: 'A' }, { x: F.x + F.w, y: jy, a: 0, id: 'B' }, { x: jx, y: F.y + F.h, a: HALF_PI, id: 'C' }],
+    lanes: [[[jx, jy], [F.x, jy]], [[jx, jy], [F.x + F.w, jy]], [[jx, jy], [jx, F.y + F.h]], [[jx, F.y], [jx, jy]]],
+    junction: [jx, jy], lock: [[lq.x, lq.y], [lq.x + lq.w, lq.y], [lq.x + lq.w, lq.y + lq.h], [lq.x, lq.y + lq.h]],
+    blast: [[vx + cw * 1.15, jy, 0], [jx, vault.q === 1 ? hy - cw * 0.15 : hy + cw * 1.15, HALF_PI]]
+  };
+}
+
+// spine: one corridor down the long axis, rooms either side (deep bands get
+// rooms behind rooms), a fire stair cut across one band, the vault closing
+// the far end with an observation room and a control room either side
+function _siteSpine(F, H, cw, depth, min) {
+  let horiz = F.w >= F.h, L = horiz ? F.w : F.h, W = horiz ? F.h : F.w, flip = H(3) < 0.5;
+  let M = (u, v, du, dv) => { if (flip) u = L - u - du; return horiz ? { x: F.x + u, y: F.y + v, w: du, h: dv } : { x: F.x + v, y: F.y + u, w: dv, h: du }; };
+  let P = (u, v) => { if (flip) u = L - u; return horiz ? [F.x + u, F.y + v] : [F.x + v, F.y + u]; };
+  let ang = u => horiz ? (flip ? (u ? PI : 0) : (u ? 0 : PI)) : (flip ? (u ? -HALF_PI : HALF_PI) : (u ? HALF_PI : -HALF_PI));
+  let ve = Math.round(Math.max(min * 1.6, L * (0.24 + H(1) * 0.08))), Lc = L - ve, cv = Math.round(W * (0.38 + H(2) * 0.24) - cw / 2);
+  let deepTop = cv >= W - cv - cw, ue = Math.round(Lc * (0.5 + H(4) * 0.2));
+  let rooms = [], corridors = [M(0, cv, Lc, cw)];
+  let bands = [[0, cv, deepTop], [cv + cw, W - cv - cw, !deepTop]];
+  bands.forEach(([v0, dv, cut], bi) => {
+    let pieces = cut ? [[0, ue], [ue + cw, Lc - ue - cw]] : [[0, Lc]];
+    if (cut) corridors.push(M(ue, v0, cw, dv));
+    pieces.forEach(([u0, du], pi) => { for (let r of _siteBsp(M(u0, v0, du, dv), H, depth + 1, min, 300 + bi * 40 + pi * 13)) rooms.push(r); });
   });
-  return { F, Hc, Vc, cw, quads, rooms, vault, doors, lockQ: quads.find(q => q.q === vault.q) };
+  let side = W * 0.2, vault = M(Lc, side >= min * 0.6 ? side : 0, ve, side >= min * 0.6 ? W - side * 2 : W);
+  rooms.push(vault);
+  if (side >= min * 0.6) rooms.push(Object.assign(M(Lc, 0, ve, side), { name: 'OBSERVATION' }), Object.assign(M(Lc, W - side, ve, side), { name: 'CONTROL' }));
+  let ey = bands.find(b => b[2]), eo = ey[0] === 0 ? 0 : W, mid = cv + cw / 2;
+  return {
+    kind: 'spine', rooms, vault, corridors,
+    paths: [[P(0, mid), P(Lc, mid)], [P(ue + cw / 2, mid), P(ue + cw / 2, eo)]],
+    exits: [Object.assign({ id: 'A', a: ang(0) }, { x: P(0, mid)[0], y: P(0, mid)[1] }), Object.assign({ id: 'B', a: horiz ? (eo ? HALF_PI : -HALF_PI) : (eo ? 0 : PI) }, { x: P(ue + cw / 2, eo)[0], y: P(ue + cw / 2, eo)[1] })],
+    lanes: [[P(Lc - cw * 0.5, mid), P(0, mid)], [P(ue + cw / 2, mid), P(ue + cw / 2, eo)]],
+    junction: P(ue + cw / 2, mid), lock: (() => { let r = M(Lc, 0, ve, W); return [[r.x, r.y], [r.x + r.w, r.y], [r.x + r.w, r.y + r.h], [r.x, r.y + r.h]]; })(),
+    blast: [P(Lc - cw * 0.6, mid).concat([ang(1)])]
+  };
+}
+
+// ring: a band of rooms round the outside, a corridor loop inside it, the vault
+// in the core with a control room and a decon lock on its near side, stubs out
+// to an exit either side
+function _siteRing(F, H, cw, depth, min) {
+  let d = Math.round(Math.min(F.w, F.h) * (0.2 + H(1) * 0.05));
+  let x0 = F.x + d, y0 = F.y + d, x1 = F.x + F.w - d, y1 = F.y + F.h - d, my = Math.round(F.y + F.h / 2 - cw / 2 + (H(2) - 0.5) * F.h * 0.08);
+  let corridors = [{ x: x0, y: y0, w: x1 - x0, h: cw }, { x: x0, y: y1 - cw, w: x1 - x0, h: cw }, { x: x0, y: y0 + cw, w: cw, h: y1 - y0 - 2 * cw }, { x: x1 - cw, y: y0 + cw, w: cw, h: y1 - y0 - 2 * cw },
+    { x: F.x, y: my, w: d, h: cw }, { x: x1, y: my, w: d, h: cw }];
+  let pieces = [{ x: F.x, y: F.y, w: F.w, h: d }, { x: F.x, y: F.y + F.h - d, w: F.w, h: d },
+    { x: F.x, y: F.y + d, w: d, h: my - F.y - d }, { x: F.x, y: my + cw, w: d, h: F.y + F.h - d - my - cw },
+    { x: x1, y: F.y + d, w: d, h: my - F.y - d }, { x: x1, y: my + cw, w: d, h: F.y + F.h - d - my - cw }];
+  let rooms = [];
+  pieces.forEach((p, i) => { if (p.w > 2 && p.h > 2) for (let r of _siteBsp(p, H, depth + 1, min, 500 + i * 37)) rooms.push(r); });
+  let core = { x: x0 + cw, y: y0 + cw, w: x1 - x0 - 2 * cw, h: y1 - y0 - 2 * cw }, ante = core.h > min * 2.6 ? Math.round(core.h * 0.22) : 0;
+  let vault = { x: core.x, y: core.y + ante, w: core.w, h: core.h - ante };
+  rooms.push(vault);
+  if (ante) rooms.push({ x: core.x, y: core.y, w: Math.round(core.w * 0.55), h: ante, name: 'CONTROL' }, { x: core.x + Math.round(core.w * 0.55), y: core.y, w: core.w - Math.round(core.w * 0.55), h: ante, name: 'DECON' });
+  let cx0 = x0 + cw / 2, cy0 = y0 + cw / 2, cx1 = x1 - cw / 2, cy1 = y1 - cw / 2, ey = my + cw / 2, tx = (cx0 + cx1) / 2;
+  return {
+    kind: 'ring', rooms, vault, corridors,
+    paths: [[[cx0, cy0], [cx1, cy0], [cx1, cy1], [cx0, cy1], [cx0, cy0]], [[F.x, ey], [cx0, ey]], [[cx1, ey], [F.x + F.w, ey]]],
+    exits: [{ x: F.x, y: ey, a: PI, id: 'A' }, { x: F.x + F.w, y: ey, a: 0, id: 'B' }],
+    lanes: [[[tx, cy0], [cx0, cy0], [cx0, ey], [F.x, ey]], [[tx, cy1], [cx0, cy1], [cx0, ey], [F.x, ey]], [[tx, cy0], [cx1, cy0], [cx1, ey], [F.x + F.w, ey]], [[tx, cy1], [cx1, cy1], [cx1, ey], [F.x + F.w, ey]]],
+    junction: [cx0, ey], lock: [[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
+    blast: [[x0 - cw * 0.3, ey, 0], [x1 + cw * 0.3, ey, 0]]
+  };
+}
+
+// hub: a round building; the vault a rotunda at the centre, a ring corridor
+// round it, rooms as sectors outside (deep ones split into an inner and an
+// outer room), spoke corridors out to the exits
+function _siteHub(F, H, cw, depth, min) {
+  let cx = F.x + F.w / 2, cy = F.y + F.h / 2, R = Math.min(F.w, F.h) / 2;
+  let rv = R * (0.26 + H(1) * 0.06), rc = rv + cw, ns = R > min * 6 ? 4 : 3, s0 = H(2) * TWO_PI, rooms = [];
+  let spokes = []; for (let k = 0; k < ns; k++) spokes.push(s0 + k * TWO_PI / ns + (H(10 + k) - 0.5) * 0.35);
+  for (let k = 0; k < ns; k++) {
+    let rm = (rc + R) / 2, half = cw / 2 / rm, a0 = spokes[k] + half, a1 = spokes[(k + 1) % ns] + (k + 1 === ns ? TWO_PI : 0) - half, span = a1 - a0;
+    let n = Math.max(1, Math.floor(span * rm / (min * 1.15))), w = []; for (let i = 0; i < n; i++) w.push(0.7 + H(30 + k * 11 + i) * 0.6);
+    let tot = w.reduce((s, x) => s + x, 0), a = a0;
+    for (let i = 0; i < n; i++) {
+      let da = span * w[i] / tot, deep = R - rc > min * 2.1 && H(80 + k * 11 + i) < 0.55, rmid = rc + (R - rc) * (0.45 + H(120 + k * 11 + i) * 0.15);
+      if (deep) rooms.push({ sec: [rc, rmid, a, a + da] }, { sec: [rmid, R, a, a + da], back: true });
+      else rooms.push({ sec: [rc, R, a, a + da] });
+      a += da;
+    }
+  }
+  for (let r of rooms) { let [r0, r1, a0, a1] = r.sec; r.area = (r1 * r1 - r0 * r0) * (a1 - a0) / 2; r.onCorridor = !r.back; r.c = [cx + Math.cos((a0 + a1) / 2) * (r0 + r1) / 2, cy + Math.sin((a0 + a1) / 2) * (r0 + r1) / 2]; }
+  let vault = { rot: [cx, cy, rv], area: PI * rv * rv, c: [cx, cy] };
+  rooms.push(vault);
+  // doors: a front room's in its inner arc, a back room's into the front room before it
+  let doors = rooms.filter(r => r.sec).map((r, i) => { let [r0, r1, a0, a1] = r.sec, hw = Math.min(cw * 0.35, r0 * (a1 - a0) * 0.3); return { arc: r0, a: a0 + (a1 - a0) * (0.3 + H(160 + i) * 0.4), hw: hw / r0, room: r }; });
+  let ring = []; for (let i = 0; i <= 96; i++) { let a = i / 96 * TWO_PI; ring.push([cx + Math.cos(a) * (rv + cw / 2), cy + Math.sin(a) * (rv + cw / 2)]); }
+  let arcTo = (from, to) => { let pts = [], n = Math.max(4, Math.ceil(Math.abs(to - from) / 0.06)); for (let i = 0; i <= n; i++) { let a = from + (to - from) * i / n; pts.push([cx + Math.cos(a) * (rv + cw / 2), cy + Math.sin(a) * (rv + cw / 2)]); } return pts; };
+  let lanes = [];
+  spokes.forEach((s, k) => {
+    let prev = spokes[(k + ns - 1) % ns] - (k === 0 ? TWO_PI : 0), next = spokes[(k + 1) % ns] + (k + 1 === ns ? TWO_PI : 0), out = [[cx + Math.cos(s) * (rv + cw / 2), cy + Math.sin(s) * (rv + cw / 2)], [cx + Math.cos(s) * R, cy + Math.sin(s) * R]];
+    lanes.push(arcTo((prev + s) / 2, s).concat(out), arcTo((next + s) / 2, s).concat(out));
+  });
+  let lock = []; for (let i = 0; i < 48; i++) { let a = i / 48 * TWO_PI; lock.push([cx + Math.cos(a) * rc, cy + Math.sin(a) * rc]); }
+  return {
+    kind: 'hub', rooms, vault, corridors: [], hub: { cx, cy, R, rv, rc, spokes }, doors,
+    paths: [ring].concat(spokes.map(s => [[cx + Math.cos(s) * rc, cy + Math.sin(s) * rc], [cx + Math.cos(s) * R, cy + Math.sin(s) * R]])),
+    exits: spokes.map((s, k) => ({ x: cx + Math.cos(s) * R, y: cy + Math.sin(s) * R, a: s, id: 'ABCD'[k] })),
+    lanes, junction: [cx + Math.cos(spokes[0]) * (rv + cw / 2), cy + Math.sin(spokes[0]) * (rv + cw / 2)], lock,
+    blast: spokes.map(s => [cx + Math.cos(s) * (rc + cw * 0.4), cy + Math.sin(s) * (rc + cw * 0.4), s])
+  };
+}
+
+// A floor of the given plan, its rooms named and (for the square plans) doored
+function _siteFloor(kind, F, H, cw, depth, min) {
+  let fl = kind === 'hub' ? _siteHub(F, H, cw, depth, min) : kind === 'spine' ? _siteSpine(F, H, cw, depth, min) : kind === 'ring' ? _siteRing(F, H, cw, depth, min) : _siteCross(F, H, cw, depth, min);
+  fl.F = F; fl.cw = cw;
+  if (kind !== 'hub') fl.doors = _siteDoors(fl.rooms, fl.corridors, F, cw, H, fl.vault);
+  _siteName(fl.rooms, fl.vault, H);
+  for (let r of fl.rooms) if (!r.c) r.c = [r.x + r.w / 2, r.y + r.h / 2];
+  return fl;
 }
 
 // One room's wall: its rect inset by half a wall, broken where its doors are
@@ -17059,7 +17202,7 @@ function _siteWall(r, doors, wh) {
 
 // A door's leaf and swing, into its room (a blast door: two heavy bars)
 function _siteDoor(d, wh, blast) {
-  let r = d.room, inward = d.side === 'bottom' ? -1 : d.side === 'top' ? 1 : d.side === 'right' ? -1 : 1;
+  let inward = d.side === 'bottom' ? -1 : d.side === 'top' ? 1 : d.side === 'right' ? -1 : 1;
   let M = (u, v) => d.horiz ? [d.at + u, d.line + v * inward] : [d.line + v * inward, d.at + u];
   if (blast) {
     for (let v of [wh * 0.2, wh * 1.6]) { let a = M(-d.half, v), b = M(d.half, v); svgLine(a[0], a[1], b[0], b[1]); }
@@ -17070,6 +17213,14 @@ function _siteDoor(d, wh, blast) {
   let arc = [];
   for (let i = 0; i <= 10; i++) { let p = i / 10 * HALF_PI; arc.push(M(-d.half + d.half * 2 * Math.sin(p), wh + d.half * 2 * Math.cos(p))); }
   for (let i = 0; i + 1 < arc.length; i += 2) svgLine(arc[i][0], arc[i][1], arc[i + 1][0], arc[i + 1][1]);
+}
+
+// An arc of wall at radius r from a0 to a1, broken by gaps [[g0, g1], ...] (angles)
+function _siteArcWall(cx, cy, r, a0, a1, gaps) {
+  let pos = a0;
+  let run = (b0, b1) => { if (b1 - b0 < 1e-4) return; let n = Math.max(2, Math.ceil((b1 - b0) * r / 4)), pts = []; for (let i = 0; i <= n; i++) { let a = b0 + (b1 - b0) * i / n; pts.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r]); } svgPolyline(pts); };
+  for (let [g0, g1] of gaps.filter(g => g[1] > a0 && g[0] < a1).sort((p, q) => p[0] - q[0])) { if (g0 > pos) run(pos, g0); pos = Math.max(pos, g1); }
+  if (a1 > pos) run(pos, a1);
 }
 
 // Fittings by room: racks, pods, benches, a console, the ward circle, lockers,
@@ -17120,195 +17271,31 @@ function _siteFurnish(r, clear, G) {
   }
 }
 
-// The floor drawn flat. o: { show, macro, micro, clear, G, F (floats), u (unit), variant, anim }
-function _sitePlan(fl, o) {
-  let { show, macro, micro, clear, G } = o, { F, Hc, Vc, cw, rooms, vault, doors, lockQ } = fl, variant = o.variant;
-  let wh = Math.max(clear * 0.8, F.w * 0.004), shell = o.shell;
-  let vcx = vault.x + vault.w / 2, vcy = vault.y + vault.h / 2, vr = Math.min(vault.w, vault.h) * 0.27;
-  let security = variant === 'plan' || variant === 'evacuation';
-  // small floors keep their rooms' names but drop the tags on people, cameras and fronts
-  let tags = show.sec && Math.min(F.w, F.h) > micro * 28, busy = show.inner && Math.min(F.w, F.h) > micro * 16;
-  // corridor floor grid
-  if (show.annot) { kitWeight('fine'); let st = Math.max(cw * 0.5, clear * 4); for (let C of [Hc, Vc]) for (let x = C.x + st / 2; x < C.x + C.w; x += st) for (let y = C.y + st / 2; y < C.y + C.h; y += st) svgPoint(x, y); }
-  // lockdown: the vault's quarter hatched in the accent pen
-  if (security && o.u.f.alert >= 1) kitAccent(() => _radHatch([[[lockQ.x + wh, lockQ.y + wh], [lockQ.x + lockQ.w - wh, lockQ.y + wh], [lockQ.x + lockQ.w - wh, lockQ.y + lockQ.h - wh], [lockQ.x + wh, lockQ.y + lockQ.h - wh]]], 45, Math.max(clear * 5, F.w * 0.018), 'secondary'));
-  // walls: each room inset half a wall, so neighbours make a double wall; the vault three deep
-  kitWeight(macro ? 'primary' : 'secondary');
-  for (let r of rooms) _siteWall(r, doors, wh);
-  let vd = doors.find(d => d.room === vault);
-  kitWeight('primary');
-  for (let k of [wh * 3, wh * 5]) if (vault.w > k * 6 && vault.h > k * 6) _siteWall({ x: vault.x + k - wh, y: vault.y + k - wh, w: vault.w - (k - wh) * 2, h: vault.h - (k - wh) * 2 }, [Object.assign({}, vd, { line: vd.side === 'bottom' ? vault.y + vault.h - (k - wh) : vd.side === 'top' ? vault.y + (k - wh) : vd.side === 'right' ? vault.x + vault.w - (k - wh) : vault.x + (k - wh) })], wh);
-  // the outer shell, hatched, with the corridor ends closed
-  kitWeight(macro ? 'heavy' : 'primary');
-  svgRect(F.x - shell, F.y - shell, F.w + shell * 2, F.h + shell * 2);
-  let outer = [[F.x - shell, F.y - shell], [F.x + F.w + shell, F.y - shell], [F.x + F.w + shell, F.y + F.h + shell], [F.x - shell, F.y + F.h + shell]];
-  let inner = [[F.x, F.y], [F.x + F.w, F.y], [F.x + F.w, F.y + F.h], [F.x, F.y + F.h]];
-  _radHatch([outer, inner], 45, Math.max(_radPen() * 1.4, shell * 0.4), 'secondary');
-  // doors
+// A sector room's fittings, laid out along its arc
+function _siteFurnishSector(cx, cy, r, clear) {
+  let [r0, r1, a0, a1] = r.sec, rm = (r0 + r1) / 2, span = (a1 - a0) * rm, dep = r1 - r0, name = r.name.replace(/ \d+$/, '');
+  if (span < clear * 10 || dep < clear * 8) return;
+  let u = Math.max(clear * 2.2, Math.min(span, dep) / 8), P = (rr, a) => [cx + Math.cos(a) * rr, cy + Math.sin(a) * rr];
   kitWeight('fine');
-  for (let d of doors) { if (d.room === vault) continue; _siteDoor(d, wh, false); }
-  kitAccent(() => { kitWeight('heavy'); _siteDoor(vd, wh, true); });
-  // fittings and tags
-  for (let r of rooms) {
-    if (r === vault) continue;
-    if (r.name === 'LIFT') { let m = Math.min(r.w, r.h) * 0.18; kitWeight('secondary'); svgRect(r.x + m, r.y + m, r.w - m * 2, r.h - m * 2); kitWeight('fine'); svgLine(r.x + m, r.y + m, r.x + r.w - m, r.y + r.h - m); svgLine(r.x + r.w - m, r.y + m, r.x + m, r.y + r.h - m); }
-    else if (r.name === 'STAIRS') { let hz = r.w > r.h, st = Math.max(clear * 2.2, Math.min(r.w, r.h) / 7); kitWeight('fine'); for (let k = st * 1.5; k < (hz ? r.w : r.h) - st; k += st) hz ? svgLine(r.x + k, r.y + wh * 3, r.x + k, r.y + r.h - wh * 3) : svgLine(r.x + wh * 3, r.y + k, r.x + r.w - wh * 3, r.y + k); }
-    else _siteFurnish(r, clear, G);
-    if (show.labels && r.w > micro * 7 && r.h > micro * 4) {
-      kitWeight('fine');
-      let lab = r.name === 'LIFT' ? 'LIFT B' : r.name === 'STAIRS' ? 'STAIR 2' : r.name;
-      if (measureFallbackText(lab, micro) < r.w - wh * 6) kitText(lab, r.x + wh * 3, r.y + r.h - wh * 3 - micro * 0.25, micro, 'left');
-      if (show.sec && r.h > micro * 4.5) kitText(r.code, r.x + r.w - wh * 3, r.y + wh * 3 + micro, micro * 0.8, 'right');
-    }
+  if (name === 'LIFT') { let c = P(rm, (a0 + a1) / 2), s = Math.min(span, dep) * 0.25; svgRect(c[0] - s, c[1] - s, s * 2, s * 2); svgLine(c[0] - s, c[1] - s, c[0] + s, c[1] + s); svgLine(c[0] + s, c[1] - s, c[0] - s, c[1] + s); return; }
+  if (name === 'STAIRS') { for (let k = 1; k < 7; k++) { let a = a0 + (a1 - a0) * k / 7, p = P(r0 + dep * 0.18, a), q = P(r1 - dep * 0.18, a); svgLine(p[0], p[1], q[0], q[1]); } return; }
+  if (name === 'RITUAL DECK') { let c = P(rm, (a0 + a1) / 2), rr = Math.min(span, dep) * 0.36; facWard(() => { kitWeight('secondary'); svgCircle(c[0], c[1], rr * 2); kitWeight('fine'); let p = []; for (let k = 0; k < 7; k++) p.push([c[0] + Math.cos(k * TWO_PI / 7) * rr * 0.8, c[1] + Math.sin(k * TWO_PI / 7) * rr * 0.8]); for (let k = 0; k < 7; k++) svgLine(p[k][0], p[k][1], p[(k + 3) % 7][0], p[(k + 3) % 7][1]); }); return; }
+  if (name === 'SERVER' || name === 'ARMORY' || name === 'STORES' || name === 'ARCHIVE') {
+    // racks running out from the corridor
+    let n = Math.max(2, Math.floor(span / (u * 2.4)));
+    for (let k = 0; k < n; k++) { let a = a0 + (a1 - a0) * (k + 0.5) / n, da = u * 0.45 / rm; _radClosed(_radSector(cx, cy, r0 + dep * 0.2, r1 - dep * 0.2, a - da, a + da)); }
+    return;
   }
-  // the vault: its ward in miniature, the anomaly, the ward seal on its door
-  kitWeight('primary'); svgCircle(vcx, vcy, vr * 2);
-  facWard(() => {
-    if (vr * 0.18 >= clear) { kitWeight('fine'); _radDashArc(vcx, vcy, vr * 0.82, 0, TWO_PI, 24, 0.5); }
-    let hp = []; for (let k = 0; k < 7; k++) hp.push([vcx + Math.cos(k * TWO_PI / 7 - HALF_PI + o.spin) * vr * 0.62, vcy + Math.sin(k * TWO_PI / 7 - HALF_PI + o.spin) * vr * 0.62]);
-    kitWeight('secondary'); for (let k = 0; k < 7; k++) svgLine(hp[k][0], hp[k][1], hp[(k + 2) % 7][0], hp[(k + 2) % 7][1]);
-  });
-  kitAccent(() => _wardAnomaly(vcx, vcy, vr * 0.2, o.F, macro));
-  if (show.labels && vault.w > micro * 8) {
-    kitWeight('fine');
-    kitText('VAULT ' + o.u.vault, vcx, Math.min(vault.y + vault.h - wh * 6, vcy + vr + micro * 1.3), micro, 'center');
-    kitAccent(() => kitText(o.u.anomaly + ' · ' + (o.u.f.alert >= 3 ? 'BREACH' : 'HOLD'), vcx, Math.max(vault.y + wh * 6 + micro, vcy - vr - micro * 0.5), micro * 0.85, 'center'));
+  if (name === 'CRYO' || name === 'MED BAY' || name === 'QUARTERS') {
+    let n = Math.max(2, Math.floor(span / (u * 2.6)));
+    for (let k = 0; k < n; k++) { let p = P(rm, a0 + (a1 - a0) * (k + 0.5) / n); svgCircle(p[0], p[1], u * 1.6); }
+    return;
   }
-  // ducts: one down the spine corridor, a branch into the vault, grilles
-  let dy = Hc.y + cw * 0.22, gap = Math.max(clear, cw * 0.08);
-  let duct = (x0, y0, x1, y1) => { kitWeight('fine'); let hz = Math.abs(y1 - y0) < 1; for (let s2 of [-1, 1]) drawDashedLine(x0 + (hz ? 0 : s2 * gap), y0 + (hz ? s2 * gap : 0), x1 + (hz ? 0 : s2 * gap), y1 + (hz ? s2 * gap : 0), Math.max(4, cw * 0.18), Math.max(3, cw * 0.1)); };
-  let bx = vcx + vr + Math.max(clear * 3, vault.w * 0.08);
-  if (security || variant === 'wardMap') {
-    duct(F.x + cw * 0.5, dy, F.x + F.w - cw * 0.5, dy);
-    duct(bx, dy, bx, vcy);
-    if (show.inner) { kitWeight('secondary'); for (let x = F.x + F.w * 0.08; x < F.x + F.w - cw; x += F.w * 0.17) svgRect(x - gap * 2.2, dy - gap * 1.6, gap * 4.4, gap * 3.2); }
-  }
-  // the ley conduit(s): power drawn in from outside the walls, sealed where they pass
-  let conduits = variant === 'wardMap' ? 3 : variant === 'plan' ? 1 : 0;
-  for (let c = 0; c < conduits; c++) facWard(() => {
-    let side = c % 2, P0 = c === 2 ? [F.x + F.w * 0.7, F.y + F.h + shell] : [side ? F.x + F.w + shell : F.x - shell, F.y + F.h * (0.16 + c * 0.5)];
-    let P1 = c === 2 ? [F.x + F.w * 0.55, F.y + F.h * 0.8] : [F.x + F.w * (side ? 0.8 : 0.3), F.y - shell], P2 = [vcx - vr * (side ? -2 : 2), vcy + (vcy < Hc.y ? vr * 2.4 : -vr * 2.4)], P3 = [vcx + (side ? vr : -vr) * 0.7, vcy];
-    let bz = t => { let w = 1 - t; return [w ** 3 * P0[0] + 3 * w * w * t * P1[0] + 3 * w * t * t * P2[0] + t ** 3 * P3[0], w ** 3 * P0[1] + 3 * w * w * t * P1[1] + 3 * w * t * t * P2[1] + t ** 3 * P3[1]]; };
-    let pts = []; for (let i = 0; i <= 80; i++) pts.push(bz(i / 80));
-    kitWeight('primary');
-    for (let i = 0; i < pts.length - 1; i += 2) svgLine(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1]);
-    let sr = Math.max(clear * 3, F.w * 0.014);
-    if (show.inner) for (let t of [0.3, 0.62]) { let [x, y] = bz(t); kitWeight('secondary'); svgCircle(x, y, sr * 2); kitWeight('fine'); if (sr >= clear * 2.4) facGlyph(G[(c * 5 + Math.round(t * 10)) % G.length], x, y, sr, 0); }
-  });
-  // the ward map: seals on every door, inscriptions down the corridors
-  if (variant === 'wardMap' && show.inner) facWard(() => {
-    let sr = Math.max(clear * 2.2, cw * 0.16);
-    for (let d of doors) {
-      let p = d.horiz ? [d.at, d.line + (d.side === 'bottom' ? cw * 0.42 : -cw * 0.42)] : [d.line + (d.side === 'right' ? cw * 0.42 : -cw * 0.42), d.at];
-      if (p[0] < F.x || p[0] > F.x + F.w || p[1] < F.y || p[1] > F.y + F.h) continue;
-      kitWeight('fine'); svgCircle(p[0], p[1], sr * 2);
-      if (sr >= clear * 2.4) facGlyph(G[Math.round(d.at) % G.length], p[0], p[1], sr * 0.9, 0);
-    }
-    let gsz = cw * 0.3;
-    if (gsz >= clear * 2.4) {
-      kitWeight('fine');
-      for (let x = F.x + gsz * 2, n = 0; x < F.x + F.w - gsz * 2; x += gsz * 1.7, n++) if (x < Vc.x - gsz || x > Vc.x + cw + gsz) facGlyph(G[(n * 7) % G.length], x, Hc.y + cw * 0.72, gsz, 0);
-    }
-  });
-  // the breach front, spreading from the vault in minutes
-  if (security && o.u.f.alert >= 1) kitAccent(() => {
-    kitWeight('secondary');
-    for (let k = 1; k <= 3; k++) {
-      let rr = vr + k * Math.min(F.w, F.h) * 0.13, pts = [];
-      for (let i = 0; i <= 90; i++) { let t = i / 90 * TWO_PI, q = rr * (1 + 0.13 * Math.sin(3 * t + o.F[40] * 6) + 0.06 * Math.sin(7 * t)); pts.push([vcx + Math.cos(t) * q, vcy + Math.sin(t) * q]); }
-      let run = [];
-      for (let p of pts) { let inF = p[0] > F.x && p[0] < F.x + F.w && p[1] > F.y && p[1] < F.y + F.h; if (inF) run.push(p); else { if (run.length > 1) _siteDotted(run, clear); run = []; } }
-      if (run.length > 1) _siteDotted(run, clear);
-      if (tags) { let lx = vcx + Math.cos(3.6) * rr, ly = vcy + Math.sin(3.6) * rr; if (lx > F.x + micro && ly > F.y + micro && ly < F.y + F.h) kitText('T+' + k, lx, ly, micro * 0.8, 'left'); }
-    }
-  });
-  // blast doors where the corridors meet the lockdown
-  if (security && o.u.f.alert >= 1) kitAccent(() => {
-    kitWeight('heavy');
-    let right = lockQ.q === 'TR' || lockQ.q === 'BR', x = right ? Vc.x + cw + wh * 2 : Vc.x - wh * 2;
-    svgLine(x, Hc.y + wh, x, Hc.y + cw - wh); svgLine(x + (right ? wh * 1.6 : -wh * 1.6), Hc.y + wh, x + (right ? wh * 1.6 : -wh * 1.6), Hc.y + cw - wh);
-    let y = lockQ.q === 'TR' || lockQ.q === 'TL' ? Hc.y - wh * 2 : Hc.y + cw + wh * 2;
-    svgLine(Vc.x + wh, y, Vc.x + cw - wh, y);
-    if (tags) { kitWeight('fine'); kitText('BD-0' + (1 + Math.floor(o.F[41] * 8)) + ' SEALED', x + (right ? wh * 4 : -wh * 4), Hc.y + cw + micro * 1.1, micro * 0.8, right ? 'left' : 'right'); }
-  });
-  // cameras and people (the security plan and the evacuation)
-  if (security && busy) {
-    // cameras in a room corner (top left or bottom right, clear of the room's
-    // tags), each field of view clipped to its room
-    let Hk = q => _mmHash(o.seed, 0x5C0 + q);
-    let camRooms = rooms.filter(r => r !== vault && r.name !== 'LIFT' && r.name !== 'STAIRS' && r.w > cw * 2.5 && r.h > cw * 2.5)
-      .map((r, i) => [Hk(i), r]).sort((a, b) => a[0] - b[0]).slice(0, 4).map(q => q[1]);
-    camRooms.forEach((r, i) => {
-      let R = { x: r.x + wh * 2, y: r.y + wh * 2, w: r.w - wh * 4, h: r.h - wh * 4 }, br = Hk(20 + i) < 0.5, s2 = Math.max(clear * 1.5, cw * 0.1);
-      let x = br ? R.x + R.w - s2 : R.x + s2, y = br ? R.y + R.h - s2 : R.y + s2, a = Math.atan2(R.y + R.h / 2 - y, R.x + R.w / 2 - x);
-      let sweep = a + 0.3 * Math.sin(o.anim * TWO_PI * (i % 2 ? 1 : -1) + i), fov = 0.36, rg = Math.hypot(R.w, R.h) * 0.5;
-      let P = [[R.x, R.y], [R.x + R.w, R.y], [R.x + R.w, R.y + R.h], [R.x, R.y + R.h]], inR = p => p[0] >= R.x && p[0] <= R.x + R.w && p[1] >= R.y && p[1] <= R.y + R.h;
-      kitWeight('secondary'); svgRect(x - s2, y - s2, s2 * 2, s2 * 2);
-      kitWeight('fine');
-      for (let e of [sweep - fov, sweep + fov]) {
-        let b = [x + Math.cos(e) * rg, y + Math.sin(e) * rg], [t0, t1] = facClipConvex([x, y], b, P);
-        if (t1 > t0) svgLine(x + (b[0] - x) * t0, y + (b[1] - y) * t0, x + (b[0] - x) * t1, y + (b[1] - y) * t1);
-      }
-      let run = [];
-      for (let j = 0; j <= 24; j++) { let t = sweep - fov + 2 * fov * j / 24, p = [x + Math.cos(t) * rg, y + Math.sin(t) * rg]; if (inR(p)) run.push(p); else { if (run.length > 1) svgPolyline(run); run = []; } }
-      if (run.length > 1) svgPolyline(run);
-      if (tags) kitText('C0' + (i + 1), br ? x - s2 * 1.8 : x + s2 * 1.8, br ? y - s2 * 0.6 : y + s2 + micro * 0.9, micro * 0.75, br ? 'right' : 'left');
-    });
-    // people: two at work, and (on the security plan) three walking the
-    // corridors with their trails; the evacuation's corridors carry its routes
-    let lab = rooms.find(r => r.name === 'LAB 4A') || rooms[0], ctl = rooms.find(r => r.name === 'CONTROL') || rooms[1];
-    let walk = o.anim * TWO_PI;
-    let blips = [[lab.x + lab.w * 0.6, lab.y + lab.h * 0.45, null, 'TK-11'], [ctl.x + ctl.w * 0.5, ctl.y + ctl.h * 0.4, null, 'OP-1']];
-    if (variant === 'plan') blips.push(
-      [F.x + F.w * 0.14 + Math.sin(walk) * F.w * 0.06, Hc.y + cw * 0.62, [-1, 0], 'OP-3'], [Vc.x + cw / 2, F.y + F.h * 0.12 + Math.sin(walk + 1) * F.h * 0.05, [0, -1], 'OP-7'],
-      [Vc.x + cw + F.w * 0.08 + Math.sin(walk + 2) * F.w * 0.04, Hc.y + cw * 0.62, [1, 0], 'SEC-2']);
-    let br = Math.max(clear * 2, cw * 0.17);
-    for (let [x, y, tr, id] of blips) {
-      kitWeight('fine');
-      if (tr) for (let k = 1; k <= 8; k++) svgPoint(x + tr[0] * k * br * 1.4, y + tr[1] * k * br * 1.4);
-      kitWeight('primary'); svgCircle(x, y, br * 2);
-      if (tags) { kitWeight('fine'); svgPolyline([[x + br * 0.7, y - br * 0.7], [x + br * 2.4, y - br * 2.4], [x + br * 3.6, y - br * 2.4]]); kitText(id, x + br * 3.8, y - br * 2.4 + micro * 0.3, micro * 0.85, 'left'); }
-    }
-    // something moving in the duct
-    kitAccent(() => {
-      let ux = bx, uy = (dy + vcy) / 2, t = br * 1.3;
-      kitWeight('secondary'); svgPolyline([[ux, uy - t], [ux + t, uy + t * 0.8], [ux - t, uy + t * 0.8], [ux, uy - t]]);
-      kitWeight('fine');
-      for (let k = 1; k <= 3; k++) svgArc(ux, uy, (t + k * t * 0.9) * 2, (t + k * t * 0.9) * 2, -0.6, 0.9);
-      if (tags) kitText('?? · VENT 2', ux + t * 4.4, uy + t * 1.4, micro * 0.8, 'left');
-    });
-  }
-  // evacuation: routes down the corridors from the junction to an exit sign
-  // at each corridor's end (the routes stop short of the sign and its name)
-  if (variant === 'evacuation') {
-    let jx = Vc.x + cw / 2, jy = Hc.y + cw / 2, rr = Math.max(clear * 3, cw * 0.34), ms = micro * 0.8, sec = tags;
-    let chev = Math.max(clear * 2, cw * 0.22), step2 = chev * 3, ph = o.anim * step2;
-    let lane = (x0, y0, x1, y1) => { let L = Math.hypot(x1 - x0, y1 - y0), a = Math.atan2(y1 - y0, x1 - x0); for (let d = ph % step2 + chev; d < L - chev; d += step2) _radChevron(x0 + Math.cos(a) * d, y0 + Math.sin(a) * d, a, chev); };
-    let exits = [['A', F.x + rr * 1.4, jy, PI], ['B', F.x + F.w - rr * 1.4, jy, 0], ['C', jx, F.y + F.h - rr * 1.4, HALF_PI]];
-    for (let [id, ax, ay, a] of exits) {
-      let lab = 'EXIT ' + id, horiz = Math.abs(Math.cos(a)) > 0.5, lw = sec ? measureFallbackText(lab, ms) + micro * 0.6 : 0;
-      kitWeight('secondary');
-      if (horiz) lane(jx + Math.cos(a) * cw * 0.7, jy, ax - Math.cos(a) * (rr * 1.6 + lw), jy);
-      else lane(jx, jy + cw * 0.7, jx, ay - rr * 1.6 - (sec ? micro * 1.4 : 0));
-      kitWeight('primary'); svgCircle(ax, ay, rr * 2);
-      kitWeight('secondary'); _radChevron(ax + Math.cos(a) * rr * 0.25, ay + Math.sin(a) * rr * 0.25, a, rr * 0.55);
-      if (sec) {
-        kitWeight('fine');
-        if (horiz) kitText(lab, ax - Math.cos(a) * rr * 1.3, ay + ms * 0.35, ms, a === 0 ? 'right' : 'left');
-        else kitText(lab, ax, ay - rr - micro * 0.45, ms, 'center');
-      }
-    }
-    kitWeight('secondary');
-    lane(jx, F.y + cw * 0.3, jx, jy - cw * 0.7);
-  }
-  // the grid: lettered columns, numbered rows
-  if (show.sec && o.grid) {
-    kitWeight('fine');
-    let gr = micro * 0.7, colStep = Math.max(micro * 5, F.w / 9), rowStep = Math.max(micro * 5, F.h / 6);
-    for (let x = F.x + colStep / 2, c = 0; x < F.x + F.w; x += colStep, c++) { svgCircle(x, F.y - shell - gr * 2.4, gr * 2); kitText('ABCDEFGHIJKL'[c % 12], x, F.y - shell - gr * 2.4 + micro * 0.32, micro * 0.8, 'center'); drawDashedLine(x, F.y - shell - gr * 1.4, x, F.y - shell, 1.2, 2.5); }
-    for (let y = F.y + rowStep / 2, r = 1; y < F.y + F.h; y += rowStep, r++) { svgCircle(F.x - shell - gr * 2.4, y, gr * 2); kitText(String(r), F.x - shell - gr * 2.4, y + micro * 0.32, micro * 0.8, 'center'); drawDashedLine(F.x - shell - gr * 1.4, y, F.x - shell, y, 1.2, 2.5); }
-  }
+  // a bench along the arc, the room's working face
+  let rb = r0 + dep * 0.32;
+  _radClosed(_radSector(cx, cy, rb, rb + u, a0 + (a1 - a0) * 0.15, a1 - (a1 - a0) * 0.15));
 }
+
 function _siteDotted(pts, clear) {
   let acc = 0, gap = Math.max(clear * 2.2, 3.2);
   for (let i = 0; i + 1 < pts.length; i++) {
@@ -17318,15 +17305,461 @@ function _siteDotted(pts, clear) {
   }
 }
 
+// Points along a polyline: the point and heading at arc length s
+function _sitePathAt(pts, s) {
+  for (let i = 0; i + 1 < pts.length; i++) {
+    let L = Math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]);
+    if (s <= L || i + 2 === pts.length) { let t = L ? Math.min(1, s / L) : 0; return [pts[i][0] + (pts[i + 1][0] - pts[i][0]) * t, pts[i][1] + (pts[i + 1][1] - pts[i][1]) * t, Math.atan2(pts[i + 1][1] - pts[i][1], pts[i + 1][0] - pts[i][0])]; }
+    s -= L;
+  }
+  return [pts[0][0], pts[0][1], 0];
+}
+const _sitePathLen = pts => { let L = 0; for (let i = 0; i + 1 < pts.length; i++) L += Math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]); return L; };
+// A polyline offset sideways by d (each segment moved along its normal)
+const _siteOffset = (pts, d) => pts.map((p, i) => { let a = pts[Math.max(0, i - 1)], b = pts[Math.min(pts.length - 1, i + 1)], L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1; return [p[0] - (b[1] - a[1]) / L * d, p[1] + (b[0] - a[0]) / L * d]; });
+// Point in polygon (even-odd)
+function _siteInPoly(x, y, P) { let c = false; for (let i = 0, j = P.length - 1; i < P.length; j = i++) { if ((P[i][1] > y) !== (P[j][1] > y) && x < (P[j][0] - P[i][0]) * (y - P[i][1]) / (P[j][1] - P[i][1]) + P[i][0]) c = !c; } return c; }
+
+// Dashes along a polyline (dash and gap in pixels)
+function _siteDashed(pts, dash, gap) {
+  let L = _sitePathLen(pts);
+  for (let s = 0; s < L; s += dash + gap) { let a = _sitePathAt(pts, s), b = _sitePathAt(pts, Math.min(L, s + dash)), seg = [[a[0], a[1]]]; for (let t = s + 4; t < Math.min(L, s + dash); t += 4) { let m = _sitePathAt(pts, t); seg.push([m[0], m[1]]); } seg.push([b[0], b[1]]); svgPolyline(seg); }
+}
+
+// The building's shell: a wall band, hatched, broken at the exits
+function _siteShell(fl, shell, macro) {
+  let { F, exits, cw } = fl, sp = Math.max(_radPen() * 1.4, shell * 0.4);
+  if (fl.hub) {
+    let { cx, cy, R } = fl.hub, g = cw / 2 / R, gaps = exits.map(e => [e.a - g, e.a + g]), as = exits.map(e => e.a).sort((p, q) => p - q);
+    kitWeight(macro ? 'heavy' : 'primary');
+    for (let rr of [R, R + shell]) _siteArcWall(cx, cy, rr, as[0] + g, as[0] + TWO_PI - g, gaps.concat(gaps.map(([p, q]) => [p + TWO_PI, q + TWO_PI])));
+    for (let a of as) for (let s2 of [-1, 1]) svgLine(cx + Math.cos(a + s2 * g) * R, cy + Math.sin(a + s2 * g) * R, cx + Math.cos(a + s2 * g) * (R + shell), cy + Math.sin(a + s2 * g) * (R + shell));
+    as.forEach((a, k) => { let b = k + 1 < as.length ? as[k + 1] : as[0] + TWO_PI; _radHatch([_radSector(cx, cy, R, R + shell, a + g, b - g)], 45, sp, 'secondary'); });
+    return;
+  }
+  let x0 = F.x - shell, y0 = F.y - shell, x1 = F.x + F.w + shell, y1 = F.y + F.h + shell;
+  let sides = [
+    { band: [x0, y0, x1, F.y], horiz: true, at: e => Math.abs(e.y - F.y) < 2 ? e.x : null },
+    { band: [x0, F.y + F.h, x1, y1], horiz: true, at: e => Math.abs(e.y - F.y - F.h) < 2 ? e.x : null },
+    { band: [x0, F.y, F.x, F.y + F.h], horiz: false, at: e => Math.abs(e.x - F.x) < 2 ? e.y : null },
+    { band: [F.x + F.w, F.y, x1, F.y + F.h], horiz: false, at: e => Math.abs(e.x - F.x - F.w) < 2 ? e.y : null }];
+  kitWeight(macro ? 'heavy' : 'primary');
+  for (let sd of sides) {
+    let [bx0, by0, bx1, by1] = sd.band, gaps = exits.map(sd.at).filter(v => v != null).map(v => [v - cw / 2, v + cw / 2]).sort((p, q) => p[0] - q[0]);
+    let pieces = [], pos = sd.horiz ? bx0 : by0, end = sd.horiz ? bx1 : by1;
+    for (let [g0, g1] of gaps) { if (g0 > pos) pieces.push([pos, g0]); pos = g1; }
+    if (end > pos) pieces.push([pos, end]);
+    for (let [p0, p1] of pieces) {
+      let poly = sd.horiz ? [[p0, by0], [p1, by0], [p1, by1], [p0, by1]] : [[bx0, p0], [bx1, p0], [bx1, p1], [bx0, p1]];
+      kitWeight(macro ? 'heavy' : 'primary');
+      if (sd.horiz) { svgLine(p0, by0, p1, by0); svgLine(p0, by1, p1, by1); } else { svgLine(bx0, p0, bx0, p1); svgLine(bx1, p0, bx1, p1); }
+      if (gaps.some(([g0, g1]) => Math.abs(g1 - p0) < 0.5 || Math.abs(g0 - p1) < 0.5)) { kitWeight('secondary'); for (let v of [p0, p1]) if (gaps.some(([g0, g1]) => Math.abs(g1 - v) < 0.5 || Math.abs(g0 - v) < 0.5)) sd.horiz ? svgLine(v, by0, v, by1) : svgLine(bx0, v, bx1, v); }
+      _radHatch([poly], 45, sp, 'secondary');
+    }
+  }
+}
+
+// The floor drawn flat, in the variant's look
+function _sitePlan(fl, o) {
+  let { show, macro, micro, clear, G } = o, { F, cw, rooms, vault, doors } = fl, hub = fl.hub, variant = o.variant;
+  let plan = variant === 'plan', ward = variant === 'wardMap', evac = variant === 'evacuation', alarm = o.u.f.alert >= 1;
+  let wh = Math.max(clear * 0.8, Math.min(F.w, F.h) * 0.004), shell = o.shell;
+  // small floors keep their rooms' names but drop the tags on people, cameras and fronts
+  let tags = show.sec && Math.min(F.w, F.h) > micro * 28, busy = show.inner && Math.min(F.w, F.h) > micro * 16;
+  let vc = vault.c, vr = hub ? hub.rv * 0.55 : Math.min(vault.w, vault.h) * 0.27;
+  let inside = hub ? ((x, y) => Math.hypot(x - hub.cx, y - hub.cy) < hub.R) : ((x, y) => x > F.x && x < F.x + F.w && y > F.y && y < F.y + F.h);
+  let roomPoly = (r, k) => r.sec ? _radSector(hub.cx, hub.cy, r.sec[0] + k, r.sec[1] - k, r.sec[2] + k / r.sec[0], r.sec[3] - k / r.sec[0]) : [[r.x + k, r.y + k], [r.x + r.w - k, r.y + k], [r.x + r.w - k, r.y + r.h - k], [r.x + k, r.y + r.h - k]];
+
+  // the corridors' floor grid (the security plan)
+  if (show.annot && plan) {
+    kitWeight('fine');
+    let st = Math.max(cw * 0.5, clear * 4);
+    if (hub) for (let p of fl.paths) { let L = _sitePathLen(p); for (let s = st / 2; s < L; s += st) { let q = _sitePathAt(p, s); svgPoint(q[0], q[1]); } }
+    else for (let C of fl.corridors) for (let x = C.x + st / 2; x < C.x + C.w; x += st) for (let y = C.y + st / 2; y < C.y + C.h; y += st) svgPoint(x, y);
+  }
+  // evacuation: each room hatched by the exit it empties to
+  if (evac) rooms.forEach(r => {
+    if (r === vault) return;
+    let k = 0, best = 1e9;
+    fl.exits.forEach((e, i) => { let d = Math.hypot(r.c[0] - e.x, r.c[1] - e.y); if (d < best) { best = d; k = i; } });
+    r.zone = k;
+    _radHatch([roomPoly(r, wh * 2)], [0, 90, 45, 135][k % 4], Math.max(_radPen() * 2.8, Math.min(F.w, F.h) * 0.017), 'fine');
+  });
+  // lockdown: the vault's zone hatched in the accent pen
+  if (plan && alarm) kitAccent(() => _radHatch([fl.lock], 45, Math.max(clear * 5, Math.min(F.w, F.h) * 0.018), 'secondary'));
+
+  // walls: each room inset half a wall, so neighbours make a double wall
+  kitWeight(macro ? 'primary' : ward ? 'fine' : 'secondary');
+  if (hub) {
+    let { cx, cy } = hub;
+    for (let r of rooms) {
+      if (!r.sec) continue;
+      let [r0, r1, a0, a1] = r.sec, d0 = wh / ((r0 + r1) / 2), gapsAt = rad => doors.filter(d => Math.abs(d.arc - rad) < 1.5 && d.a > a0 && d.a < a1).map(d => [d.a - d.hw, d.a + d.hw]);
+      _siteArcWall(cx, cy, r0 + wh, a0 + d0, a1 - d0, gapsAt(r0));
+      _siteArcWall(cx, cy, r1 - wh, a0 + d0, a1 - d0, r1 < hub.R - 1 ? gapsAt(r1) : []);
+      for (let a of [a0 + d0, a1 - d0]) svgLine(cx + Math.cos(a) * (r0 + wh), cy + Math.sin(a) * (r0 + wh), cx + Math.cos(a) * (r1 - wh), cy + Math.sin(a) * (r1 - wh));
+    }
+    // the rotunda: three walls, the blast door facing the first spoke
+    let s0 = hub.spokes[0], g = Math.min(0.35, cw * 0.42 / hub.rv);
+    kitWeight('primary');
+    for (let k of [1, 3, 5]) { let rr = hub.rv - wh * k; if (rr > hub.rv * 0.6) _siteArcWall(cx, cy, rr, s0 + g, s0 + TWO_PI - g, []); }
+    kitAccent(() => { kitWeight('heavy'); for (let rr of [hub.rv - wh, hub.rv - wh * 4]) svgLine(cx + Math.cos(s0 - g) * rr, cy + Math.sin(s0 - g) * rr, cx + Math.cos(s0 + g) * rr, cy + Math.sin(s0 + g) * rr); });
+  } else {
+    for (let r of rooms) if (r !== vault) _siteWall(r, doors, wh);
+    let vd = doors.find(d => d.room === vault);
+    kitWeight('primary');
+    _siteWall(vault, doors, wh);
+    for (let k of [wh * 3, wh * 5]) if (vault.w > k * 6 && vault.h > k * 6) _siteWall({ x: vault.x + k - wh, y: vault.y + k - wh, w: vault.w - (k - wh) * 2, h: vault.h - (k - wh) * 2 }, [Object.assign({}, vd, { line: vd.side === 'bottom' ? vault.y + vault.h - (k - wh) : vd.side === 'top' ? vault.y + (k - wh) : vd.side === 'right' ? vault.x + vault.w - (k - wh) : vault.x + (k - wh) })], wh);
+    kitAccent(() => { kitWeight('heavy'); _siteDoor(vd, wh, true); });
+    if (plan) { kitWeight('fine'); for (let d of doors) if (d.room !== vault) _siteDoor(d, wh, false); }
+  }
+  _siteShell(fl, shell, macro);
+
+  // fittings (the security plan; lifts and stairs on the evacuation too) and names
+  for (let r of rooms) {
+    if (r === vault) continue;
+    let ls = r.name === 'LIFT' || r.name === 'STAIRS';
+    if (plan || (evac && ls)) {
+      if (r.sec) _siteFurnishSector(hub.cx, hub.cy, r, clear);
+      else if (r.name === 'LIFT') { let m = Math.min(r.w, r.h) * 0.18; kitWeight('secondary'); svgRect(r.x + m, r.y + m, r.w - m * 2, r.h - m * 2); kitWeight('fine'); svgLine(r.x + m, r.y + m, r.x + r.w - m, r.y + r.h - m); svgLine(r.x + r.w - m, r.y + m, r.x + m, r.y + r.h - m); }
+      else if (r.name === 'STAIRS') { let hz = r.w > r.h, st = Math.max(clear * 2.2, Math.min(r.w, r.h) / 7); kitWeight('fine'); for (let k = st * 1.5; k < (hz ? r.w : r.h) - st; k += st) hz ? svgLine(r.x + k, r.y + wh * 3, r.x + k, r.y + r.h - wh * 3) : svgLine(r.x + wh * 3, r.y + k, r.x + r.w - wh * 3, r.y + k); }
+      else _siteFurnish(r, clear, G);
+    }
+    if (!show.labels) continue;
+    let lab = r.name === 'LIFT' ? 'LIFT B' : r.name === 'STAIRS' ? 'STAIR 2' : r.name;
+    kitWeight('fine');
+    if (r.sec) {
+      let [r0, r1, a0, a1] = r.sec, rm = (r0 + r1) / 2, chord = 2 * rm * Math.sin((a1 - a0) / 2);
+      if (r1 - r0 > micro * 2.4 && measureFallbackText(lab, micro * 0.9) < chord * 0.82) kitText(lab, r.c[0], r.c[1] + micro * 0.3, micro * 0.9, 'center');
+    } else if (r.w > micro * 7 && r.h > micro * 4) {
+      if (measureFallbackText(lab, micro) < r.w - wh * 6) kitText(lab, r.x + wh * 3, r.y + r.h - wh * 3 - micro * 0.25, micro, 'left');
+      if (show.sec && plan && r.h > micro * 4.5) kitText(r.code, r.x + r.w - wh * 3, r.y + wh * 3 + micro, micro * 0.8, 'right');
+    }
+  }
+
+  // the vault: its ward in miniature, the anomaly
+  kitWeight('primary'); svgCircle(vc[0], vc[1], vr * 2);
+  facWard(() => {
+    if (vr * 0.18 >= clear) { kitWeight('fine'); _radDashArc(vc[0], vc[1], vr * 0.82, 0, TWO_PI, 24, 0.5); }
+    let hp = []; for (let k = 0; k < 7; k++) hp.push([vc[0] + Math.cos(k * TWO_PI / 7 - HALF_PI + o.spin) * vr * 0.62, vc[1] + Math.sin(k * TWO_PI / 7 - HALF_PI + o.spin) * vr * 0.62]);
+    kitWeight('secondary'); for (let k = 0; k < 7; k++) svgLine(hp[k][0], hp[k][1], hp[(k + 2) % 7][0], hp[(k + 2) % 7][1]);
+  });
+  kitAccent(() => _wardAnomaly(vc[0], vc[1], vr * 0.2, o.F, macro));
+  let vw = hub ? hub.rv * 2 : vault.w, vy0 = hub ? vc[1] - hub.rv : vault.y, vy1 = hub ? vc[1] + hub.rv : vault.y + vault.h;
+  if (show.labels && vw > micro * 8) {
+    kitWeight('fine');
+    kitText('VAULT ' + o.u.vault, vc[0], Math.min(vy1 - wh * 6, vc[1] + vr + micro * 1.3), micro, 'center');
+    kitAccent(() => kitText(o.u.anomaly + ' · ' + (o.u.f.alert >= 3 ? 'BREACH' : 'HOLD'), vc[0], Math.max(vy0 + wh * 6 + micro, vc[1] - vr - micro * 0.5), micro * 0.85, 'center'));
+  }
+
+  // ducts down the main corridor, a branch into the vault, grilles (the security plan)
+  let main = fl.paths[0], gapD = Math.max(clear, cw * 0.08), branch = null;
+  if (plan) {
+    let duct = pts => { for (let s2 of [-1, 1]) _siteDashed(_siteOffset(pts, s2 * gapD), Math.max(4, cw * 0.18), Math.max(3, cw * 0.1)); };
+    let dpath = _siteOffset(main, cw * 0.28);
+    kitWeight('fine'); duct(dpath);
+    let L = _sitePathLen(dpath), best = null;
+    for (let s = 0; s <= L; s += L / 60) { let p = _sitePathAt(dpath, s), d = Math.hypot(p[0] - vc[0], p[1] - vc[1]); if (!best || d < best.d) best = { p, d }; }
+    let ang = Math.atan2(vc[1] - best.p[1], vc[0] - best.p[0]), end = [vc[0] - Math.cos(ang) * vr * 1.1, vc[1] - Math.sin(ang) * vr * 1.1];
+    branch = [[best.p[0], best.p[1]], end];
+    duct(branch);
+    if (show.inner) { kitWeight('secondary'); let sp = Math.max(cw * 3, L / 6); for (let s = sp / 2; s < L; s += sp) { let p = _sitePathAt(dpath, s); svgRect(p[0] - gapD * 2.2, p[1] - gapD * 1.6, gapD * 4.4, gapD * 3.2); } }
+  }
+  // the ley conduits: power drawn in from outside the walls, sealed where they pass
+  let conduits = ward ? Math.min(3, fl.exits.length + 1) : plan ? 1 : 0;
+  for (let c = 0; c < conduits; c++) facWard(() => {
+    let e = fl.exits[c % fl.exits.length], back = c >= fl.exits.length;
+    let P0 = back ? [hub ? hub.cx + Math.cos(e.a + PI) * hub.R : F.x + F.w * 0.7, hub ? hub.cy + Math.sin(e.a + PI) * hub.R : F.y + F.h] : [e.x, e.y];
+    let H = q => _mmHash(o.seed, 0x1E0 + c * 7 + q), mx = (P0[0] + vc[0]) / 2, my = (P0[1] + vc[1]) / 2, nx = -(vc[1] - P0[1]), ny = vc[0] - P0[0], k = (H(1) - 0.5) * 0.6;
+    let P1 = [mx + nx * k, my + ny * k], P2 = [vc[0] + nx * k * 0.3 - (vc[0] - P0[0]) * 0.15, vc[1] + ny * k * 0.3 - (vc[1] - P0[1]) * 0.15], P3 = [vc[0] - (vc[0] - P0[0]) * vr * 0.8 / Math.hypot(vc[0] - P0[0], vc[1] - P0[1]), vc[1] - (vc[1] - P0[1]) * vr * 0.8 / Math.hypot(vc[0] - P0[0], vc[1] - P0[1])];
+    let bz = t => { let w = 1 - t; return [w ** 3 * P0[0] + 3 * w * w * t * P1[0] + 3 * w * t * t * P2[0] + t ** 3 * P3[0], w ** 3 * P0[1] + 3 * w * w * t * P1[1] + 3 * w * t * t * P2[1] + t ** 3 * P3[1]]; };
+    let pts = []; for (let i = 0; i <= 80; i++) pts.push(bz(i / 80));
+    kitWeight('primary');
+    for (let i = 0; i < pts.length - 1; i += 2) svgLine(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1]);
+    let sr = Math.max(clear * 3, Math.min(F.w, F.h) * 0.014);
+    if (show.inner) for (let t of [0.3, 0.62]) { let [x, y] = bz(t); kitWeight('secondary'); svgCircle(x, y, sr * 2); kitWeight('fine'); if (sr >= clear * 2.4) facGlyph(G[(c * 5 + Math.round(t * 10)) % G.length], x, y, sr, 0); }
+  });
+  // the ward map: the great ward over the whole floor, its nodes, ley lines out
+  // to the exits, seals on the doors, the script down the corridors
+  if (ward) facWard(() => {
+    let [wx, wy] = vc, WR = hub ? hub.R * 0.86 : Math.max(vr * 2.4, Math.min(wx - F.x, F.x + F.w - wx, wy - F.y, F.y + F.h - wy) * 0.92, Math.min(F.w, F.h) * 0.3);
+    let rot = o.spin * 0.25 - HALF_PI, pts = []; for (let k = 0; k < 7; k++) pts.push([wx + Math.cos(rot + k * TWO_PI / 7) * WR * 0.9, wy + Math.sin(rot + k * TWO_PI / 7) * WR * 0.9]);
+    let clip = (a, b) => { let n = 40, run = []; for (let i = 0; i <= n; i++) { let p = [a[0] + (b[0] - a[0]) * i / n, a[1] + (b[1] - a[1]) * i / n]; if (inside(p[0], p[1])) run.push(p); else { if (run.length > 1) svgPolyline(run); run = []; } } if (run.length > 1) svgPolyline(run); };
+    let circ = (r, w) => { kitWeight(w); let run = []; for (let i = 0; i <= 160; i++) { let a = i / 160 * TWO_PI, p = [wx + Math.cos(a) * r, wy + Math.sin(a) * r]; if (inside(p[0], p[1])) run.push(p); else { if (run.length > 1) svgPolyline(run); run = []; } } if (run.length > 1) svgPolyline(run); };
+    circ(WR, macro ? 'primary' : 'secondary');
+    if (WR * 0.08 >= clear) circ(WR * 0.92, 'fine');
+    kitWeight('secondary'); for (let k = 0; k < 7; k++) clip(pts[k], pts[(k + 3) % 7]);
+    if (show.rings) { kitWeight('fine'); circ(WR * 0.42, 'fine'); for (let k = 0; k < 7; k++) clip(pts[k], pts[(k + 2) % 7]); }
+    let nr = Math.max(clear * 2.4, WR * 0.055);
+    for (let k = 0; k < 7; k++) if (inside(pts[k][0], pts[k][1])) { kitWeight('secondary'); svgCircle(pts[k][0], pts[k][1], nr * 2); if (nr * 0.85 >= clear * 2.4) { kitWeight('fine'); facGlyph(G[(k * 3 + 1) % G.length], pts[k][0], pts[k][1], nr * 0.8, 0); } }
+    let gs = WR * 0.035;
+    if (show.inner && gs >= clear * 2.4) { kitWeight('fine'); facGlyphRing(wx, wy, WR * 0.96, 0, TWO_PI, gs, G, 7, a => !inside(wx + Math.cos(a) * WR * 0.96, wy + Math.sin(a) * WR * 0.96)); }
+    // ley lines: each exit to the node nearest it
+    kitWeight('fine');
+    for (let e of fl.exits) { let n = pts.slice().sort((p, q) => Math.hypot(p[0] - e.x, p[1] - e.y) - Math.hypot(q[0] - e.x, q[1] - e.y))[0]; _siteDashed([[e.x, e.y], n], 4, 3); }
+    // seals on the doors, script down the corridors
+    if (show.inner) {
+      let sr = Math.max(clear * 2.2, cw * 0.16);
+      for (let d of doors) {
+        let p = d.arc ? [hub.cx + Math.cos(d.a) * (d.arc - cw * 0.42), hub.cy + Math.sin(d.a) * (d.arc - cw * 0.42)] : d.horiz ? [d.at, d.line + (d.side === 'bottom' ? cw * 0.42 : -cw * 0.42)] : [d.line + (d.side === 'right' ? cw * 0.42 : -cw * 0.42), d.at];
+        if (!inside(p[0], p[1]) || (d.arc && d.room.back)) continue;
+        kitWeight('fine'); svgCircle(p[0], p[1], sr * 2);
+        if (sr >= clear * 2.4) facGlyph(G[Math.round(d.at || d.a * 100) % G.length], p[0], p[1], sr * 0.9, 0);
+      }
+      let gsz = cw * 0.28;
+      if (gsz >= clear * 2.4) { kitWeight('fine'); for (let p of fl.paths) _chamberGlyphRun(p, G, gsz, gsz * 1.8, o.phase * gsz * 1.8, cw * 0.24, (g, x, y, sz, a) => facGlyph(g, x, y, sz, a)); }
+    }
+  });
+  // the breach front, spreading from the vault in minutes
+  if ((plan || evac) && alarm) kitAccent(() => {
+    kitWeight('secondary');
+    for (let k = 1; k <= 3; k++) {
+      let rr = vr + k * Math.min(F.w, F.h) * 0.13, pts = [];
+      for (let i = 0; i <= 90; i++) { let t = i / 90 * TWO_PI, q = rr * (1 + 0.13 * Math.sin(3 * t + o.F[40] * 6) + 0.06 * Math.sin(7 * t)); pts.push([vc[0] + Math.cos(t) * q, vc[1] + Math.sin(t) * q]); }
+      let run = [];
+      for (let p of pts) { if (inside(p[0], p[1])) run.push(p); else { if (run.length > 1) _siteDotted(run, clear); run = []; } }
+      if (run.length > 1) _siteDotted(run, clear);
+      if (tags) { let lx = vc[0] + Math.cos(3.6) * rr, ly = vc[1] + Math.sin(3.6) * rr; if (inside(lx - micro, ly - micro) && inside(lx + micro * 3, ly)) kitText('T+' + k, lx, ly, micro * 0.8, 'left'); }
+    }
+  });
+  // blast doors across the corridors into the lockdown
+  if ((plan || evac) && alarm) kitAccent(() => {
+    kitWeight('heavy');
+    fl.blast.forEach(([x, y, a], i) => {
+      let nx = -Math.sin(a), ny = Math.cos(a), h = cw / 2 - wh, t = wh * 0.8;
+      for (let s2 of [-1, 1]) svgLine(x + Math.cos(a) * t * s2 + nx * h, y + Math.sin(a) * t * s2 + ny * h, x + Math.cos(a) * t * s2 - nx * h, y + Math.sin(a) * t * s2 - ny * h);
+      if (tags && !i) { kitWeight('fine'); kitText('BD-0' + (1 + Math.floor(o.F[41] * 8)) + ' SEALED', x + nx * (cw * 0.5 + micro * 0.4) + micro * 0.3, y + ny * (cw * 0.5 + micro * 0.4) + micro, micro * 0.8, 'left'); kitWeight('heavy'); }
+    });
+  });
+  // cameras: in room corners on the square plans, on the ring at its spokes on the round one
+  if ((plan || evac) && busy) {
+    let Hk = q => _mmHash(o.seed, 0x5C0 + q), s2 = Math.max(clear * 1.5, cw * 0.1);
+    if (hub) hub.spokes.slice(0, 4).forEach((sk, i) => {
+      let a = sk + 0.06, r = hub.rc - wh * 2, x = hub.cx + Math.cos(a) * r, y = hub.cy + Math.sin(a) * r, dir = (i % 2 ? 1 : -1), fov = 0.3;
+      kitWeight('secondary'); svgRect(x - s2, y - s2, s2 * 2, s2 * 2);
+      kitWeight('fine');
+      let look = a + dir * HALF_PI + 0.25 * Math.sin(o.anim * TWO_PI + i), rg = cw * 4.5;
+      for (let e of [look - fov, look + fov]) { let run = []; for (let t = 0; t <= 1.0001; t += 0.05) { let p = [x + Math.cos(e) * rg * t, y + Math.sin(e) * rg * t], rr = Math.hypot(p[0] - hub.cx, p[1] - hub.cy); if (rr > hub.rv && rr < hub.rc) run.push(p); else break; } if (run.length > 1) svgPolyline(run); }
+      if (tags) kitText('C0' + (i + 1), x + Math.cos(a) * micro * 1.2, y + Math.sin(a) * micro * 1.2, micro * 0.75, Math.cos(a) >= 0 ? 'left' : 'right');
+    });
+    else rooms.filter(r => r !== vault && r.w && r.name !== 'LIFT' && r.name !== 'STAIRS' && r.w > cw * 2.5 && r.h > cw * 2.5).map((r, i) => [Hk(i), r]).sort((p, q) => p[0] - q[0]).slice(0, 4).map(q => q[1]).forEach((r, i) => {
+      let R = { x: r.x + wh * 2, y: r.y + wh * 2, w: r.w - wh * 4, h: r.h - wh * 4 }, br = Hk(20 + i) < 0.5;
+      let x = br ? R.x + R.w - s2 : R.x + s2, y = br ? R.y + R.h - s2 : R.y + s2, a = Math.atan2(R.y + R.h / 2 - y, R.x + R.w / 2 - x);
+      let sweep = a + 0.3 * Math.sin(o.anim * TWO_PI * (i % 2 ? 1 : -1) + i), fov = 0.36, rg = Math.hypot(R.w, R.h) * 0.5;
+      let P = [[R.x, R.y], [R.x + R.w, R.y], [R.x + R.w, R.y + R.h], [R.x, R.y + R.h]], inR = p => p[0] >= R.x && p[0] <= R.x + R.w && p[1] >= R.y && p[1] <= R.y + R.h;
+      kitWeight('secondary'); svgRect(x - s2, y - s2, s2 * 2, s2 * 2);
+      kitWeight('fine');
+      for (let e of [sweep - fov, sweep + fov]) { let b = [x + Math.cos(e) * rg, y + Math.sin(e) * rg], [t0, t1] = facClipConvex([x, y], b, P); if (t1 > t0) svgLine(x + (b[0] - x) * t0, y + (b[1] - y) * t0, x + (b[0] - x) * t1, y + (b[1] - y) * t1); }
+      let run = [];
+      for (let j = 0; j <= 24; j++) { let t = sweep - fov + 2 * fov * j / 24, p = [x + Math.cos(t) * rg, y + Math.sin(t) * rg]; if (inR(p)) run.push(p); else { if (run.length > 1) svgPolyline(run); run = []; } }
+      if (run.length > 1) svgPolyline(run);
+      if (tags) kitText('C0' + (i + 1), br ? x - s2 * 1.8 : x + s2 * 1.8, br ? y - s2 * 0.6 : y + s2 + micro * 0.9, micro * 0.75, br ? 'right' : 'left');
+    });
+    // people: two at work, and (on the security plan) three walking the corridors with their trails
+    let work = rooms.filter(r => r !== vault && r.name !== 'LIFT' && r.name !== 'STAIRS').slice(0, 2), br = Math.max(clear * 2, cw * 0.17);
+    let blips = work.map((r, i) => [r.c[0] + (r.sec ? 0 : r.w * 0.12), r.c[1], null, ['TK-11', 'OP-1'][i]]);
+    if (plan) fl.paths.slice(0, 3).forEach((p, i) => {
+      let L = _sitePathLen(p), s = (L * (0.2 + 0.25 * i) + o.anim * L * 0.25) % L, q = _sitePathAt(p, s);
+      blips.push([q[0] + Math.sin(q[2]) * cw * 0.15, q[1] - Math.cos(q[2]) * cw * 0.15, [-Math.cos(q[2]), -Math.sin(q[2])], ['OP-3', 'OP-7', 'SEC-2'][i]]);
+    });
+    for (let [x, y, tr, id] of blips) {
+      kitWeight('fine');
+      if (tr) for (let k = 1; k <= 8; k++) svgPoint(x + tr[0] * k * br * 1.4, y + tr[1] * k * br * 1.4);
+      kitWeight('primary'); svgCircle(x, y, br * 2);
+      if (tags) { kitWeight('fine'); svgPolyline([[x + br * 0.7, y - br * 0.7], [x + br * 2.4, y - br * 2.4], [x + br * 3.6, y - br * 2.4]]); kitText(id, x + br * 3.8, y - br * 2.4 + micro * 0.3, micro * 0.85, 'left'); }
+    }
+    // something moving in the duct
+    if (plan && branch) kitAccent(() => {
+      let ux = (branch[0][0] + branch[1][0]) / 2, uy = (branch[0][1] + branch[1][1]) / 2, t = br * 1.3;
+      kitWeight('secondary'); svgPolyline([[ux, uy - t], [ux + t, uy + t * 0.8], [ux - t, uy + t * 0.8], [ux, uy - t]]);
+      kitWeight('fine');
+      for (let k = 1; k <= 3; k++) svgArc(ux, uy, (t + k * t * 0.9) * 2, (t + k * t * 0.9) * 2, -0.6, 0.9);
+      if (tags) kitText('?? · VENT 2', ux + t * 4.4, uy + t * 1.4, micro * 0.8, 'left');
+    });
+  }
+  // evacuation: routes along the corridors to an exit sign at each way out, a
+  // you-are-here at the junction
+  if (evac) {
+    let rr = Math.max(clear * 3, cw * 0.34), ms = micro * 0.8, chev = Math.max(clear * 2, cw * 0.24), step2 = chev * 2.8, ph = o.anim * step2;
+    kitWeight(macro ? 'primary' : 'secondary');
+    for (let ln of fl.lanes) {
+      let L = _sitePathLen(ln), stop = rr * 2.2 + (tags ? measureFallbackText('EXIT A', ms) : 0);
+      for (let s = ph % step2 + chev; s < L - stop; s += step2) { let q = _sitePathAt(ln, s); _radChevron(q[0], q[1], q[2], chev); }
+    }
+    for (let e of fl.exits) {
+      let ax = e.x - Math.cos(e.a) * rr * 1.4, ay = e.y - Math.sin(e.a) * rr * 1.4;
+      kitWeight('primary'); svgCircle(ax, ay, rr * 2);
+      kitWeight('secondary'); _radChevron(ax + Math.cos(e.a) * rr * 0.25, ay + Math.sin(e.a) * rr * 0.25, e.a, rr * 0.55);
+      if (tags) { kitWeight('fine'); let lx = ax - Math.cos(e.a) * (rr * 1.3), ly = ay - Math.sin(e.a) * (rr * 1.3); kitText('EXIT ' + e.id, lx, ly + ms * 0.35, ms, Math.cos(e.a) > 0.5 ? 'right' : Math.cos(e.a) < -0.5 ? 'left' : 'center'); }
+    }
+    if (tags) {
+      let [jx, jy] = fl.junction, t = Math.max(clear * 2.5, cw * 0.3);
+      kitWeight('primary'); svgPolyline([[jx, jy - t], [jx + t * 0.85, jy + t * 0.55], [jx - t * 0.85, jy + t * 0.55], [jx, jy - t]]);
+      kitWeight('fine'); kitText('YOU ARE HERE', jx + t * 1.3, jy - t * 0.6, micro * 0.75, 'left');
+    }
+  }
+  // the grid: lettered columns and numbered rows; round the rim on the round plan
+  if (show.sec && o.grid) {
+    kitWeight('fine');
+    let gr = micro * 0.7;
+    if (hub) {
+      let rr = hub.R + shell + gr * 2.4;
+      for (let k = 0; k < 12; k++) { let a = -HALF_PI + k * TWO_PI / 12, x = hub.cx + Math.cos(a) * rr, y = hub.cy + Math.sin(a) * rr; svgCircle(x, y, gr * 2); kitText('ABCDEFGHIJKL'[k], x, y + micro * 0.32, micro * 0.8, 'center'); drawDashedLine(hub.cx + Math.cos(a) * (rr - gr * 1.4), hub.cy + Math.sin(a) * (rr - gr * 1.4), hub.cx + Math.cos(a) * (hub.R + shell), hub.cy + Math.sin(a) * (hub.R + shell), 1.2, 2.5); }
+    } else {
+      let colStep = Math.max(micro * 5, F.w / 9), rowStep = Math.max(micro * 5, F.h / 6);
+      for (let x = F.x + colStep / 2, c = 0; x < F.x + F.w; x += colStep, c++) { svgCircle(x, F.y - shell - gr * 2.4, gr * 2); kitText('ABCDEFGHIJKL'[c % 12], x, F.y - shell - gr * 2.4 + micro * 0.32, micro * 0.8, 'center'); drawDashedLine(x, F.y - shell - gr * 1.4, x, F.y - shell, 1.2, 2.5); }
+      for (let y = F.y + rowStep / 2, r = 1; y < F.y + F.h; y += rowStep, r++) { svgCircle(F.x - shell - gr * 2.4, y, gr * 2); kitText(String(r), F.x - shell - gr * 2.4, y + micro * 0.32, micro * 0.8, 'center'); drawDashedLine(F.x - shell - gr * 1.4, y, F.x - shell, y, 1.2, 2.5); }
+    }
+  }
+}
+
+// The surface: terrain in contours, the fence (a double line on posts, towers
+// at its corners, a gate), the road in through the gate, the head house over
+// the shaft and the buildings round it, the pad, the mast and the tanks; the
+// ward round the shaft head and the ley lines to it (detail pen); on alert the
+// cordon (accent pen)
+function _siteCompound(fr, o) {
+  let { show, macro, micro, clear, G } = o, f = o.u.f, H = q => _mmHash(o.seed, 0xC0D0 + q);
+  let W = fr.w, Hh = fr.h, S = Math.min(W, Hh), X = fr.x, Y = fr.y;
+  if (S < 60) return;
+  let ins = S * 0.08, fx0 = X + ins, fy0 = Y + ins, fx1 = X + W - ins, fy1 = Y + Hh - ins, ch = Math.min(fx1 - fx0, fy1 - fy0) * (0.12 + H(1) * 0.1);
+  let fence = [[fx0 + ch, fy0], [fx1 - ch, fy0], [fx1, fy0 + ch], [fx1, fy1 - ch], [fx1 - ch, fy1], [fx0 + ch, fy1], [fx0, fy1 - ch], [fx0, fy0 + ch]];
+  let inFence = (x0, y0, x1, y1) => [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].every(p => _siteInPoly(p[0], p[1], fence));
+  let sx = fx0 + (fx1 - fx0) * (0.4 + H(2) * 0.2), sy = fy0 + (fy1 - fy0) * (0.36 + H(3) * 0.2), sr = S * 0.04, WRd = S * 0.2;
+  // the road: in from the frame's bottom edge, through the gate, up to the head house (rounded off)
+  let gx = fx0 + ch + (fx1 - fx0 - 2 * ch) * (0.25 + H(4) * 0.5), rw = Math.max(clear * 4, S * 0.03), ex = X + W * (0.15 + H(5) * 0.7);
+  let road = [[ex, Y + Hh], [ex + (gx - ex) * 0.5, fy1 + (Y + Hh - fy1) * 0.5], [gx, fy1 + rw], [gx, fy1 - rw * 1.5], [gx + (sx - gx) * 0.45, sy + S * 0.17], [sx, sy + S * 0.1]];
+  for (let it = 0; it < 3; it++) { let nr = [road[0]]; for (let i = 0; i + 1 < road.length; i++) { let a = road[i], b = road[i + 1]; nr.push([a[0] * 0.75 + b[0] * 0.25, a[1] * 0.75 + b[1] * 0.25], [a[0] * 0.25 + b[0] * 0.75, a[1] * 0.25 + b[1] * 0.75]); } nr.push(road[road.length - 1]); road = nr; }
+  let roadD = (x, y) => { let best = 1e9; for (let i = 0; i + 1 < road.length; i++) { let [ax, ay] = road[i], [bx, by] = road[i + 1], dx = bx - ax, dy = by - ay, t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy || 1))); best = Math.min(best, Math.hypot(x - ax - dx * t, y - ay - dy * t)); } return best; };
+  // buildings: the head house over the shaft, then the rest, each clear of the others, the road and the ward
+  let boxes = [], blds = [], pad = null, mast = null, tanks = null;
+  let head = [sx - S * 0.08, sy - S * 0.06, sx + S * 0.08, sy + S * 0.06];
+  boxes.push(head); blds.push({ r: head, name: 'HEAD HOUSE', main: true });
+  let clearOf = (r, m) => !boxes.some(b => r[0] < b[2] + m && r[2] > b[0] - m && r[1] < b[3] + m && r[3] > b[1] - m);
+  let roadClear = r => { for (let x = r[0]; x <= r[2]; x += (r[2] - r[0]) / 4) for (let y = r[1]; y <= r[3]; y += (r[3] - r[1]) / 4) if (roadD(x, y) < rw * 1.2) return false; return true; };
+  let place = (w, h, k, wardOk) => {
+    for (let t = 0; t < 40; t++) {
+      let x = fx0 + (fx1 - fx0) * H(k + t * 3), y = fy0 + (fy1 - fy0) * H(k + t * 3 + 1), r = [x - w / 2, y - h / 2, x + w / 2, y + h / 2];
+      if (!inFence(r[0] - S * 0.02, r[1] - S * 0.02, r[2] + S * 0.02, r[3] + S * 0.02) || !clearOf(r, S * 0.03) || !roadClear(r)) continue;
+      if (!wardOk && Math.hypot(x - sx, y - sy) < WRd + Math.max(w, h) * 0.6) continue;
+      boxes.push(r); return r;
+    }
+    return null;
+  };
+  let names = ['ADMIN', 'POWER', 'BARRACKS', 'COMMS', 'WORKSHOP', 'STORES', 'MED', 'GARAGE'], ni = Math.floor(H(6) * names.length);
+  for (let i = 0; i < 6; i++) { let r = place(S * (0.08 + H(20 + i) * 0.07), S * (0.05 + H(30 + i) * 0.05), 100 + i * 200, false); if (r) blds.push({ r, name: names[(ni + i) % names.length] }); }
+  let pr = S * 0.045, pb = place(pr * 2.4, pr * 2.4, 1500, false); if (pb) pad = [(pb[0] + pb[2]) / 2, (pb[1] + pb[3]) / 2, pr];
+  let mb = place(S * 0.06, S * 0.06, 1700, false); if (mb) mast = [(mb[0] + mb[2]) / 2, (mb[1] + mb[3]) / 2, S * 0.03];
+  let tb = place(S * 0.13, S * 0.05, 1900, false); if (tb) tanks = tb;
+  let inBox = (x, y, m) => boxes.some(b => x > b[0] - m && x < b[2] + m && y > b[1] - m && y < b[3] + m);
+
+  // the ground: contours of the hills under it all, kept off buildings and the road
+  let hills = []; for (let i = 0; i < 5; i++) hills.push([X + W * (0.1 + H(40 + i) * 0.8), Y + Hh * (0.1 + H(50 + i) * 0.8), S * (0.18 + H(60 + i) * 0.3), (H(70 + i) - 0.35) * 1.4]);
+  let elev = (x, y) => { let e = 0; for (let [hx, hy, hr, ha] of hills) e += ha * Math.exp(-((x - hx) ** 2 + (y - hy) ** 2) / (hr * hr)); return e + 0.06 * Math.sin((x - X) / W * 7 + H(80) * 6) * Math.sin((y - Y) / Hh * 5 + H(81) * 6); };
+  let levels = []; for (let L = -1.2; L <= 1.6; L += macro ? 0.24 : 0.12) levels.push(+L.toFixed(2));
+  let keep = (x, y) => !inBox(x, y, S * 0.012) && roadD(x, y) > rw * 0.9 && (!pad || Math.hypot(x - pad[0], y - pad[1]) > pad[2] * 1.15);
+  if (show.rings || macro) {
+    let lines = facContours(elev, X, Y, W, Hh, Math.max(2.5, S / 90), levels, L => kitWeight(Math.abs(L * 100) % 48 < 1 ? 'secondary' : 'fine'), keep);
+    if (show.sec) {
+      kitWeight('fine');
+      let used = [];
+      for (let ln of lines) {
+        if (Math.abs(ln.L * 100) % 48 >= 1 || ln.pts.length < 24) continue;
+        let p = ln.pts[Math.floor(ln.pts.length / 2)];
+        if (used.some(q => Math.hypot(q[0] - p[0], q[1] - p[1]) < micro * 10)) continue;
+        used.push(p); kitText(String(Math.round(420 + ln.L * 100)), p[0], p[1] + micro * 0.3, micro * 0.7, 'center');
+      }
+    }
+  }
+  // the road: kerbs and a centre line, a vehicle on its way in
+  kitWeight(macro ? 'primary' : 'secondary');
+  for (let s2 of [-1, 1]) svgPolyline(_siteOffset(road, s2 * rw / 2));
+  kitWeight('fine'); _siteDashed(road, Math.max(4, rw * 0.6), Math.max(4, rw * 0.5));
+  { let L = _sitePathLen(road), q = _sitePathAt(road, L * (0.15 + 0.7 * o.anim)), c = Math.cos(q[2]), sn = Math.sin(q[2]), a = rw * 0.55, b = rw * 0.25; kitWeight('secondary'); svgPolyline([[-a, -b], [a, -b], [a, b], [-a, b], [-a, -b]].map(([u, v]) => [q[0] + u * c - v * sn + sn * rw * 0.2, q[1] + u * sn + v * c - c * rw * 0.2])); }
+  // the fence: posts on a line, an inner line dashed, the gate where the road crosses
+  let gate = [gx - rw * 0.9, gx + rw * 0.9], post = Math.max(clear * 3, S * 0.02);
+  kitWeight(macro ? 'heavy' : 'primary');
+  for (let i = 0; i < fence.length; i++) {
+    let a = fence[i], b = fence[(i + 1) % fence.length], onGate = Math.abs(a[1] - fy1) < 0.5 && Math.abs(b[1] - fy1) < 0.5;
+    let segs = onGate ? [[a, [gate[1], fy1]], [[gate[0], fy1], b]] : [[a, b]];
+    for (let [p, q] of segs) {
+      kitWeight(macro ? 'heavy' : 'primary'); svgLine(p[0], p[1], q[0], q[1]);
+      let L = Math.hypot(q[0] - p[0], q[1] - p[1]), ux = (q[0] - p[0]) / (L || 1), uy = (q[1] - p[1]) / (L || 1), nx = -uy, ny = ux;
+      kitWeight('fine');
+      for (let t = post; t < L; t += post) svgLine(p[0] + ux * t - nx * post * 0.22, p[1] + uy * t - ny * post * 0.22, p[0] + ux * t + nx * post * 0.22, p[1] + uy * t + ny * post * 0.22);
+      if (show.inner) _siteDashed([[p[0] + nx * post * 0.5, p[1] + ny * post * 0.5], [q[0] + nx * post * 0.5, q[1] + ny * post * 0.5]], 3, 3);
+    }
+  }
+  kitWeight('secondary'); svgRect(gate[1] + rw * 0.3, fy1 - rw * 1.1, rw * 1.1, rw * 0.9);
+  // watchtowers at the chamfered corners, each sweeping its stretch
+  let towers = [[fx0 + ch / 2, fy0 + ch / 2], [fx1 - ch / 2, fy0 + ch / 2], [fx1 - ch / 2, fy1 - ch / 2], [fx0 + ch / 2, fy1 - ch / 2]], ts = Math.max(clear * 2, S * 0.012);
+  towers.forEach(([tx, ty], i) => {
+    kitWeight('primary'); svgRect(tx - ts, ty - ts, ts * 2, ts * 2);
+    kitWeight('fine'); svgLine(tx - ts, ty - ts, tx + ts, ty + ts); svgLine(tx + ts, ty - ts, tx - ts, ty + ts);
+    let out = Math.atan2(ty - (fy0 + fy1) / 2, tx - (fx0 + fx1) / 2) + PI + 0.35 * Math.sin(o.anim * TWO_PI + i * 1.7), rg = S * 0.14;
+    for (let s2 of [-0.35, 0.35]) _siteDashed([[tx, ty], [tx + Math.cos(out + s2) * rg, ty + Math.sin(out + s2) * rg]], 3, 3);
+    svgArc(tx, ty, rg * 2, rg * 2, out - 0.35, out + 0.35);
+    if (show.sec) kitText('T' + (i + 1), tx + (i % 3 ? -ts * 1.6 : ts * 1.6), ty + (i < 2 ? -ts * 1.4 : ts * 1.4 + micro * 0.7), micro * 0.75, i % 3 ? 'right' : 'left');
+  });
+  // buildings: outlined, roofs hatched, named
+  blds.forEach((b, i) => {
+    let [x0, y0, x1, y1] = b.r, poly = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    kitWeight(b.main ? (macro ? 'heavy' : 'primary') : 'secondary'); _radClosed(poly);
+    _radHatch([poly], i % 2 ? 45 : 135, Math.max(_radPen() * 2.2, S * (b.main ? 0.009 : 0.013)), 'fine');
+    if (show.labels && !b.main && x1 - x0 > measureFallbackText(b.name, micro * 0.8) + micro) { kitWeight('fine'); kitText(b.name, (x0 + x1) / 2, y1 + micro * 1.1, micro * 0.8, 'center'); }
+  });
+  // the head house: the shaft in it, its collar and cross
+  kitWeight('primary'); svgCircle(sx, sy, sr * 2);
+  kitWeight('secondary'); if (sr * 0.3 >= clear) svgCircle(sx, sy, sr * 1.4);
+  kitWeight('fine'); svgLine(sx - sr * 0.7, sy, sx + sr * 0.7, sy); svgLine(sx, sy - sr * 0.7, sx, sy + sr * 0.7);
+  if (show.labels) { kitWeight('fine'); kitText('SHAFT · SL-' + f.sub, sx, head[1] - micro * 0.5, micro * 0.85, 'center'); }
+  // the pad, the mast and its guys, the tanks
+  if (pad) { let [px, py, r] = pad; kitWeight('primary'); svgCircle(px, py, r * 2); kitWeight('fine'); if (r * 0.15 >= clear) svgCircle(px, py, r * 1.7); let h = r * 0.42; kitWeight('secondary'); svgLine(px - h * 0.6, py - h, px - h * 0.6, py + h); svgLine(px + h * 0.6, py - h, px + h * 0.6, py + h); svgLine(px - h * 0.6, py, px + h * 0.6, py); }
+  if (mast) { let [mx, my, r] = mast; kitWeight('secondary'); svgPolyline([[mx, my - r * 0.5], [mx + r * 0.45, my + r * 0.3], [mx - r * 0.45, my + r * 0.3], [mx, my - r * 0.5]]); kitWeight('fine'); for (let k = 0; k < 3; k++) { let a = -HALF_PI + k * TWO_PI / 3; svgLine(mx, my, mx + Math.cos(a) * r, my + Math.sin(a) * r); } if (show.sec) kitText('MAST', mx + r * 0.7, my + micro * 0.3, micro * 0.7, 'left'); }
+  if (tanks) { let [x0, y0, x1, y1] = tanks, n = 3, rr = Math.min((x1 - x0) / n, y1 - y0) * 0.45; kitWeight('secondary'); for (let k = 0; k < n; k++) { let cx = x0 + (x1 - x0) * (k + 0.5) / n, cy = (y0 + y1) / 2; svgCircle(cx, cy, rr * 2); if (rr * 0.4 >= clear) { kitWeight('fine'); svgCircle(cx, cy, rr * 1.1); kitWeight('secondary'); } } }
+  // the ward round the shaft head, ley lines in from the corners, seals where they cross the fence
+  facWard(() => {
+    kitWeight('secondary'); _radDashArc(sx, sy, WRd, o.spin, o.spin + TWO_PI, 36, 0.62);
+    kitWeight('fine'); if (WRd * 0.08 >= clear) svgCircle(sx, sy, WRd * 0.9 * 2);
+    let gs = WRd * 0.045; if (show.inner && gs >= clear * 2.4) facGlyphRing(sx, sy, WRd * 0.95, 0, TWO_PI, gs, G, 3, null);
+    let sr2 = Math.max(clear * 2.4, S * 0.016);
+    for (let [tx, ty] of towers) {
+      let a = Math.atan2(sy - ty, sx - tx), e = [sx - Math.cos(a) * WRd, sy - Math.sin(a) * WRd];
+      kitWeight('fine'); _siteDashed([[tx, ty], e], 5, 3);
+      let m = [tx + (e[0] - tx) * 0.25, ty + (e[1] - ty) * 0.25];
+      kitWeight('secondary'); svgCircle(m[0], m[1], sr2 * 2); if (sr2 * 0.85 >= clear * 2.4) { kitWeight('fine'); facGlyph(G[Math.round(tx) % G.length], m[0], m[1], sr2 * 0.8, 0); }
+    }
+  });
+  // the cordon, on alert
+  if (f.alert >= 1) kitAccent(() => {
+    let r0 = WRd * 1.32, r1 = r0 + Math.max(clear * 3, S * 0.018), ring = r => Array.from({ length: 96 }, (_, i) => [sx + Math.cos(i / 96 * TWO_PI) * r, sy + Math.sin(i / 96 * TWO_PI) * r]);
+    kitWeight('secondary'); svgCircle(sx, sy, r0 * 2); svgCircle(sx, sy, r1 * 2);
+    _radHatch([ring(r1), ring(r0)], 45, Math.max(_radPen() * 1.6, (r1 - r0) * 0.3), 'secondary');
+    if (show.sec) { kitWeight('fine'); kitText('CORDON ' + (200 + f.alert * 100) + ' M', sx + r1 * 0.72 + micro * 0.3, sy - r1 * 0.72, micro * 0.8, 'left'); }
+  });
+  // north and the scale, in the corner the fence leaves
+  if (show.sec) {
+    kitWeight('fine');
+    let nx = X + ins * 0.5 + micro, ny = Y + Hh - ins * 0.5 - micro * 3, nl = Math.min(ins * 0.8, micro * 3);
+    svgLine(nx, ny + nl, nx, ny - nl); _radChevron(nx, ny - nl, -HALF_PI, nl * 0.35);
+    kitText('N', nx, ny - nl - micro * 0.4, micro * 0.8, 'center');
+    let L = S * 0.16, sx0 = X + W - ins * 0.5 - L - micro, sy0 = Y + Hh - micro * 0.8;
+    svgLine(sx0, sy0, sx0 + L, sy0); for (let k = 0; k <= 4; k++) svgLine(sx0 + L * k / 4, sy0, sx0 + L * k / 4, sy0 - micro * (k % 4 ? 0.3 : 0.6));
+    kitText('200 M', sx0 + L, sy0 - micro * 0.8, micro * 0.7, 'right');
+  }
+}
+
 // Exploded: three sublevels stacked in projection, the vault's in the middle.
 // Every plate is one corridor with rooms either side, the lift and stairs in
 // the corridor (the same place on every level, so their shafts drop straight
 // to the plate below); what a nearer plate covers is not drawn.
 function _siteExploded(fr, o) {
-  let { show, micro, clear, macro, G } = o, f = o.u.f;
-  let labW = show.labels ? micro * 10 : 0;
+  let { micro, clear, macro, G } = o, f = o.u.f;
+  // the levels' tags only where the stack leaves them room; a small stack draws bare
+  let FW0 = Math.min(fr.w * 0.96 / (1.69 * 0.866), fr.h * 0.92 / 1.72), lab = o.show.labels && FW0 > micro * 16;
+  let show = Object.assign({}, o.show, { labels: lab, sec: lab && o.show.sec }), labW = lab ? micro * 10 : 0;
   let FW = Math.min((fr.w * 0.96 - labW) / (1.69 * 0.866), fr.h * 0.92 / 1.72), FH = FW * 0.69;
-  if (FW < 40) return;
+  if (FW < 24) return;
   let gapZ = FW * 0.42, slab = Math.max(clear * 2.5, FW * 0.027), zTop = gapZ * 2, stackH = (FW + FH) * 0.5 + zTop + slab;
   let ox = fr.x + labW + (fr.w - labW - (FW + FH) * 0.866) / 2 + FH * 0.866, oy = fr.y + (fr.h - stackH) / 2 + zTop;
   let iso = (x, y, z) => [ox + (x - y) * 0.866, oy + (x + y) * 0.5 - z];
@@ -17437,9 +17870,9 @@ function composeSiteSchematic(rect, s, prng) {
 
   // ---- Every PRNG draw first ----
   let elemSeed = prng.nextInt(0, 0xFFFFFF);
-  let variant = prng.weightedPick(SITE_VARIANTS, [1.5, 0.9, 0.8, 0.9]);
-  if (_cellOverrideVariant && SITE_VARIANTS.includes(_cellOverrideVariant)) variant = _cellOverrideVariant;
-  _cellVariantInfo = variant;
+  let variant = prng.weightedPick(SITE_VARIANTS, [1.3, 1.0, 0.9, 1.0, 1.0]);
+  let forced = _cellOverrideVariant && SITE_VARIANTS.includes(_cellOverrideVariant);
+  if (forced) variant = _cellOverrideVariant;
   let F = []; for (let i = 0; i < 48; i++) F.push(prng.nextFloat());
   let u = facUnit('site', elemSeed), f = u.f, G = facGlyphs(f);
 
@@ -17457,26 +17890,33 @@ function composeSiteSchematic(rect, s, prng) {
   let side = null;
   if (show.sec && area.w > area.h * 1.25 && area.w > body * 40) { let sw = Math.min(area.w * 0.3, body * 28); side = { x: area.x + area.w - sw, y: area.y, w: sw, h: area.h }; area.w -= sw + body; }
   else if (show.sec && area.h > area.w * 0.8 && area.h > body * 40 && area.w > body * 30) { let sh = Math.min(area.h * 0.28, body * 16); side = { x: area.x, y: area.y + area.h - sh, w: area.w, h: sh }; area.h -= sh + body; }
-  // a stack too small to read is drawn as the plan
-  if (variant === 'exploded' && Math.min((area.w - micro * 10) / 1.46, area.h / 1.87) < micro * 14) _cellVariantInfo = variant = 'plan';
+  // a stack too small to read is drawn as the plan, unless the stack was asked for
+  if (!forced && variant === 'exploded' && Math.min(area.w / 1.46, area.h / 1.87) < micro * 8) variant = 'plan';
+  _cellVariantInfo = variant;
+
+  // ---- The floor's plan: by hash, the round plan only where the floor is squarish ----
+  let shell = Math.max(clear * 3, Math.min(area.w, area.h) * (macro ? 0.024 : 0.012)), grid = show.sec && Math.min(area.w, area.h) > body * 18;
+  let mg = (grid ? micro * 2.6 : 1) + shell, Fr = { x: area.x + mg, y: area.y + mg, w: area.w - mg - shell - 1, h: area.h - mg - shell - 1 }, kind = null;
+  if (variant !== 'exploded' && variant !== 'compound') {
+    let ar = Fr.w / Math.max(1, Fr.h), sq = ar > 0.72 && ar < 1.4, wts = [1.0, sq ? 0.7 : 1.8, sq ? 1.1 : 0.8, sq ? (variant === 'wardMap' ? 1.8 : 1.1) : 0];
+    let t = _mmHash(elemSeed, 0x5170) * wts.reduce((a, b) => a + b, 0), k = 0;
+    while (k < 3 && t > wts[k]) { t -= wts[k]; k++; }
+    kind = SITE_LAYOUTS[k];
+  }
   if (topH) {
-    let tag = variant === 'exploded' ? 'EXPLODED · SL-' + (f.sub - 1) + '/' + (f.sub + 1) : variant === 'evacuation' ? 'EVACUATION · ' + f.alertName : variant === 'wardMap' ? 'WARD MAP · SL-' + f.sub : 'SL-' + f.sub + ' · ' + (f.alert >= 1 ? 'LOCKDOWN L' + f.alert : 'NOMINAL');
+    let plan = { cross: 'CROSS PLAN', spine: 'SPINE', ring: 'RING', hub: 'ROTUNDA' }[kind];
+    let tag = variant === 'exploded' ? 'EXPLODED · SL-' + (f.sub - 1) + '/' + (f.sub + 1) : variant === 'compound' ? 'SURFACE · GRID ' + (1000 + Math.floor(F[2] * 8999)) + ' ' + (1000 + Math.floor(F[3] * 8999)) : variant === 'evacuation' ? 'EVACUATION · ' + plan + ' · ' + f.alertName : variant === 'wardMap' ? 'WARD MAP · ' + plan + ' · SL-' + f.sub : 'SL-' + f.sub + ' · ' + plan + ' · ' + (f.alert >= 1 ? 'LOCKDOWN L' + f.alert : 'NOMINAL');
     facHeader({ x: m.x, y: m.y, w: m.w, h: topH }, 'SITE SCHEMATIC', tag, f.site, f.alert >= 2, body, micro);
   }
 
-  // ---- The plan (or the stack) ----
-  let shell = Math.max(clear * 3, Math.min(area.w, area.h) * (macro ? 0.024 : 0.012));
-  let o = { show, macro, micro, clear, G, F, u, variant, anim, shell, seed: elemSeed, spin: animated ? _radSpin(true, 1) : 0, grid: show.sec && Math.min(area.w, area.h) > body * 18 };
+  // ---- The floor (or the stack, or the surface) ----
+  let o = { show, macro, micro, clear, G, F, u, variant, anim, shell, seed: elemSeed, spin: animated ? _radSpin(true, 1) : 0, phase: animated ? anim : 0, grid };
   if (variant === 'exploded') _siteExploded(area, o);
-  else {
-    let mg = (o.grid ? micro * 2.6 : 1) + shell;
-    let Fr = { x: area.x + mg, y: area.y + mg, w: area.w - mg - shell - 1, h: area.h - mg - shell - 1 };
-    if (Fr.w > 40 && Fr.h > 40) {
-      let H = q => _mmHash(elemSeed, q);
-      let cw = Math.max(clear * 6, Math.min(Fr.w, Fr.h) * 0.055), depth = Math.min(Fr.w, Fr.h) > 260 ? 2 : 1;
-      let fl = _siteFloor(Fr, H, cw, depth, Math.max(cw * 2, Math.min(Fr.w, Fr.h) * 0.12));
-      _sitePlan(fl, o);
-    }
+  else if (variant === 'compound') _siteCompound(area, o);
+  else if (Fr.w > 40 && Fr.h > 40) {
+    let H = q => _mmHash(elemSeed, q);
+    let cw = Math.max(clear * 6, Math.min(Fr.w, Fr.h) * 0.055), depth = Math.min(Fr.w, Fr.h) > 260 ? 2 : 1;
+    _sitePlan(_siteFloor(kind, Fr, H, cw, depth, Math.max(cw * 2, Math.min(Fr.w, Fr.h) * 0.12)), o);
   }
 
   // ---- Panel: the legend, a module of the variant's own, the access log, lift shafts ----
@@ -17485,22 +17925,25 @@ function composeSiteSchematic(rect, s, prng) {
       plan: ['door', 'blast', 'cam', 'blip', 'unk', 'duct', 'ley', 'lock', 'vault'],
       wardMap: ['door', 'ley', 'seal', 'glyph', 'ward', 'duct', 'vault'],
       evacuation: ['route', 'exit', 'door', 'blast', 'blip', 'lock', 'vault'],
-      exploded: ['slab', 'shaft', 'lift', 'gas', 'ward', 'vault']
+      exploded: ['slab', 'shaft', 'lift', 'gas', 'ward', 'vault'],
+      compound: ['fence', 'road', 'bldg', 'pad', 'tower', 'head', 'wardc', 'cordon']
     }[variant];
     let NAMES = {
       door: 'DOOR · SWING', blast: 'BLAST DOOR · SEALED', cam: 'CAMERA · FIELD', blip: 'PERSONNEL · TRAIL', unk: 'UNRESOLVED CONTACT',
       duct: 'VENT DUCT', ley: 'LEY CONDUIT · SEAL', lock: 'LOCKDOWN ZONE', vault: 'CONTAINMENT VAULT', route: 'EVACUATION ROUTE',
       exit: 'EXIT · MUSTER POINT', seal: 'DOOR WARD', glyph: 'WARD INSCRIPTION', ward: 'RITUAL CIRCLE', slab: 'SUBLEVEL SLAB',
-      shaft: 'SHAFT · HIDDEN LINE', lift: 'LIFT · STAIRS', gas: 'CONTAMINANT RISING'
+      shaft: 'SHAFT · HIDDEN LINE', lift: 'LIFT · STAIRS', gas: 'CONTAMINANT RISING', fence: 'FENCE · POSTS', road: 'ROAD · GATE',
+      bldg: 'BUILDING', pad: 'LANDING PAD', tower: 'WATCHTOWER · FIELD', head: 'SHAFT HEAD', wardc: 'SURFACE WARD', cordon: 'CORDON'
     };
-    let alarmK = new Set(['blast', 'unk', 'lock', 'gas']), wardK = new Set(['ley', 'seal', 'glyph', 'ward']);
+    let alarmK = new Set(['blast', 'unk', 'lock', 'gas', 'cordon']), wardK = new Set(['ley', 'seal', 'glyph', 'ward', 'wardc']);
     let logs = {
       plan: [['OP-1', 'CONTROL', 'GRANTED'], ['OP-3', 'LAB 4A', 'GRANTED'], ['TK-11', 'SPECIMEN PREP', 'GRANTED'], ['??', 'VENT 2', 'MOTION'], ['SYS', 'BD-04', 'SEALED'], ['SYS', 'SECTOR ' + f.sub, 'LOCKDOWN'], ['OP-7', 'RING C', 'WITNESSED'], ['SEC-2', 'CORRIDOR B', 'EN ROUTE']],
       wardMap: [['OP-7', 'RING C', 'WITNESSED'], ['SYS', 'LEY 2', 'DRAWN'], ['OP-1', 'SEAL D04', 'RENEWED'], ['TK-11', 'RITUAL DECK', 'GRANTED'], ['SYS', 'SEAL D11', 'FAILING'], ['??', 'LEY 3', 'BLEED'], ['OP-7', 'VAULT ' + u.vault, 'WITNESSED']],
       evacuation: [['SYS', 'SECTOR ' + f.sub, 'EVACUATE'], ['OP-1', 'EXIT A', 'CLEARED'], ['TK-11', 'EXIT C', 'CLEARED'], ['SYS', 'BD-04', 'SEALED'], ['SEC-2', 'CORRIDOR B', 'SWEEP'], ['??', 'VENT 2', 'MOTION'], ['OP-3', 'EXIT B', 'CLEARED']],
-      exploded: [['SYS', 'SHAFT B', f.alert >= 1 ? 'HELD' : 'IDLE'], ['SYS', 'SL-' + f.sub, f.alert >= 1 ? 'LOCKDOWN' : 'NOMINAL'], ['OP-3', 'SL-' + (f.sub - 1), 'GRANTED'], ['SYS', 'SL-' + (f.sub + 1), 'NOMINAL'], ['??', 'SHAFT B', f.alert >= 1 ? 'RISING' : 'CLEAR'], ['OP-7', 'RITUAL DECK', 'WITNESSED']]
+      exploded: [['SYS', 'SHAFT B', f.alert >= 1 ? 'HELD' : 'IDLE'], ['SYS', 'SL-' + f.sub, f.alert >= 1 ? 'LOCKDOWN' : 'NOMINAL'], ['OP-3', 'SL-' + (f.sub - 1), 'GRANTED'], ['SYS', 'SL-' + (f.sub + 1), 'NOMINAL'], ['??', 'SHAFT B', f.alert >= 1 ? 'RISING' : 'CLEAR'], ['OP-7', 'RITUAL DECK', 'WITNESSED']],
+      compound: [['GATE 1', 'TRUCK 7', 'CLEARED'], ['SYS', 'TOWER 3', 'ONLINE'], ['OP-7', 'SHAFT HEAD', 'WITNESSED'], ['GATE 1', 'COURIER', 'HELD'], ['SYS', 'SECTOR NE', f.alert >= 1 ? 'MOTION' : 'QUIET'], ['PAD', 'VTOL 2', 'INBOUND']]
     }[variant];
-    let badW = new Set(['MOTION', 'SEALED', 'LOCKDOWN', 'WITNESSED', 'FAILING', 'BLEED', 'EVACUATE', 'HELD', 'RISING']);
+    let badW = new Set(['MOTION', 'SEALED', 'LOCKDOWN', 'WITNESSED', 'FAILING', 'BLEED', 'EVACUATE', 'HELD', 'RISING', 'BREACH']);
     let t0 = 3 * 3600 + 11 * 60 + Math.floor(F[30] * 40);
     let row = Math.max(micro * 1.5, 4), barH = Math.max(micro * 1.55, 4);
     let states = []; for (let i = 0; i < 24; i++) states.push(F[i] < 0.62 ? 0 : F[i] < 0.86 ? 1 : 2);
@@ -17530,6 +17973,9 @@ function composeSiteSchematic(rect, s, prng) {
       let miss = rows.reduce((t, q) => t + parseInt(q[2].split('/')[1]) - parseInt(q[2]), 0);
       rows.push(['UNACCOUNTED', Math.min(1, miss / 6), String(miss), miss > 0]);
       own = { size: (w, col) => col ? micro * 2.4 + barH * rows.length : Math.max(micro * 14, Math.min(side.w * 0.3, micro * 22)), draw: r => facBars(r, 'MUSTER · ' + f.shift + ' SHIFT', rows, micro) };
+    } else if (variant === 'compound') {
+      let rows = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'].map((id, i) => { let bad = f.alert >= 1 && i === Math.floor(F[12] * 8), v = bad ? 0.18 : 0.72 + F[13 + i] * 0.26; return ['SECTOR ' + id, v, bad ? 'BREACH' : Math.round(v * 100) + '%', bad]; });
+      own = { size: (w, col) => col ? micro * 2.4 + barH * rows.length : Math.max(micro * 14, Math.min(side.w * 0.3, micro * 22)), draw: r => facBars(r, 'PERIMETER · SENSORS', rows, micro) };
     } else {
       let held = f.alert >= 1, lines = [
         ['SL-' + (f.sub - 1) + '  ' + (held ? 'SHAFT B HELD' : 'RITUAL DECK'), held], ['SL-' + f.sub + '  ' + (held ? 'LOCKDOWN L' + f.alert : 'NOMINAL'), held],
@@ -17561,6 +18007,14 @@ function composeSiteSchematic(rect, s, prng) {
             if (k === 'shaft') { drawDashedLine(x + sw * 0.3, y - micro * 0.5, x + sw * 0.3, y + micro * 0.5, 1.5, 1.5); drawDashedLine(x + sw * 0.7, y - micro * 0.5, x + sw * 0.7, y + micro * 0.5, 1.5, 1.5); }
             if (k === 'lift') { svgRect(x, y - micro * 0.4, micro * 0.8, micro * 0.8); svgLine(x, y - micro * 0.4, x + micro * 0.8, y + micro * 0.4); svgRect(x + sw - micro * 1.1, y - micro * 0.4, micro * 1.1, micro * 0.8); for (let t = 1; t < 3; t++) svgLine(x + sw - micro * 1.1 + micro * 0.37 * t, y - micro * 0.4, x + sw - micro * 1.1 + micro * 0.37 * t, y + micro * 0.4); }
             if (k === 'gas') { svgLine(cx, y + micro * 0.5, cx, y - micro * 0.2); _radChevron(cx, y - micro * 0.35, -HALF_PI, micro * 0.35); }
+            if (k === 'fence') { svgLine(x, y, x + sw, y); for (let t = micro * 0.3; t < sw; t += micro * 0.6) svgLine(x + t, y - micro * 0.25, x + t, y + micro * 0.25); }
+            if (k === 'road') { svgLine(x, y - micro * 0.35, x + sw, y - micro * 0.35); svgLine(x, y + micro * 0.35, x + sw, y + micro * 0.35); drawDashedLine(x, y, x + sw, y, 1.5, 1.5); }
+            if (k === 'bldg') { svgRect(x, y - micro * 0.45, sw, micro * 0.9); for (let t = micro * 0.45; t < sw; t += micro * 0.5) svgLine(x + t - micro * 0.45, y + micro * 0.45, x + t, y - micro * 0.45); }
+            if (k === 'pad') { svgCircle(cx, y, micro * 1.1); svgLine(cx - micro * 0.25, y - micro * 0.3, cx - micro * 0.25, y + micro * 0.3); svgLine(cx + micro * 0.25, y - micro * 0.3, cx + micro * 0.25, y + micro * 0.3); svgLine(cx - micro * 0.25, y, cx + micro * 0.25, y); }
+            if (k === 'tower') { svgRect(x, y - micro * 0.2, micro * 0.4, micro * 0.4); svgArc(x + micro * 0.2, y, sw * 1.6, sw * 1.6, -0.3, 0.3); }
+            if (k === 'head') { svgCircle(cx, y, micro * 1.0); svgLine(cx - micro * 0.35, y, cx + micro * 0.35, y); svgLine(cx, y - micro * 0.35, cx, y + micro * 0.35); }
+            if (k === 'wardc') { _radDashArc(cx, y, micro * 0.6, 0, TWO_PI, 8, 0.6); }
+            if (k === 'cordon') { svgRect(x, y - micro * 0.3, sw, micro * 0.6); for (let t = micro * 0.3; t < sw; t += micro * 0.45) svgLine(x + t - micro * 0.3, y + micro * 0.3, x + t, y - micro * 0.3); }
           };
           if (alarmK.has(k)) kitAccent(icon); else if (wardK.has(k)) facWard(icon); else icon();
           kitWeight('fine');
@@ -26617,9 +27071,11 @@ function isRandEnabled(id) {
 }
 
 function randomizeParams(prng) {
+  // Scale has its own lock, beside the slider
+  if (isRandEnabled('rand-scale')) state.scale = prng.nextFloat();
+
   // Composition
   if (isRandEnabled('rand-composition')) {
-    state.scale = prng.nextFloat();
     prng.nextFloat(); // consume to maintain PRNG stream (was: mode toggle)
     state.multi.depth = prng.nextInt(2, 5);
     state.multi.irregularity = prng.nextFloat();
