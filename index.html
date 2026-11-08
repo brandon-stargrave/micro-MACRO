@@ -6792,8 +6792,10 @@ function _radDashArc(cx, cy, r, a0, a1, dashes, duty) {
 // Callout from a target point with the leader along (dx, dy). Tries the four
 // mirrored placements and takes the first whose label box stays inside `b`
 // and passes `ok(x0, y0, x1, y1)` (e.g. keep clear of a bezel). Returns false
-// and draws nothing when none fits.
-function _radCallout(px, py, dx, dy, label, sub, size, b, ok) {
+// and draws nothing when none fits. A `moving` callout (its anchor moves with
+// the frame, so it fits on some frames and not others) still runs unseen when
+// it does not fit, spending the same font rolls on every frame.
+function _radCallout(px, py, dx, dy, label, sub, size, b, ok, moving) {
   let w = Math.max(measureFallbackText(label, size), sub ? measureFallbackText(sub, size * 0.8) : 0) + size * 0.6;
   for (let [fx, fy] of [[1, 1], [-1, 1], [1, -1], [-1, -1]]) {
     let lx = px + dx * fx, ly = py + dy * fy;
@@ -6804,6 +6806,7 @@ function _radCallout(px, py, dx, dy, label, sub, size, b, ok) {
     kitCallout(px, py, lx, ly, label, sub, size);
     return true;
   }
+  if (moving) { let was = _drawingSuppressed; _drawingSuppressed = true; kitCallout(px, py, px + dx, py + dy, label, sub, size); _drawingSuppressed = was; }
   return false;
 }
 
@@ -7214,8 +7217,9 @@ function composeTargetingReticle(rect, s, prng) {
       // ... and off the crosshair wires, posts and stadia
       let inside = (x0, y0, x1, y1) => [[x0, y0], [x1, y0], [x0, y1], [x1, y1]].every(([qx, qy]) => Math.hypot(qx - cx, qy - cy) < bandIn * 0.97)
         && !(showCross && ((x0 < cx + R * 0.08 && x1 > cx - R * 0.08) || (y0 < cy + R * 0.04 && y1 > cy - R * 0.04)));
+      // On a lock the anchor rides the brackets, which converge and open with the frame
       _radCallout(tx + (dx > 0 ? bs : -bs) * 0.7, ty + (dy > 0 ? bs : -bs) * 0.7, dx, dy,
-        T.tgt, 'B' + String(Math.round(tb)).padStart(3, '0') + ' R' + rangeKm, csz, area, inside);
+        T.tgt, 'B' + String(Math.round(tb)).padStart(3, '0') + ' R' + rangeKm, csz, area, inside, isLock);
     }
   }
 
@@ -8149,11 +8153,12 @@ function composeMeterGauge(rect, s, prng) {
 }
 
 // ---- Text archetypes: shared helpers --------------------------------------
-// Used only by composeDataReadout, composeErrorMessage and composeTerminalBlock.
+// Used by composeDataReadout, composeErrorMessage and composeTerminalBlock.
 
 // Every text draw/measure picks a font by rolling _cellPRNG. Text that blinks
 // out (animation presence) skips that roll and would shift the cell stream
-// between frames. The text composers swap in a fixed roll for their duration:
+// between frames. The text composers swap in a fixed roll for their duration
+// (so do the globe and the containment ward, whose labels move with the frame):
 // no cell draws are spent on fonts, and text always uses the generation's
 // micro font (what these archetypes are set in). Returns the stream to restore.
 const _TX_FONT_ROLL = { nextFloat: () => 0, nextInt: (a) => a, pick: (arr) => arr[0] };
@@ -14706,6 +14711,10 @@ function _glbNightPoly(g, S) {
 
 function composeGlobeSpherePanel(rect, s, prng) {
   svgRec.beginGroup('globe-sphere-panel');
+  // Labels come and go as the globe turns and as each finds room, so the
+  // font rolls are pinned (as in the text archetypes): the cell stream that
+  // the border and a frieze's next tile read never shifts by frame
+  let fontSaved = _txFontStream();
 
   // ---- All PRNG draws first ----
   let elemSeed = prng.nextInt(0, 0xFFFFFF);
@@ -15114,6 +15123,7 @@ function composeGlobeSpherePanel(rect, s, prng) {
   // rolls on hidden frames, which would otherwise reshuffle module content.
   kitFillLayout(lay, s, new PRNG(laySeed));
   kitWeight('primary');
+  _cellPRNG = fontSaved;
   svgRec.endGroup();
 }
 
@@ -17049,6 +17059,10 @@ function _wardSection(fr, o) {
 
 function composeContainmentWard(rect, s, prng) {
   svgRec.beginGroup('containment-ward');
+  // Labels ride the turning rings, changing side and coming in and out of
+  // view, so the font rolls are pinned (as in the text archetypes): the cell
+  // stream that the border and a frieze's next tile read never shifts by frame
+  let fontSaved = _txFontStream();
 
   // ---- Every PRNG draw first ----
   let elemSeed = prng.nextInt(0, 0xFFFFFF);
@@ -17125,6 +17139,7 @@ function composeContainmentWard(rect, s, prng) {
       { fn: t => 0.5 * (Math.sin(TWO_PI * (fA * t + ph)) + Math.sin(TWO_PI * (fC * t + 2 * ph) + 0.6)), role: 'secondary', alarm: breach }
     ], micro, 0.7 + F[37] * 0.2, breach ? 'BREACH' : 'DRIFT +' + drift.toFixed(2) + '%');
   }
+  _cellPRNG = fontSaved;
   svgRec.endGroup();
 }
 
