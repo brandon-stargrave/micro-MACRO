@@ -4222,7 +4222,7 @@ const textGen = {
     return words[Math.floor(pick * words.length)];
   },
 
-  statusLabel(prng) { return this._userWord(prng) || prng.pick(this._statusWords); },
+  statusLabel(prng) { return this._userWord(prng) || lorePick(prng, this._statusWords, loreByAlert(LORE_STATUS), LORE_RATE); },
 
   valueReadout(prng) {
     let u = prng.pick(this._units);
@@ -4235,7 +4235,7 @@ const textGen = {
   identifier(prng) {
     let user = this._userWord(prng);
     if (user) return user.replace(/\s+/g, '_') + '-' + prng.nextInt(0, 0xFFF).toString(16).toUpperCase().padStart(3, '0');
-    let prefix = prng.pick(this._idPrefixes);
+    let prefix = lorePick(prng, this._idPrefixes, LORE_IDS, LORE_RATE);
     let sep = prng.pick(this._idSeps);
     let isHex = prng.nextFloat() > 0.5;
     let suffix = isHex
@@ -4262,7 +4262,7 @@ const textGen = {
   },
 
   systemPath(prng) {
-    let name = prng.pick(this._pathNames);
+    let name = lorePick(prng, this._pathNames, LORE_PATHS, LORE_RATE);
     let suffix = prng.pick(this._idPrefixes).slice(0, 3);
     let ext = prng.pick(this._pathExts);
     return `${name}_${suffix}.${ext}`;
@@ -4278,18 +4278,25 @@ const textGen = {
   year(prng) { return '' + prng.nextInt(2026, 2099); },
 
   errorCode(prng) {
-    let type = prng.pick(this._errorTypes);
+    let type = lorePick(prng, this._errorTypes, LORE_ERRS, LORE_RATE);
     let hex = prng.nextInt(0, 0xFFFF).toString(16).toUpperCase().padStart(4, '0');
     return prng.nextFloat() > 0.5 ? `${type}_0x${hex}` : `${type} AT 0x${hex}`;
   },
 
   terminalPrompt(prng) {
-    return prng.pick(this._promptChars) + ' ' + prng.pick(this._commands);
+    return prng.pick(this._promptChars) + ' ' + lorePick(prng, this._commands, LORE_CMDS, LORE_RATE);
   },
 
-  overrideLabel(prng) { return prng.pick(this._overrideWords); },
+  overrideLabel(prng) { return lorePick(prng, this._overrideWords, LORE_OVERRIDES, LORE_RATE); },
 
-  annotation(prng) { let u = this._userWord(prng); return u ? u + ': ' + prng.pick(['OK', 'ACTIVE', 'LOGGED', 'SYNC', 'NOMINAL']) : prng.pick(this._annotations); },
+  // { key, text }: key is the plain pick (for de-duplication), text may quote the site
+  _annot(prng) {
+    let u = this._userWord(prng);
+    if (u) { let t = u + ': ' + prng.pick(['OK', 'ACTIVE', 'LOGGED', 'SYNC', 'NOMINAL']); return { key: t, text: t }; }
+    let r = prng.nextFloat();
+    return { key: this._annotations[Math.floor(r * this._annotations.length)], text: _loreFrom(r, this._annotations, loreByAlert(LORE_NOTES), LORE_RATE) };
+  },
+  annotation(prng) { return this._annot(prng).text; },
 
   accentChar(prng) {
     let pool = [];
@@ -4307,12 +4314,14 @@ const textGen = {
     density = density || 'medium';
     let result = { label: this.statusLabel(prng), value: this.valueReadout(prng), status: this.statusLabel(prng), annotations: [] };
     let count = density === 'dense' ? prng.nextInt(3, 5) : density === 'medium' ? prng.nextInt(1, 3) : prng.nextInt(0, 1);
-    let used = new Set();
+    let used = new Set(), seen = new Set();
     for (let i = 0; i < count; i++) {
       let a;
-      do { a = this.annotation(prng); } while (used.has(a) && used.size < this._annotations.length);
-      used.add(a);
-      result.annotations.push(a);
+      do { a = this._annot(prng); } while (used.has(a.key) && used.size < this._annotations.length);
+      used.add(a.key);
+      let t = seen.has(a.text) ? a.key : a.text; // two quotes of the site can meet
+      seen.add(t);
+      result.annotations.push(t);
     }
     return result;
   },
@@ -4344,6 +4353,82 @@ const textGen = {
     };
   }
 };
+
+// ========================================================
+// SITE LORE: the other archetypes quote the facility
+// ========================================================
+// Every page describes one technomancer research site (buildFacility, dealt
+// in generate()). The six facility archetypes are built around it; the rest
+// quote it in passing: a share of their generated words is swapped for the
+// site's own (its vault and anomaly, its alert, its wards). A swap is decided
+// by hashing a draw the word already made, or a seed the composer already
+// holds, never by a new draw, so a page keeps its layout and values and only
+// some words change. Templates take the facility's fields: {site} {sitelc}
+// {sub} {vault} {vaultlc} {anomaly} {alert} {incident} {inctype} {shift}
+// {clock} {run} {name} {giant} {drift}; anything else ({n}, {p}) is left for
+// the caller.
+
+const LORE_RATE = 0.3; // share of words that quote the site
+
+// Pools by the page's alert: green, amber, red, black
+const LORE_STATUS = [
+  ['WARDED', 'SEALED', 'CONTAINED', 'BOUND', 'QUIESCENT', 'ATTUNED', 'HOLDING'],
+  ['WARDED', 'SEALED', 'CONTAINED', 'HOLDING', 'DRIFTING', 'VENTING', 'UNSETTLED', 'RESEALING'],
+  ['SEALED', 'HOLDING', 'DRIFTING', 'VENTING', 'BREACH', 'LOCKDOWN', 'UNBOUND', 'WARD FAIL'],
+  ['SEALED', 'VENTING', 'BREACH', 'LOCKDOWN', 'UNBOUND', 'WARD FAIL', 'PURGE']
+];
+const LORE_NOTES = [
+  ['SITE: {site}', 'SUBLEVEL: {sub}', 'VAULT: {vault}', '{anomaly}: CONTAINED', 'ALERT: {alert}', 'SHIFT: {shift}',
+   'WARD: HOLDING', 'LEY: STEADY', 'SIGIL: VERIFIED', 'PROTOCOL: {name}', 'RUN: {run}', 'CLOCK: {clock}', 'PRIMARY: {giant}'],
+  ['SITE: {site}', 'SUBLEVEL: {sub}', 'VAULT: {vault}', '{anomaly}: CONTAINED', 'ALERT: {alert}', 'SHIFT: {shift}',
+   'WARD DRIFT: {drift}%', 'LEY: SURGING', 'SIGIL: VERIFIED', 'PROTOCOL: {name}', 'RUN: {run}', 'CLOCK: {clock}', 'PRIMARY: {giant}'],
+  ['INCIDENT: {incident}', '{inctype}', '{anomaly}: UNSTABLE', 'WARD DRIFT: {drift}%', 'ALERT: {alert}', 'SITE: {site}',
+   'VAULT: {vault}', 'SHIFT: {shift}', 'PROTOCOL: {name}', 'CLOCK: {clock}'],
+  ['LOCKDOWN: SUB {sub}', 'INCIDENT: {incident}', '{inctype}', 'VAULT {vault}: OPEN', '{anomaly}: UNBOUND', 'ALERT: {alert}',
+   'SITE: {site}', 'CLOCK: {clock}']
+];
+const LORE_HERO = [
+  ['WARD', 'SEAL', 'BIND', 'VAULT', 'SIGIL', 'RITE', 'GLYPH', '{anomaly}'],
+  ['WARD', 'SEAL', 'VAULT', 'SIGIL', 'DRIFT', 'VENT', '{anomaly}'],
+  ['BREACH', 'WARD', 'SEAL', 'VAULT', 'PURGE', '{anomaly}'],
+  ['BREACH', 'PURGE', 'SEAL', 'VAULT', '{anomaly}']
+];
+const LORE_IDS = ['WRD', 'VLT', 'SGL', 'LEY', 'GLY', 'THM', 'CNT', 'RIT'];
+const LORE_CMDS = ['SEAL', 'WARD', 'BIND', 'INVOKE', 'PURGE', 'SCRY', 'ATTUNE', 'VENT'];
+const LORE_ERRS = ['WARD_FAULT', 'SIGIL_MISMATCH', 'LEY_SURGE', 'BREACH', 'UNBOUND', 'GLYPH_CORRUPT'];
+const LORE_PATHS = ['WARD', 'SIGIL', 'VAULT', 'LEY', 'GLYPH', 'RITE', 'LATTICE'];
+const LORE_OVERRIDES = ['UNBIND', 'WARD BYPASS', 'SEAL BROKEN', 'RITE OVERRIDE', 'LATTICE OPEN'];
+
+function loreFill(str, f) {
+  if (typeof str !== 'string') return str;
+  return str.replace(/\{(\w+)\}/g, (m, k) => {
+    let v = { site: f.site, sitelc: f.site.toLowerCase(), sub: f.sub, vault: f.vault, vaultlc: f.vault.toLowerCase(),
+              anomaly: f.anomaly, alert: f.alertName, incident: f.incident, inctype: f.incType, shift: f.shift,
+              clock: f.clock, run: f.run, name: f.name, giant: f.giant, drift: Math.round(f.drift * 100) }[k];
+    return v === undefined ? m : String(v);
+  });
+}
+
+// The 32 bits behind a PRNG float, hashed on a slot: a second roll from a
+// draw already made
+function _loreRoll(r, k) { return _mmHash((r * 4294967296) | 0, 0x10E0 + k); }
+
+// What pick() returns for the draw r, except that a `rate` share of draws
+// take an entry of `lore` instead, filled from the page's facility
+function _loreFrom(r, arr, lore, rate) {
+  if (_facility && _loreRoll(r, 0) < rate) return loreFill(lore[Math.floor(_loreRoll(r, 1) * lore.length)], _facility);
+  return arr[Math.floor(r * arr.length)];
+}
+// prng.pick(arr), on the same single draw, with the site's words mixed in
+function lorePick(prng, arr, lore, rate) { return _loreFrom(prng.nextFloat(), arr, lore, rate); }
+
+// A swap keyed on a seed the composer already holds: whether slot k (0-255)
+// quotes the site, and which line of a pool it quotes
+function loreChance(seed, k, rate) { return !!_facility && _mmHash(seed, 0x4C00 + k) < rate; }
+function loreLine(seed, k, lore) { return loreFill(lore[Math.floor(_mmHash(seed, 0x4D00 + k) * lore.length)], _facility); }
+
+// The pool for the page's alert level
+function loreByAlert(pools) { return pools[_facility ? _facility.alert : 0]; }
 
 // ========================================================
 // FALLBACK TEXT RENDERER
@@ -6603,7 +6688,8 @@ function composeStatusPanel(rect, s, prng) {
   // Right-edge rotated identifier
   if (detailActive('annotationTexture', s) && iw > body * 8) {
     kitWeight('fine');
-    drawFallbackTextRotated(textGen.identifier(prng), ix + iw + pad * 0.6, iy + ih * 0.55, micro, 90);
+    let edgeId = textGen.identifier(prng);
+    drawFallbackTextRotated(loreChance(seedAnnot, 1, LORE_RATE) ? _facility.site : edgeId, ix + iw + pad * 0.6, iy + ih * 0.55, micro, 90);
   }
 
   // Annotation block + version/timestamp footer
@@ -6828,6 +6914,7 @@ function composeTargetingReticle(rect, s, prng) {
     ver: textGen.versionString(prng), ts: textGen.timestamp(prng), coord: textGen.coordinate(prng),
     contacts: [0, 1, 2, 3, 4, 5].map(() => textGen.identifier(prng).replace(/[-._:]/, ''))
   };
+  if (loreChance(elemSeed, 1, 0.35)) T.tgt = _facility.anomaly; // tracking the site's anomaly
   let laySeed = prng.nextInt(1, 0x7FFFFFFF); // private stream for the kit side modules
   let lay = kitLayout(rect, s, prng);
 
@@ -7257,6 +7344,14 @@ const METER_SCALES = [
   { unit: 'A', tag: 'DRAW', min: 0, max: 20, majors: 4, minors: 5, dec: 2 },
   { unit: 'G', tag: 'ACCEL', min: 0, max: 9, majors: 9, minors: 2, dec: 2 },
   { unit: 'mSv', tag: 'DOSE', min: 0, max: 5, majors: 5, minors: 4, dec: 3 }
+];
+// The site's own instruments, quoted by a share of gauges
+const METER_LORE_SCALES = [
+  { unit: '%', tag: 'WARD', min: 0, max: 100, majors: 10, minors: 2, dec: 1 },
+  { unit: 'mT', tag: 'LEY FLUX', min: 0, max: 8, majors: 8, minors: 4, dec: 2 },
+  { unit: 'Hz', tag: 'RESONANCE', min: 0, max: 60, majors: 6, minors: 5, dec: 1 },
+  { unit: 'K', tag: 'CRYO', min: 0, max: 300, majors: 6, minors: 5, dec: 0 },
+  { unit: 'dB', tag: 'BLEED', min: 0, max: 90, majors: 9, minors: 2, dec: 1 }
 ];
 
 function _mtrFmt(sc, v) { return (sc.min + (sc.max - sc.min) * v).toFixed(sc.dec); }
@@ -7919,6 +8014,7 @@ function meterVariant_thermometerBar(c) {
 
 // ---- Meter/Gauge Composer (variant dispatcher) ----
 const METER_AXES = ['PWR', 'THR', 'SIG', 'TMP', 'FLW', 'PRS', 'RAD', 'VOL', 'GAN', 'LAT'];
+const METER_LORE_AXES = { RAD: 'LEY', VOL: 'WRD', GAN: 'SGL', LAT: 'THM', FLW: 'BLD' }; // a ward chart's axes
 
 function composeMeterGauge(rect, s, prng) {
   svgRec.beginGroup('meter-gauge');
@@ -7947,11 +8043,12 @@ function composeMeterGauge(rect, s, prng) {
   let fill = kitFillStyle(s, prng);
   let F = [];
   for (let i = 0; i < 48; i++) F.push(prng.nextFloat());
-  let sc = METER_SCALES[prng.nextInt(0, METER_SCALES.length - 1)];
+  let sc = lorePick(prng, METER_SCALES, METER_LORE_SCALES, LORE_RATE);
   let T = {
     label: textGen.statusLabel(prng), id: textGen.identifier(prng), ver: textGen.versionString(prng),
     ts: textGen.timestamp(prng), coord: textGen.coordinate(prng), axes: prng.shuffle(METER_AXES)
   };
+  if (loreChance(elemSeed, 1, 0.35)) T.axes = T.axes.map(a => METER_LORE_AXES[a] || a);
   let laySeed = prng.nextInt(1, 0x7FFFFFFF); // private stream for the kit side modules
   let lay = kitLayout(rect, s, prng);
 
@@ -8180,10 +8277,19 @@ const _TX_CHANNELS = [
   ['RAD', 'MSV', 3, 0, 5], ['TORQ', 'NM', 1, 0, 400], ['HUM', '%RH', 1, 0, 100], ['BIAS', 'MV', 1, -500, 500]
 ];
 const _TX_GROUPS = ['THERMAL', 'POWER BUS', 'RF LINK', 'MECHANICAL', 'ENVIRONMENT', 'TIMING', 'SENSOR ARRAY', 'COOLANT LOOP'];
+// The site's own systems, quoted by a share of channels and sections
+const _TX_LORE_CHANNELS = [
+  ['WARD', '%', 1, 0, 100], ['LEY', 'MT', 2, 0, 9], ['BLEED', 'DBM', 0, -110, -40], ['THAUM', 'TH', 2, 0, 12],
+  ['FIELD', '%', 1, 0, 100], ['CRYO', 'K', 1, 4, 90], ['SIGIL', 'HZ', 1, 1, 60]
+];
+const _TX_LORE_GROUPS = ['WARD LATTICE', 'CONTAINMENT', 'LEY CONDUIT', 'SIGIL BUS', 'CRYO VAULT', 'EMITTER RING', 'GLYPH STORE', 'VAULT {vault}'];
+function _txGroup(i, seed) {
+  return loreChance(seed, 0x40 + i, LORE_RATE) ? loreLine(seed, 0x40 + i, _TX_LORE_GROUPS) : _TX_GROUPS[i % _TX_GROUPS.length];
+}
 
 // One channel row: random-walk trend buffer (n points), value, status.
 function _txChannel(prng, n) {
-  let ch = prng.pick(_TX_CHANNELS);
+  let ch = lorePick(prng, _TX_CHANNELS, _TX_LORE_CHANNELS, LORE_RATE);
   let v = prng.nextFloat(), walk = [], u = v;
   for (let i = 0; i < n; i++) { u = Math.max(0.05, Math.min(0.95, u + (prng.nextFloat() - 0.5) * 0.3)); walk.push(u); }
   let num = ch[3] + (ch[4] - ch[3]) * v;
@@ -8494,7 +8600,7 @@ function composeDataReadout(rect, s, prng) {
   if (variant === 'telemetry' || variant === 'ledger') {
     let first = true, secN = 1;
     while (avail > body * 3) {
-      let sh = (avail > body * 6) ? _txSection(ix, cy, iw, secN, _TX_GROUPS[gIdx % _TX_GROUPS.length] + (first ? '  //  ' + srcId : ''), sec) : 0;
+      let sh = (avail > body * 6) ? _txSection(ix, cy, iw, secN, _txGroup(gIdx, seedHeader) + (first ? '  //  ' + srcId : ''), sec) : 0;
       cy += sh; avail -= sh;
       let maxRows = _txTableRows(avail, body);
       // Ledger splits into groups of 4-7 rows; telemetry is one table
@@ -8511,7 +8617,7 @@ function composeDataReadout(rect, s, prng) {
   } else if (variant === 'split') {
     // Left: key/value column with leader dots. Right: vertical bar bank with scale.
     let colW = iw > body * 30 ? iw * 0.48 : iw;
-    let sh = avail > body * 6 ? _txSection(ix, cy, colW, 1, _TX_GROUPS[gIdx % _TX_GROUPS.length], sec) : 0;
+    let sh = avail > body * 6 ? _txSection(ix, cy, colW, 1, _txGroup(gIdx, seedHeader), sec) : 0;
     let ky = cy + sh;
     let rowH = body * 1.55;
     let n = Math.max(0, Math.floor((bottom - ky - body * 0.3) / rowH));
@@ -8589,7 +8695,7 @@ function composeDataReadout(rect, s, prng) {
     cy = hy + rowH * n + body * 0.8;
     avail = bottom - cy;
     if (avail > body * 5) {
-      let sh2 = _txSection(ix, cy, iw, 2, _TX_GROUPS[gIdx % _TX_GROUPS.length], sec);
+      let sh2 = _txSection(ix, cy, iw, 2, _txGroup(gIdx, seedHeader), sec);
       cy += sh2;
       let rows = [];
       let nr = _txTableRows(bottom - cy, body);
@@ -9058,16 +9164,6 @@ function symRenderForm(form, cx, cy, o) {
   }
 }
 
-// kitText with an animation seed, but PRNG-stable across frames: drawAnimText
-// skips its font roll on frames where the text is hidden, so consume it here.
-function symAnimText(str, x, y, size, align, seed, hint) {
-  kitText(str, x, y, size, align, seed, hint);
-  if (animCtx && seed) {
-    let prof = getAnimProfile(seed, _cellScale);
-    if (prof.active && !applyPresence(prof, animCtx.frameIndex, animCtx.frameCount, animCtx.t).visible) measureFallbackText(str, size);
-  }
-}
-
 // Registration mark: small circle with a cross through it.
 function symRegMark(x, y, r) {
   svgCircle(x, y, r * 1.2);
@@ -9094,7 +9190,8 @@ function symField(rect, s, cx, cy, rc, acc, info) {
       kitTickRing(cx, cy, rc, { count: n, major: n / 8, len: Math.max(3, rc * 0.045), inward: false, baseline: true,
                                 labels: numerals, labelSize: micro, labelFn: (i) => String((Math.round(i * 360 / n) + 90) % 360).padStart(3, '0') });
       kitWeight('fine');
-      drawDashedRing(cx, cy, rc * 0.955, Math.max(24, Math.round(rc / 4)));
+      if (info.ward) facWard(() => facGlyphRing(cx, cy, info.ward.r, 0, TWO_PI, info.ward.size, facGlyphs(_facility), info.labelSeed % 24));
+      else drawDashedRing(cx, cy, rc * 0.955, Math.max(24, Math.round(rc / 4)));
     } else {
       drawDashedRing(cx, cy, rc, Math.max(24, Math.round(rc / 5)));
     }
@@ -9139,10 +9236,20 @@ function symField(rect, s, cx, cy, rc, acc, info) {
       kitWeight('fine');
       svgLine(cx - tw / 2 - body, py - body * 1.25, cx + tw / 2 + body, py - body * 1.25);
       kitWeight('secondary');
-      symAnimText(info.status, cx, py, body, 'center', info.labelSeed, 'bus:status');
+      kitText(info.status, cx, py, body, 'center', info.labelSeed, 'bus:status');
     }
   }
 
+}
+
+// The ward band: a ring of the site's script inside a sign's bearing ring, in
+// place of its dashes, where the gap round the sign is wide enough to read.
+// inner = the radius the sign reaches. Returns { r, size } for symField, or null.
+function symWardBand(rect, s, rc, inner, seed, rate) {
+  let m = Math.min(rect.w, rect.h), clear = _radPen() * PEN_CLEAR;
+  if (!loreChance(seed, 7, rate) || !detailActive('secondaryRings', s) || !detailActive('primaryLabels', s) || m <= 90 || rc * 1.12 >= m / 2) return null;
+  let size = Math.min((rc - inner - clear * 2) / 1.32, kitType(rect, 'body'));
+  return size >= clear * 2.4 ? { r: (rc + inner) / 2, size } : null;
 }
 
 function composeStandaloneGlyph(rect, s, prng) {
@@ -9207,7 +9314,7 @@ function composeStandaloneGlyph(rect, s, prng) {
   if (hasGlyphAnim) { pop(); svgRec.endGroup(); }
 
   // Construction field — sheds toward macro
-  symField(rect, s, cx, cy, ext * 1.12, form.acc, { designation, status, labelSeed,
+  symField(rect, s, cx, cy, ext * 1.12, form.acc, { designation, status, labelSeed, ward: symWardBand(rect, s, ext * 1.12, ext, labelSeed, 0.3),
     spec: ['FORM ' + fam.toUpperCase(), 'T/R ' + (T / R).toFixed(3), code] });
 
   kitWeight('primary');
@@ -9220,6 +9327,10 @@ const SEAL_VARIANTS = ['gear', 'serrated', 'wavy', 'dotted', 'ratchet', 'double-
 const SEAL_WORDS = ['SYSTEMS AUTHORITY', 'ORBITAL SURVEY CORPS', 'SIGNAL DIVISION', 'DEEP FIELD COMMAND',
   'CALIBRATION BUREAU', 'AUTONOMOUS GRID', 'ARCHIVE OF RECORD', 'VECTOR CONTROL', 'PERIMETER SERVICE',
   'INSTRUMENT REGISTRY', 'TRANSIT AUTHORITY', 'QUARANTINE OFFICE', 'RELAY COMMISSION', 'BOREAL STATION'];
+// The site's own offices, and what its seals carry underneath
+const SEAL_LORE_WORDS = ['{site} RESEARCH SITE', 'OFFICE OF WARDS', 'CONTAINMENT DIVISION', 'THAUMIC SAFETY BOARD', 'SIGIL REGISTRY',
+  'WARDENS OF SUBLEVEL {sub}', '{name} PROTOCOL', 'LEY SURVEY OFFICE'];
+const SEAL_LORE_FOOT = ['VAULT {vault}', 'SUBLEVEL {sub}', '{anomaly}', 'SHIFT {shift}'];
 
 // Toothed rim contour between root radius Ri and tip radius Ro.
 function sealRimPoly(type, cx, cy, Ro, Ri, N) {
@@ -9302,8 +9413,9 @@ function composeSealBadge(rect, s, prng) {
   let fieldPick = prng.nextFloat();
   let emblemFam = prng.pick(['radial', 'star', 'rune', 'sector', 'chevron', 'frames', 'radial', 'star']);
   let sepStyle = prng.pick(['star', 'rivet', 'diamond']);
-  let topText = prng.pick(SEAL_WORDS);
+  let topText = lorePick(prng, SEAL_WORDS, SEAL_LORE_WORDS, 0.4);
   let botText = prng.nextFloat() < 0.5 ? 'EST ' + textGen.year(prng) : textGen.identifier(prng);
+  if (loreChance(elemSeed, 1, LORE_RATE)) botText = loreLine(elemSeed, 1, SEAL_LORE_FOOT);
   let hatchAng = prng.pick([45, 135, 60, 120]);
   let cornerId = textGen.identifier(prng), coord = textGen.coordinate(prng), ver = textGen.versionString(prng);
   let status = textGen.statusLabel(prng);
@@ -9329,6 +9441,9 @@ function composeSealBadge(rect, s, prng) {
   let beadOn = !textOn && detailActive('secondaryRings', s);
   let tickOn = detailActive('secondaryRings', s) && Rs > 40;
   let ringOut = Rb - gap, ringIn = textOn ? ringOut - textBand : beadOn ? ringOut - Rs * 0.06 : ringOut + gap * 0.4;
+  // A share of seals carry their lower legend in the site's ward script
+  let wardClear = _radPen() * PEN_CLEAR, wardSize = Math.min((textBand - gap * 0.45 - wardClear * 2) / 1.32, tsize);
+  let wardFoot = textOn && loreChance(elemSeed, 2, LORE_RATE) && wardSize >= wardClear * 2.4 ? { r: (ringIn + ringOut - gap * 0.45) / 2, size: wardSize } : null;
   let tickLen = Rs * 0.05;
   let Rf = tickOn ? ringIn - gap * 0.5 - tickLen - gap * 0.6 : ringIn - gap;
   let bezelSolid = !!fill || s >= 0.55;
@@ -9429,7 +9544,10 @@ function composeSealBadge(rect, s, prng) {
       let bot = fit(botText, rBot);
       kitWeight('secondary');
       if (top) sealArcText(cx, cy, rTop, top.met.ws.length === [...topText].length ? topText : topText.split(' ')[0], top.sz, -HALF_PI, false, top.met);
-      if (bot) sealArcText(cx, cy, rBot, botText, bot.sz, HALF_PI, true, bot.met);
+      if (bot && wardFoot) {
+        for (let ch of botText) if (ch !== ' ') measureFallbackText(ch, bot.sz); // the letters' font rolls, stood in
+        facWard(() => { kitWeight('fine'); facGlyphRing(cx, cy, wardFoot.r, HALF_PI - maxSpan * 0.35, HALF_PI + maxSpan * 0.35, wardFoot.size, facGlyphs(_facility), elemSeed % 24); });
+      } else if (bot) sealArcText(cx, cy, rBot, botText, bot.sz, HALF_PI, true, bot.met);
     });
     // Separators at 3 and 9 o'clock
     let rm = (ringIn + ringOut) / 2, ss = textBand * 0.26;
@@ -9519,7 +9637,7 @@ function composeSealBadge(rect, s, prng) {
       kitWeight('fine');
       svgRect(cx - tw / 2 - body * 0.8, py - body * 1.35, tw + body * 1.6, body * 1.85);
       kitWeight('secondary');
-      symAnimText(status, cx, py, body, 'center', labelSeed, 'bus:status');
+      kitText(status, cx, py, body, 'center', labelSeed, 'bus:status');
     }
   }
 
@@ -9643,6 +9761,10 @@ function _txBarcodeEdge(x, y, w, h, prng) {
 const _TX_MODULES = ['KERNEL', 'NETSTACK', 'VMM', 'SCHED', 'IOCTL', 'DRV_ARX', 'CRYPTO', 'FS_CORE', 'HAL', 'IRQ', 'DMA', 'TELEM'];
 const _TX_FUNCS = ['DISPATCH', 'PAGE_FAULT', 'ALLOC_POOL', 'MAP_REGION', 'READ_SECTOR', 'HANDLE_IRQ', 'SPIN_LOCK', 'COPY_USER', 'VALIDATE', 'SYNC_BARRIER', 'DECODE_FRAME', 'FLUSH_TLB', 'WALK_TABLE', 'RESOLVE'];
 const _TX_HEADLINES = ['KERNEL MODE EXCEPTION', 'UNHANDLED TRAP', 'SYSTEM HALTED', 'INTEGRITY FAILURE', 'WATCHDOG TIMEOUT', 'PROTECTION FAULT'];
+// The site's software: the wards run on it too
+const _TX_LORE_MODULES = ['WARD', 'LEYBUS', 'SIGIL_IO', 'LATTICE', 'VAULT_FS', 'CONTAIN'];
+const _TX_LORE_FUNCS = ['BIND_GLYPH', 'SEAL_VAULT', 'INVOKE_WARD', 'READ_LEY', 'PURGE_DECK', 'TRACE_BLEED', 'ATTUNE_EMIT'];
+const _TX_LORE_HEADLINES = ['WARD INTEGRITY FAILURE', 'CONTAINMENT FAULT', 'SIGIL CHECKSUM MISMATCH', 'LEY BUS OVERLOAD', 'UNBOUND GLYPH IN LATTICE', '{inctype}'];
 
 function _txHex(prng, digits) {
   let s = '';
@@ -9795,8 +9917,8 @@ function composeErrorMessage(rect, s, prng) {
   if (_cellOverrideVariant && ERR_VARIANTS.includes(_cellOverrideVariant)) variant = _cellOverrideVariant;
   _cellVariantInfo = variant;
   let errData = textGen.errorMessageBlock(prng);
-  let errType = prng.pick(textGen._errorTypes);
-  let headline = prng.pick(_TX_HEADLINES);
+  let errType = lorePick(prng, textGen._errorTypes, LORE_ERRS, LORE_RATE);
+  let headline = lorePick(prng, _TX_HEADLINES, _TX_LORE_HEADLINES, LORE_RATE);
   let faultAddr = _txHex(prng, 4);
   let pid = prng.nextInt(100, 9999), cpu = prng.nextInt(0, 15);
   let frames = [];
@@ -9804,7 +9926,7 @@ function composeErrorMessage(rect, s, prng) {
   for (let i = 0; i < 14; i++) {
     depth = i === 0 ? 0 : Math.max(0, Math.min(5, depth + (prng.nextFloat() < 0.6 ? 1 : -prng.nextInt(0, 2))));
     frames.push({ addr: '00007F' + _txHex(prng, 10), depth,
-      sym: prng.pick(_TX_MODULES) + '::' + prng.pick(_TX_FUNCS) + '+0x' + _txHex(prng, 3),
+      sym: lorePick(prng, _TX_MODULES, _TX_LORE_MODULES, LORE_RATE) + '::' + lorePick(prng, _TX_FUNCS, _TX_LORE_FUNCS, LORE_RATE) + '+0x' + _txHex(prng, 3),
       file: textGen.systemPath(prng) + ':' + prng.nextInt(1, 999),
       redact: prng.nextFloat() < 0.16, redactW: prng.nextInt(10, 26) });
   }
@@ -9818,7 +9940,7 @@ function composeErrorMessage(rect, s, prng) {
   let faultT = 0.25 + prng.nextFloat() * 0.6;
   let progress = prng.nextFloat();
   if (_compBus) progress = _compBus.globalProgress;
-  let haltWord = prng.pick(['ABORTED', 'FAILED', 'TIMEOUT', 'HALTED', 'CRITICAL']);
+  let haltWord = lorePick(prng, ['ABORTED', 'FAILED', 'TIMEOUT', 'HALTED', 'CRITICAL'], ['UNBOUND', 'BREACHED', 'SEALED'], LORE_RATE);
   let ts = textGen.timestamp(prng), ver = textGen.versionString(prng);
   let fill = kitFillStyle(s, prng);
   let barcodeLeft = prng.nextFloat() < 0.3;
@@ -10126,18 +10248,22 @@ const _TX_CMDS = ['scan --deep /dev/node{n}', 'ping -c 4 10.0.{n}.17', 'tail -n 
   'mount /dev/sdb{n} /mnt/arx', 'trace --pid {p}', 'dump 0x{h} 64', 'verify --sig CORE_ARX.BIN', 'netstat -tulpn', 'flush --cache L{n}',
   'query node[0{n}..07]', 'sync --force', 'cat /proc/telemetry', 'decode --frame {p}', 'ssh op@relay-{n}'];
 const _TX_HOSTS = ['arx-7f', 'node3', 'relay-02', 'core', 'deck', 'eoh-11', 'sigma', 'vault'];
+// The wardens' shell: the same machines, tending the site
+const _TX_LORE_CMDS = ['ward --status --sub {sub}', 'seal --vault {vaultlc}', 'tail -n 8 /var/log/ward.log', 'bind {anomaly} --lattice',
+  'invoke lattice --phase {n}', 'scry --band {n} --gain 0x{h}', 'attune emitter{n}', 'cat /proc/ward/integrity', 'glyph --verify {name}', 'ssh warden@{sitelc}'];
+const _TX_LORE_HOSTS = ['ward-3', 'vault', 'lattice', 'scry-02', '{sitelc}'];
 
 function _txCmd(prng) {
-  return prng.pick(_TX_CMDS).replace('{n}', prng.nextInt(1, 9)).replace('{p}', prng.nextInt(100, 9999)).replace('{h}', _txHex(prng, 4));
+  return lorePick(prng, _TX_CMDS, _TX_LORE_CMDS, LORE_RATE).replace('{n}', prng.nextInt(1, 9)).replace('{p}', prng.nextInt(100, 9999)).replace('{h}', _txHex(prng, 4));
 }
 
 // One line of command output.
 function _txOutLine(prng) {
   let r = prng.nextFloat();
   let hh = String(prng.nextInt(0, 23)).padStart(2, '0'), mm = String(prng.nextInt(0, 59)).padStart(2, '0'), ss = String(prng.nextInt(0, 59)).padStart(2, '0');
-  if (r < 0.22) return { t: 'out', text: '[' + hh + ':' + mm + ':' + ss + '] ' + prng.pick(_TX_MODULES) + ': ' + textGen.annotation(prng) };
-  if (r < 0.4) { let ok = prng.nextFloat(); return { t: 'out', text: prng.pick(['STARTED', 'MOUNTED', 'REACHED', 'LOADED', 'VERIFIED']) + ' ' + textGen.systemPath(prng), st: ok < 0.12 ? 'FAIL' : ok < 0.22 ? 'WARN' : 'OK' }; }
-  if (r < 0.55) return { t: 'out', text: '  ' + prng.pick(textGen._idPrefixes).padEnd(6, ' ') + '= ' + textGen.valueReadout(prng) };
+  if (r < 0.22) return { t: 'out', text: '[' + hh + ':' + mm + ':' + ss + '] ' + lorePick(prng, _TX_MODULES, _TX_LORE_MODULES, LORE_RATE) + ': ' + textGen.annotation(prng) };
+  if (r < 0.4) { let ok = prng.nextFloat(); return { t: 'out', text: lorePick(prng, ['STARTED', 'MOUNTED', 'REACHED', 'LOADED', 'VERIFIED'], ['SEALED', 'BOUND', 'INSCRIBED', 'ATTUNED'], LORE_RATE) + ' ' + textGen.systemPath(prng), st: ok < 0.12 ? 'FAIL' : ok < 0.22 ? 'WARN' : 'OK' }; }
+  if (r < 0.55) return { t: 'out', text: '  ' + lorePick(prng, textGen._idPrefixes, LORE_IDS, LORE_RATE).padEnd(6, ' ') + '= ' + textGen.valueReadout(prng) };
   if (r < 0.7) return { t: 'out', text: prng.pick(['drwxr-x---', '-rw-r--r--', '-rwx------', 'lrwxrwxrwx']) + '  ' + String(prng.nextInt(64, 99999)).padStart(5, ' ') + '  ' + textGen.systemPath(prng) };
   if (r < 0.82) return { t: 'out', text: '  ' + _txHex(prng, 4) + ':  ' + textGen.hexDump(prng, 8) };
   if (r < 0.92) return { t: 'out', text: '64 BYTES FROM 10.0.' + prng.nextInt(1, 9) + '.17: SEQ=' + prng.nextInt(1, 9) + ' TTL=64 T=' + (prng.nextFloat() * 2).toFixed(3) + ' MS' };
@@ -10156,13 +10282,13 @@ function _txShellRows(prng, n, prompt, chartKind) {
     let outs = prng.nextInt(1, 5);
     for (let i = 0; i < outs && rows.length < n - 1; i++) {
       if (chartAt >= 0 && rows.length >= chartAt && rows.length + chartSpan < n - 1) {
-        rows.push({ t: 'chart', span: chartSpan, kind: chartKind, data: Array.from({ length: 48 }, () => prng.nextFloat()), title: prng.pick(['LOAD 60S', 'THROUGHPUT', 'PKT/S', 'TEMP ARRAY', 'LATENCY']) });
+        rows.push({ t: 'chart', span: chartSpan, kind: chartKind, data: Array.from({ length: 48 }, () => prng.nextFloat()), title: lorePick(prng, ['LOAD 60S', 'THROUGHPUT', 'PKT/S', 'TEMP ARRAY', 'LATENCY'], ['WARD LOAD', 'LEY FLUX', 'BLEED/S', 'FIELD ARRAY'], LORE_RATE) });
         for (let k = 1; k < chartSpan; k++) rows.push({ t: 'span' });
         chartAt = -1;
         continue;
       }
       if (progAt >= 0 && rows.length >= progAt) {
-        rows.push({ t: 'prog', label: prng.pick(['FETCH', 'UNPACK', 'VERIFY', 'XFER', 'SYNC']), v: prng.nextFloat(), rate: (prng.nextFloat() * 9.9).toFixed(1) + 'MB/S' });
+        rows.push({ t: 'prog', label: lorePick(prng, ['FETCH', 'UNPACK', 'VERIFY', 'XFER', 'SYNC'], ['SEAL', 'BIND', 'ATTUNE', 'INSCRIBE'], LORE_RATE), v: prng.nextFloat(), rate: (prng.nextFloat() * 9.9).toFixed(1) + 'MB/S' });
         progAt = -1;
         continue;
       }
@@ -10192,11 +10318,11 @@ function _txBootRows(prng, n) {
       continue;
     }
     let ok = prng.nextFloat();
-    rows.push({ t: 'out', text: '[' + tsec.toFixed(6).padStart(11, ' ') + '] ' + prng.pick(_TX_MODULES) + ': ' + prng.pick(['INIT', 'PROBE', 'ATTACH', 'MAP', 'LINK UP', 'CALIBRATE']) + ' ' + textGen.identifier(prng),
+    rows.push({ t: 'out', text: '[' + tsec.toFixed(6).padStart(11, ' ') + '] ' + lorePick(prng, _TX_MODULES, _TX_LORE_MODULES, LORE_RATE) + ': ' + lorePick(prng, ['INIT', 'PROBE', 'ATTACH', 'MAP', 'LINK UP', 'CALIBRATE'], ['BIND', 'ATTUNE', 'SEAL', 'INSCRIBE'], LORE_RATE) + ' ' + textGen.identifier(prng),
                 st: ok < 0.08 ? 'FAIL' : ok < 0.16 ? 'WARN' : 'OK' });
   }
   rows.length = Math.min(rows.length, n - 2);
-  rows.push({ t: 'out', text: textGen.versionString(prng) + ' ' + prng.pick(_TX_HOSTS).toUpperCase() + ' TTY1' });
+  rows.push({ t: 'out', text: textGen.versionString(prng) + ' ' + lorePick(prng, _TX_HOSTS, _TX_LORE_HOSTS, LORE_RATE).toUpperCase() + ' TTY1' });
   rows.push({ t: 'cmd', prompt: 'LOGIN:', cmd: '', live: true });
   return rows;
 }
@@ -10370,8 +10496,8 @@ function composeTerminalBlock(rect, s, prng) {
   let variant = TERM_VARIANTS[Math.floor(prng.nextFloat() * TERM_VARIANTS.length)];
   if (_cellOverrideVariant && TERM_VARIANTS.includes(_cellOverrideVariant)) variant = _cellOverrideVariant;
   _cellVariantInfo = variant;
-  let host = prng.pick(_TX_HOSTS), user = prng.pick(['root', 'op', 'sys', 'tech']);
-  let path = prng.pick(['~', '~/sys/core', '/var/log', '/dev', '/mnt/arx', '~/relay']);
+  let host = lorePick(prng, _TX_HOSTS, _TX_LORE_HOSTS, LORE_RATE), user = lorePick(prng, ['root', 'op', 'sys', 'tech'], ['warden', 'adept'], LORE_RATE);
+  let path = lorePick(prng, ['~', '~/sys/core', '/var/log', '/dev', '/mnt/arx', '~/relay'], ['~/wards', '/var/log/ward', '/vault/{vaultlc}', '~/sigils'], LORE_RATE);
   let prompt = user + '@' + host + ':' + path + (user === 'root' ? '#' : '$');
   let chartKind = prng.nextFloat() < 0.5 ? 'bars' : 'spark';
   let macStyle = prng.nextFloat() < 0.55;
@@ -10784,11 +10910,11 @@ function composeHeroText(rect, s, prng) {
     let sources = [];
     if (state.typeEngine.heroSources.labels) {
       let shortStatus = textGen._statusWords.filter(w => w.length <= 6);
-      sources.push(() => prng.pick(shortStatus));
-      sources.push(() => prng.pick(['HALT', 'INIT', 'SYNC', 'IDLE', 'SCAN', 'LOCK', 'DUMP', 'EXEC', 'FLUX', 'VOID']));
+      sources.push(() => lorePick(prng, shortStatus, loreByAlert(LORE_HERO), LORE_RATE));
+      sources.push(() => lorePick(prng, ['HALT', 'INIT', 'SYNC', 'IDLE', 'SCAN', 'LOCK', 'DUMP', 'EXEC', 'FLUX', 'VOID'], loreByAlert(LORE_HERO), LORE_RATE));
     }
     if (state.typeEngine.heroSources.codes) {
-      sources.push(() => prng.pick(['ERR', 'SYS', 'ACK', 'RUN', 'END', 'NIL', 'LOG', 'CMD', 'REF', 'MOD']));
+      sources.push(() => lorePick(prng, ['ERR', 'SYS', 'ACK', 'RUN', 'END', 'NIL', 'LOG', 'CMD', 'REF', 'MOD'], LORE_IDS, LORE_RATE));
       sources.push(() => textGen.identifier(prng).split(/[-._:]/)[0]);
     }
     if (state.typeEngine.heroSources.hex) {
@@ -10813,7 +10939,7 @@ function composeHeroText(rect, s, prng) {
   let sliceOff = [];
   for (let i = 0; i < 6; i++) sliceOff.push(prng.nextFloat() * 2 - 1);
   let indexNum = String(prng.nextInt(1, 99)).padStart(2, '0');
-  let capTitle = prng.pick(['TYPE SPECIMEN', 'DISPLAY SETTING', 'SIGNAL WORD', 'GLYPH STUDY', 'HEADLINE PROOF', 'MARK / WORD']);
+  let capTitle = lorePick(prng, ['TYPE SPECIMEN', 'DISPLAY SETTING', 'SIGNAL WORD', 'GLYPH STUDY', 'HEADLINE PROOF', 'MARK / WORD'], ['SITE NOTICE', 'WARD NOTICE', 'VAULT PLACARD', 'SIGIL STUDY', 'DOOR LEGEND'], LORE_RATE);
   let capId = textGen.identifier(prng), capVer = textGen.versionString(prng);
   let capTs = textGen.timestamp(prng), capCoord = textGen.coordinate(prng);
   let capPath = textGen.systemPath(prng), capStatus = textGen.statusLabel(prng);
@@ -11272,6 +11398,8 @@ function composeHeroText(rect, s, prng) {
 
 const _ASC_NAMES = ['checker','altPairs','hStripes','diagStripes','zigzag','gradient','rings','cross','seq2','seq3','scatter','blockCols','maze','terrain','binaryRain','conway','spiralGalaxy'];
 const _ASC_TITLES = ['CHECKER.FLOOR','LENS.FIELD','SOL.HORIZON','ISO.CUBE','RIDGE.LINES','SPHERE.SHADE','RIPPLE.TANK','TARGET.LOCK','TORUS.RENDER','HELIX.SEQ','DEEP.FIELD','SKYLINE','MAZE.SOLVE','TOPO.SURVEY','BIN.RAIN','LIFE.GEN','SPIRAL.GXY'];
+// The same figures as the site files them
+const _ASC_LORE_TITLES = ['WARD.FLOOR','SCRY.LENS','GIANT.RISE','VAULT.CUBE','LEY.RIDGES','SCRY.ORB','FIELD.RIPPLE','WARD.LOCK','CORE.TORUS','SPECIMEN.SEQ','VOID.FIELD','SITE.SKYLINE','SUBLEVEL.MAZE','SITE.TOPO','GLYPH.RAIN','SPECIMEN.GEN','LEY.SPIRAL'];
 // Tone ramp, light to dark, ordered by measured ink of the stroke glyphs
 const _ASC_RAMP = [' ', '.', ':', '-', '=', '+', '%', '*', '#', '█'];
 // Box-drawing glyphs span the whole cell (unit coords, y down) so they join up
@@ -11980,7 +12108,7 @@ function composeAsciiArt(rect, s, prng) {
       if (horiz) { G[T][sp] = '\u252C'; G[Bm][sp] = '\u2534'; } else { G[sp][L] = '\u251C'; G[sp][R] = '\u2524'; }
     }
     if (captioned) {
-      let cap = 'FIG.' + figNo + ' ' + _ASC_TITLES[patternType];
+      let cap = 'FIG.' + figNo + ' ' + (loreChance(asciiSeed, 1, LORE_RATE) ? _ASC_LORE_TITLES : _ASC_TITLES)[patternType];
       if (cap.length > fc - 6) cap = cap.slice(0, Math.max(0, fc - 6));
       if (cap.length > 2) put(T, f0c + 1, '┤' + cap + '├');
       if (indexed && caption2 && caption2.length + cap.length + 10 < fc) put(T, f1c - caption2.length - 1, '┤' + caption2 + '├');
@@ -12418,8 +12546,9 @@ function composeSigil(rect, s, prng) {
     svgCircle(cx + acc[0], cy + acc[1], dr * 2.4);
     if (dr > pen * 2) symContourFill({ c: [symCircle(cx + acc[0], cy + acc[1], dr * 1.2, 16)], d: dr * 1.2 }, Math.max(pen * 1.4, dr * 0.35));
   }
-  // Outer bounding ring at mid scale
-  if (detailActive('internalDetail', s) && satMode !== 2) {
+  // Outer bounding ring at mid scale; a share are bound by the site's ward band instead
+  let ward = symWardBand(rect, s, maxR * 1.1, maxR, labelSeed, 0.5);
+  if (detailActive('internalDetail', s) && satMode !== 2 && !ward) {
     kitWeight('fine');
     svgCircle(cx, cy, maxR * 2.06);
   }
@@ -12427,7 +12556,7 @@ function composeSigil(rect, s, prng) {
   if (hasSpinAnim) { pop(); svgRec.endGroup(); }
 
   // Static construction field (rule 14: the field stays still while the sigil turns)
-  symField(rect, s, cx, cy, maxR * 1.1, acc, { designation, status, labelSeed,
+  symField(rect, s, cx, cy, maxR * 1.1, acc, { designation, status, labelSeed, ward,
     spec: ['ARMS ' + N + ' ' + kind.toUpperCase(), 'HUB ' + (rh / maxR).toFixed(3), code] });
 
   kitWeight('primary');
@@ -13157,7 +13286,7 @@ function scOrrery(g, s, micro, cx, cy, R, tilt, u, mic, showText, fine, placer, 
     if (showText && detailActive('secondaryText', s)) {
       let mid = wa0 + wspan / 2, rr = r2 + mic * 1.2;
       let deg = d => String(Math.round(((d * 180 / PI) % 360 + 360) % 360)).padStart(3, '0');
-      dgDrawLabel(placer.text('WINDOW ' + deg(wa0) + '-' + deg(wa0 + wspan), mic * 0.85, [{ x: cx + Math.cos(mid) * rr, y: cy + Math.sin(mid) * rr * tilt + mic * 0.35, align: Math.cos(mid) > 0 ? 'left' : 'right' }]));
+      dgDrawLabel(placer.text((loreChance(elemSeed, 3, LORE_RATE) ? 'RITE WINDOW ' : 'WINDOW ') + deg(wa0) + '-' + deg(wa0 + wspan), mic * 0.85, [{ x: cx + Math.cos(mid) * rr, y: cy + Math.sin(mid) * rr * tilt + mic * 0.35, align: Math.cos(mid) > 0 ? 'left' : 'right' }]));
     }
     if (micro > 0.3 && wk + 2 < np) {
       let ra = orb[wk].a, rb = orb[wk + 2].a, at = (ra + rb) / 2, et = (rb - ra) / (rb + ra), tp = [];
@@ -13194,6 +13323,7 @@ function scOrrery(g, s, micro, cx, cy, R, tilt, u, mic, showText, fine, placer, 
   else { kitWeight('primary'); drawSunIcon(cx, cy, sunR * 2); }
   placer.add(cx - sunR * 1.6, cy - sunR * 1.6, sunR * 3.2, sunR * 3.2);
   // planets: integer turns per loop so the orbit animation is seamless
+  let giantI = loreChance(elemSeed, 1, 0.6) ? orb.findIndex(o => o.kind === 1) : -1; // the giant the site's world circles
   let ppos = [];
   orb.forEach((o, i) => {
     let turns = Math.max(1, Math.round((np - i) / 2));
@@ -13207,7 +13337,7 @@ function scOrrery(g, s, micro, cx, cy, R, tilt, u, mic, showText, fine, placer, 
     placer.add(px - pr * 2, py - pr * 2, pr * 4, pr * 4);
     if (detailActive('internalDetail', s) && o.kind === 1 && micro > 0.3) { kitWeight('fine'); svgCircle(px, py, pr * 6); scPlanet(px + pr * 3, py, pr * 0.35, 0); }
     if (showText && detailActive('secondaryText', s)) {
-      let lab = 'P' + (i + 1) + (fine ? '  ' + o.au + ' AU' : '');
+      let lab = (i === giantI ? _facility.giant : 'P' + (i + 1)) + (fine ? '  ' + o.au + ' AU' : '');
       dgDrawLabel(placer.text(lab, mic * 0.85, [{ x: px + pr * 2.2, y: py - pr * 1.2, align: 'left' }, { x: px - pr * 2.2, y: py - pr * 1.2, align: 'right' }, { x: px, y: py + pr * 2.2 + mic * 0.8, align: 'center' }]));
     }
   });
@@ -13279,7 +13409,8 @@ function scFinder(g, s, micro, cx, cy, R, Rout, u, mic, showText, fine, placer, 
   if (showText && detailActive('secondaryText', s)) {
     let dir = tx < cx ? -1 : 1;
     let lx = tx + dir * trr * 2.6, ly = ty - trr * 2;
-    kitCallout(tx + dir * trr * 1.5, ty - trr * 1.5, lx, ly, ngc, fine ? 'SAB(S)CD  ' + tmag + 'M' : null, mic);
+    let origin = loreChance(elemSeed, 2, LORE_RATE); // the galaxy the site's anomaly came from
+    kitCallout(tx + dir * trr * 1.5, ty - trr * 1.5, lx, ly, origin ? 'ORIGIN ' + _facility.anomaly : ngc, fine ? (origin ? ngc : 'SAB(S)CD') + '  ' + tmag + 'M' : null, mic);
   }
   // reticle: double-line crosshair with mil ticks and a central gap
   if (detailActive('crosshairs', s)) {
@@ -13529,6 +13660,9 @@ function scAtlasPlate(g, s, micro, M, u, mic, body, dens, showText, fine, late, 
 const NN_VARIANTS = ['clusterMesh', 'busTopology', 'hierarchy', 'ringBackbone', 'starHub', 'signalFlow'];
 const NN_TYPE_NAMES = { core: 'CORE', router: 'ROUTER', switch: 'SWITCH', server: 'SERVER', gateway: 'GATEWAY', endpoint: 'NODE', sensor: 'SENSOR' };
 const NN_TYPE_PREFIX = { core: 'CORE', router: 'RTR', switch: 'SW', server: 'SRV', gateway: 'GW', endpoint: 'EP', sensor: 'SN' };
+// A mesh of the site's own systems: the vault at its core, ward sensors, sigil ports
+const NN_LORE_NAMES = { core: 'VAULT', router: 'LEY NODE', switch: 'LATTICE', server: 'ARCHIVE', gateway: 'GATE', endpoint: 'SIGIL', sensor: 'WARD' };
+const NN_LORE_PREFIX = { core: 'VLT', router: 'LEY', switch: 'LTC', server: 'ARC', gateway: 'GATE', endpoint: 'SGL', sensor: 'WRD' };
 
 // Half extents of a node glyph (for edge trimming and label boxes)
 function nnExtent(n, r0) {
@@ -14012,6 +14146,7 @@ function composeNodeNetwork(rect, s, prng) {
   let seedTitle = prng.nextInt(1, 0xFFFFFF), seedCount = prng.nextInt(1, 0xFFFFFF), seedLat = prng.nextInt(1, 0xFFFFFF);
   let titleWord = textGen.statusLabel(prng), netId = textGen.identifier(prng), ver = textGen.versionString(prng);
   let subnet = prng.nextInt(2, 250);
+  let siteMesh = loreChance(graphSeed, 1, 0.35);
   let variantPick = prng.nextFloat();
   let fill = kitFillStyle(s, prng);
   let savedText = dgTextStreamBegin(prng);
@@ -14063,7 +14198,7 @@ function composeNodeNetwork(rect, s, prng) {
   let linkName = { trunk: 'TRUNK 10G', link: 'LINK 1G', backup: 'STANDBY', mgmt: 'MGMT', bus: 'BUS' };
   let legendItems = [];
   let lr = mic * 0.55;
-  for (let t of usesType) legendItems.push({ label: NN_TYPE_NAMES[t], weight: 'primary', draw: (x, y, w) => nnDrawNode({ x: x + w / 2, y, type: t }, lr, null, false, false) });
+  for (let t of usesType) legendItems.push({ label: (siteMesh ? NN_LORE_NAMES : NN_TYPE_NAMES)[t], weight: 'primary', draw: (x, y, w) => nnDrawNode({ x: x + w / 2, y, type: t }, lr, null, false, false) });
   for (let k of usesLink) legendItems.push({ label: linkName[k], draw: (x, y, w) => nnDrawLinkSample(k, x, y, w, mic) });
   legendItems.push({ label: 'ROUTE', weight: 'heavy', draw: (x, y, w) => { svgLine(x, y, x + w, y); dgChevron(x + w * 0.6, y, 0, mic * 0.45); } });
   let legendH = 0;
@@ -14105,7 +14240,7 @@ function composeNodeNetwork(rect, s, prng) {
     n.x = Math.min(Math.max(n.x, P.x + mx), P.x + P.w - mx);
     n.y = Math.min(Math.max(n.y, P.y + my), P.y + P.h - my);
   }
-  let labelNames = nodes.map((n, i) => (NN_TYPE_PREFIX[n.type] || 'N') + '-' + String(g.nextInt(1, 99)).padStart(2, '0'));
+  let labelNames = nodes.map((n, i) => ((siteMesh ? NN_LORE_PREFIX : NN_TYPE_PREFIX)[n.type] || 'N') + '-' + String(g.nextInt(1, 99)).padStart(2, '0'));
   let ips = nodes.map(() => '10.' + subnet + '.' + g.nextInt(0, 31) + '.' + g.nextInt(2, 254));
   let bwPick = G.edges.map(() => g.nextFloat());
   let latency = (1 + g.nextFloat() * 40).toFixed(1);
@@ -14588,6 +14723,7 @@ function composeGlobeSpherePanel(rect, s, prng) {
     ver: textGen.versionString(prng), ts: textGen.timestamp(prng),
     stations: [0, 1, 2, 3, 4].map((i) => prng.pick(textGen._idPrefixes).slice(0, 3) + '-' + i + prng.nextInt(0, 9))
   };
+  if (loreChance(elemSeed, 1, 0.4)) T.stations[0] = _facility.site; // the site is in the network
   let laySeed = prng.nextInt(1, 0x7FFFFFFF); // private stream for the kit side modules
   let lay = kitLayout(rect, s, prng);
 
@@ -15083,7 +15219,7 @@ function composeEncodedDataBlock(rect, s, prng) {
   let corr = [prng.nextFloat(), prng.nextFloat(), prng.nextFloat(), prng.nextFloat()];
   let d12 = [];
   for (let i = 0; i < 12; i++) d12.push(prng.nextInt(0, 9));
-  let label = prng.pick(['SCAN', 'VERIFIED', 'UNREADABLE', 'ENCODED', 'PENDING', 'DECRYPTED', 'PARSING', 'CACHED']);
+  let label = lorePick(prng, ['SCAN', 'VERIFIED', 'UNREADABLE', 'ENCODED', 'PENDING', 'DECRYPTED', 'PARSING', 'CACHED'], ['SEALED', 'WARDED', 'INSCRIBED', 'BOUND'], LORE_RATE);
   let ident = textGen.identifier(prng), ver = textGen.versionString(prng), stamp = textGen.timestamp(prng);
   let crcAll = prng.nextInt(0, 0xFFFF).toString(16).toUpperCase().padStart(4, '0');
   let tbl = [];
@@ -16182,7 +16318,8 @@ function composeDatavizFragment(rect, s, prng) {
   let animated = shouldAnimate(elemSeed);
   let dataSeed = prng.nextInt(1, 0x7FFFFFFF);
   let seedTitle = prng.nextInt(1, 0xFFFFFF), seedVal = prng.nextInt(1, 0xFFFFFF), seedMeta = prng.nextInt(1, 0xFFFFFF);
-  let titleWord = prng.pick(['THROUGHPUT', 'LATENCY', 'SIGNAL', 'FLUX', 'LOAD', 'TELEMETRY', 'YIELD', 'ENTROPY', 'DRIFT', 'RESIDUALS']);
+  let titleWord = lorePick(prng, ['THROUGHPUT', 'LATENCY', 'SIGNAL', 'FLUX', 'LOAD', 'TELEMETRY', 'YIELD', 'ENTROPY', 'DRIFT', 'RESIDUALS'],
+    ['WARD LOAD', 'LEY FLUX', 'BLEED', 'RESONANCE', 'REACTIVITY', 'FIELD DRIFT', 'THAUMIC'], LORE_RATE);
   let chanId = textGen.identifier(prng), srcPath = textGen.systemPath(prng), ver = textGen.versionString(prng), ts = textGen.timestamp(prng);
   let variantPick = prng.nextFloat();
   let fill = kitFillStyle(s, prng);
@@ -16300,6 +16437,7 @@ function buildFacility(seed) {
     alert, alertName: FAC_ALERTS[alert], incident: String(1000 + Math.floor(H(10) * 9000)), incType: pick(FAC_INCIDENTS, 11),
     drift: 0.05 + H(12) * 0.6, breachSector: Math.floor(H(13) * 12), run: 1000 + Math.floor(H(14) * 9000),
     clock: 'T+' + [hh % 3, mm, ss].map(v => String(v).padStart(2, '0')).join(':'), shift: ['ALPHA', 'BRAVO', 'NIGHT'][Math.floor(H(19) * 3)],
+    giant: pick(ATMO_GIANTS, 20), // the primary the site's world circles
     count: {}
   };
 }
@@ -19140,7 +19278,7 @@ function composeExoAtmosphere(rect, s, prng) {
   _cellVariantInfo = variant;
   let W = _atmoWorld(u.primary ? f.seed : elemSeed);
   let anim = animated && animCtx ? animCtx.frameIndex / animCtx.frameCount : 0;
-  let giant = ATMO_GIANTS[Math.floor(F[4] * ATMO_GIANTS.length)];
+  let giant = u.primary ? f.giant : ATMO_GIANTS[Math.floor(F[4] * ATMO_GIANTS.length)];
   let storming = f.incType === 'ION STORM' || f.alert >= 2;
 
   // ---- Layout: header, the chart, a panel, the meteogram ----
@@ -22156,6 +22294,7 @@ function composeMiniGame(rect, s, prng) {
       kitWeight('fine');
       kitText('CREDIT ' + String(credit).padStart(2, '0'), bb.x + ts, ty, ts, 'left', sSeed + 5, 'counter');
       let ver = (MG_TITLES[game] || game.toUpperCase()) + ' V2.' + versionMinor + '.' + String(versionPatch).padStart(2, '0');
+      if (loreChance(elemSeed, 1, LORE_RATE)) ver = loreFill('REC DECK · SUB {sub}', _facility); // where the cabinet stands
       kitText(ver, bb.x + bb.w / 2, ty, ts, 'center');
       _mgText(info.telemetry, bb.x + bb.w - ts, ty, ts, 'right', 0, null, detailActive('annotationTexture', s));
     }
@@ -23484,8 +23623,10 @@ function composeSpectrogram(rect, s, prng) {
   if (showHeader) {
     let hy = iy + Math.max(valueSz, body);
     kitWeight('primary');
-    kitText(sourceNames[audioSourceType], ix, hy, valueSz);
-    let tw = measureFallbackText(sourceNames[audioSourceType], valueSz);
+    let bleed = _facility && _facility.incType === 'SIGNAL BLEED';
+    let srcName = loreChance(elemSeed, 1, bleed ? 0.6 : LORE_RATE) ? loreLine(elemSeed, 1, bleed ? ['BLEED'] : ['WARD HUM', 'LEY NOISE', 'CHOIR', 'CANTOR', 'BLEED']) : sourceNames[audioSourceType];
+    kitText(srcName, ix, hy, valueSz);
+    let tw = measureFallbackText(srcName, valueSz);
     kitWeight('fine');
     let pkHz = Math.round(_specHz(0.3 + _mmHash(elemSeed, 0x77) * 0.4));
     if (fieldData) { let bi = 0; for (let i = 1; i < fieldData.F.length; i++) if (fieldData.F[i] > fieldData.F[bi]) bi = i; pkHz = Math.round(_specHz(((bi % fieldData.nr) + 0.5) / fieldData.nr)); }

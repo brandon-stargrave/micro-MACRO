@@ -1114,6 +1114,38 @@ All six pass the pen-clash sweep at 2–8% fused ink, except Augment's parallel-
 
 Text in these panels avoids glyphs the plot fonts lack. `·` was added to the fallback glyph set, so it draws in every face.
 
+#### Site lore in the other archetypes
+
+The other eighteen archetypes quote the same site in passing, so a page reads as one place even when no facility panel is on it.
+
+**How a word is swapped.** About 30% of generated words (`LORE_RATE`) are swapped for the site's own. A swap is decided by hashing the draw the word already made (`lorePick`), or a seed the composer already holds (`loreChance`, `loreLine`); it never makes a new draw. So a page keeps its layout and values, and only some of its words change. Templates are filled from the page's facility (`loreFill`): site, sublevel, vault, anomaly, alert, incident, shift, clock, run, protocol name, giant and ward drift.
+
+**The alert sets the mood.** Status words, notes and hero words come from pools chosen by the page's alert level:
+- green: WARDED, SEALED, CONTAINED;
+- amber adds DRIFTING and VENTING;
+- red and black add BREACH, LOCKDOWN and UNBOUND.
+
+**The giant.** The facility deals one giant per page (`f.giant`). The primary Exo-Atmosphere panel, the orrery and the status notes all name it.
+
+| Archetype | What quotes the site |
+|---|---|
+| Shared text (every archetype) | Status words; identifier prefixes (WRD, VLT, SGL…); notes (SITE, VAULT, PRIMARY…); commands (SEAL, SCRY…); error types; paths; override words |
+| Status Panel | The edge plate names the site |
+| Targeting Reticle | Some reticles track the site's anomaly |
+| Meter / Gauge | Ward, ley-flux, resonance, cryo and bleed scales; a ward chart's axes (LEY, WRD, SGL, THM, BLD) |
+| Data Readout | Ward, ley, bleed, thaum, field, cryo and sigil channels; sections named for the site's systems |
+| Error Message | Ward faults, containment faults and the page's incident as headlines; ward modules and functions in the backtrace |
+| Terminal Block | The wardens' shell: ward, seal, bind and scry commands; ward hosts and users; lattice boot lines |
+| Hero Text | WARD, SEAL, VAULT and the anomaly's designation (BREACH on alarmed pages); site notices as captions |
+| Seal / Badge | The site's offices on the rim, and its vault, sublevel or anomaly underneath. Some seals carry the lower legend in the ward script (detail pen). |
+| Standalone Glyph, Sigil | A ring of the ward script inside the bearing ring, where the gap is wide enough to read (detail pen). A sigil wears it in place of its bounding ring. |
+| Node / Network | Some networks are the site's own mesh: a vault core, ley nodes, lattice switches, ward sensors and sigil ports |
+| Globe | The site joins the ground-station network |
+| Star Chart | The orrery's moon-bearing planet is the site's giant; rite windows; the finder marks the galaxy the anomaly came from |
+| ASCII Art | Figures filed under the site's names (VAULT.CUBE, SUBLEVEL.MAZE, GIANT.RISE) |
+| Dataviz, Encoded Data, Spectrogram | Lore titles and states. On a signal-bleed page the spectrogram usually names the bleed. |
+| Mini-Game | The cabinet stands on the rec deck of the page's sublevel |
+
 ### 12.3 Aspect Ratio Handling
 
 When a cell has a non-square aspect ratio, archetypes adapt:
