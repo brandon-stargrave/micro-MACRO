@@ -326,34 +326,23 @@ The exported SVG adheres to these plotter-compatibility requirements:
 
 ## 15. Aesthetic Treatment Constraints
 
-All aesthetic treatments must produce output representable as SVG paths. No raster-only techniques.
+Treatments are edits to each cell's SVG record, made after label knockout and before pens (see the design spec, §14). The output is paths only, like everything else.
 
-### 15.1 Permitted Techniques
+### 15.1 Plotter rules
 
-| Treatment | SVG-Compatible Approach |
+| Rule | How the treatments keep it |
 |---|---|
-| Glitch: horizontal displacement | `<clipPath>` rectangles with `translate` transforms on bands |
-| Glitch: duplicate offset | Duplicate `<g>` with slight `translate` offsets |
-| Glitch: missing scanlines | Omit geometry in excluded Y-ranges during generation |
-| Terminal: scan line overlay | Horizontal `<line>` elements at regular intervals (max ~100 per composition) |
-| Terminal: cursor | Small filled `<rect>` at end of text line |
-| Corruption: missing segments | Gap insertion in multi-segment paths at path-building level |
-| Corruption: character substitution | Replace characters with accent glyphs before rendering |
-| Corruption: redaction blocks | Replace text paths with filled `<rect>` elements |
-| Algorithm: visible iteration | Same element at multiple parametric stages, overlaid |
-| Algorithm: parametric variation | Base form repeated with linear parameter changes |
-| Hacking: exposed structure | Secondary hex dump text layer behind main content |
-| Hacking: bracket intrusion | Corner bracket arms extended past cell boundaries |
+| Stroke-only | Cuts and moves rewrite the record's own paths; additions are polylines. Redaction bars are solid by fused hatching, on purpose. |
+| Pens | Moved and cut ink keeps its pens. Added ink goes in `treatment-*` groups, exported on the treatments' pen layer. |
+| Pen clearance | Most edits take ink away (interlace, tears, cut-outs). Misregistered copies show only on bare paper; pixel-sort drips keep 1.6 pens apart; clones of decaying letters stay off their own letter. Measured at 0.3 and 0.6 mm, terminal, decode and glitch add no fused ink; corruption and hacking add about 1–2% of the page's ink. |
+| Text floors | New text is set in the page's small face at the usual floors; decaying letters keep the pen tip floor (§8). |
+| Screen = plot | The cell is repainted from its edited record. |
+| Determinism | Hashes of the page seed, the cell and (when animating) the frame. No stream is drawn from, so switching a treatment off returns the page exactly. |
 
-### 15.2 Eliminated Techniques
+### 15.2 Not used
 
-These raster-dependent techniques are not compatible with plotter output:
-
-- **Noise pixel scatter:** Would require hundreds of tiny `<rect>` elements, bloating SVG
-- **Phosphor glow / blur:** Requires filter effects (raster). Approximated with duplicate lines at slight offset instead.
-- **Blinking / animation:** Static SVG cannot blink. Adapted as double-border framing.
-- **Edge roughness / noise border:** Expensive per-vertex perturbation. Deferred.
-- **Layered transparency:** Doubles path count. Adapted as low-opacity `<g>` for screen preview only.
+- **Raster effects** (blur, glow, noise scatter, transparency): no plotter equivalent.
+- **Whole-page overlays** (scanline washes, cipher grids, hex floods): replaced by edits to the drawing; at broad pens their scanlines fused with the content's own lines.
 
 ---
 

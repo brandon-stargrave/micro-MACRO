@@ -1207,66 +1207,66 @@ Linear symmetry can be applied as a post-process to any generated primitive — 
 
 ---
 
-## 14. Aesthetic Treatment Adaptation for SVG
+## 14. Aesthetic Treatments
 
-All aesthetic treatments must produce output that is representable as SVG paths. No raster-only techniques. Each treatment from the style guide (Section 9) is adapted below with SVG-compatible implementation details.
+Treatments work on the composition itself. Each one is an edit to a cell's own drawing, its SVG record, made after label knockout and before pens are handed out (`treatCell`). It cuts, moves and rewrites what the composer drew. What it moves or cuts keeps its own pens; only what it adds (copies, cipher, its own marks) goes in a `treatment-*` group, and so in the treatments' pen. On a two-pen plot a treatment reads as a second ink running through the drawing. Cell borders are never edited.
 
-### 14.1 Glitch Treatment (SVG-Adapted)
+**Rules shared by all five:**
+- They run in stack order, each on the drawing the one before left.
+- They take every decision from hashes of the page seed and the cell (and the frame, when animating). They draw from no stream, so switching one off returns the page exactly as it was, and a cell's composition is the same on every frame.
+- New text is set in the page's small face (`_drawBuiltinText`) at the floors that hold for all text. Decaying letters use the face the label was set in, at its true letter positions.
+- Intensity (0–100%) sets how much of the drawing each one takes.
+- Glitch and hacking leave some cells alone, more of them at low intensity. One cell of every page, also picked by hash, always takes each of them, so switching one on never leaves a page (a single-cell page included) as it was.
 
-| Technique | SVG Implementation |
+### 14.1 Glitch
+
+Each cell draws two to five moves from a vocabulary of nine. On a moving page the moves are dealt again every few frames, and a cell sits some bursts out.
+
+| Move | What it does to the drawing |
 |---|---|
-| **Horizontal slice displacement** | Clip the composition into horizontal bands using `<clipPath>` rectangles. Apply `transform="translate(dx, 0)"` to each band's `<g>`. Band count: 5–15. Displacement dx: ±2–10% of width. |
-| **Duplicate offset** | Duplicate the entire composition `<g>` 2–3 times with slight `translate` offsets and reduced `opacity`. |
-| **Missing scanlines** | Do NOT draw certain horizontal bands — implemented by omitting geometry that falls within excluded Y-ranges during generation, not as a post-process mask. |
-| **Truncation** | Clip the composition with a `<clipPath>` rectangle that is smaller than the full cell bounds — one edge cuts through the content. |
-| **Fragmentation** | During generation, partition the bounding box into rectangular shards. Generate content normally but apply per-shard `translate` offsets. Each shard is a `<g>` with its own transform. |
+| Tear | A band slides sideways. |
+| Tracking error | A stretch in thin slices, each nudged; the odd one far. |
+| Stutter | A band repeated down the page, each repeat nudged. |
+| Pixel sort | Where the drawing crosses one row, it drips down the band below, breaking into dashes and then dots. It acts only across the stretch the drawing crosses, and a sparse row drips only a short way. |
+| Datamosh | Blocks lifted and dropped elsewhere; the hole keeps its corners. |
+| Wrap | A band rolls off one edge and comes back on the other. |
+| Comb | Alternate thin slices pulled apart. |
+| Stretch | A band smeared wide from a point. |
+| Misregistration | Outlines and type printed again a few pens off, diagonally, in the treatments' pen. Like a print off register, the copy shows only where it falls on bare paper. |
 
-*Eliminated*: "Noise pixel scatter" — would require hundreds of tiny `<rect>` elements, bloating the SVG. If needed, approximate with a sparse scatter of small squares (max 20–30 per composition).
+Small ticks at the cell's edges mark the tears.
 
-### 14.2 Terminal / Cyberdeck Treatment (SVG-Adapted)
+### 14.2 Terminal
 
-| Technique | SVG Implementation |
-|---|---|
-| **Scan line overlay** | Horizontal `<line>` elements at regular intervals, very low opacity (0.05–0.15). Limit to every Nth pixel row (N = 3–6) to keep element count manageable — max ~100 lines for a typical composition. |
-| **Cursor element** | A small filled `<rect>` positioned at the end of a text line. Pure geometry. |
-| **Screen border / bezel** | A full `<rect>` outline with optional double-line treatment. |
-| **Monospace grid snap** | Enforce that all text baselines and horizontal positions snap to a character-cell grid during generation. This is a layout constraint, not a post-process. |
+The drawing is interlaced: the scanlines are thin gaps cut through the graphics, so the treatment takes ink away rather than adding it. Type and borders stay whole. Above 40% a wider bar rolls through. On a moving page the scan rolls down two pitches a loop and the bar once.
 
-*Eliminated*: "Phosphor glow" — requires blur filter which is a raster effect. Instead, duplicate key lines at a slight offset with reduced opacity (same as glitch duplicate technique) for a simple "echo" effect. "Green/amber monochrome" is handled by the foreground color control. "ASCII rendering of shapes" is handled natively since the fonts are single-stroke — box-drawing characters are just more path data.
+### 14.3 Corruption
 
-### 14.3 Corruption / Decay Treatment (SVG-Adapted)
+Letters decay where they stand, spreading from one point on the page (across the loop, when animating):
+- The source glyph breaks: a strip of it is cut away.
+- Its clones run up and down in the page's face, decomposing into slashes, ticks and dots, until a rule of the layout stops them; there they pool along the rule. A clone that would sit on its own letter is dropped, and a short run between rules gets fewer clones.
+- A broken spine joins each run.
+- Some words are redacted in place: a solid bar, fused on purpose.
+- The layout's own rules lose segments, the gaps dashed.
+- Missing-data icons and ghost columns keep to the empty space. Ghost columns go looking for it, so a cell with no type still shows the decay.
 
-| Technique | SVG Implementation |
-|---|---|
-| **Missing segments** | During path generation, randomly omit segments from multi-segment paths. A line that would be `M 0 0 L 100 0` becomes `M 0 0 L 40 0 M 65 0 L 100 0` — a gap in the middle. Applied at the path-building level, not post-process. |
-| **Character substitution** | Replace characters in generated text strings with accent characters from the Unicode pool before rendering. Applied at the text generation stage. |
-| **Progressive degradation** | Vary the missing-segment probability as a function of position (e.g., left side = 5% missing, right side = 50% missing). Creates a spatial gradient of decay. |
-| **Redaction blocks** | Replace text path data with filled `<rect>` elements of matching width and height. The rect represents "data that was there but is now obscured." |
+### 14.4 Decode
 
-*Eliminated*: "Noise border" / edge roughness — would require modifying every path's coordinates with random perturbation, which is feasible but expensive. Defer to development — if performance allows, add jitter to vertex positions. Otherwise, skip.
+Ahead of the beam the drawing exists only as its encoding: one cipher glyph wherever a cell of a character grid held ink, so bars become columns of characters and rings become rings of glyphs. The cell's words are cipher there too, in the same face and size. The beam is a double rule with a tick ladder and a `DEC` readout. The letter at the beam locks in brackets, and words just decoded are underlined. A still page is frozen mid-decode; on a moving one the beam crosses each cell once a loop and the cipher cycles.
 
-### 14.4 Algorithm / Computational Treatment (SVG-Adapted)
+### 14.5 Hacking
 
-| Technique | SVG Implementation |
-|---|---|
-| **Visible iteration** | Generate the same element at 2–4 stages of parametric growth (e.g., a spiral at 90°, 180°, 270°, 360°) and draw all stages overlaid with decreasing opacity. Each stage is a `<g>` with `opacity`. |
-| **Parametric variation** | Generate the same base form N times in a row/grid, varying one parameter (size, rotation, arm count) linearly. Each instance is a separate `<g>`. |
-| **Recursive subdivision** | Generate a shape, then subdivide it into smaller instances of itself (2–3 levels). Each level is a `<g>` with a `transform="scale()"`. |
-| **Function plot** | Draw a mathematical curve (sine wave, Lissajous, Perlin noise) as a `<polyline>` or `<path>` with many small line segments. |
-| **Seed / hash display** | Render the current seed value as text near the composition. Pure text generation. |
+The intrusion takes the cell's own elements:
+- Labels are bracketed, addressed and wired to a bus down the cell's edge. Some are overwritten with the intruder's words (a cursor blinks after them), some X'd out, some get a hex dump beside them.
+- The drawing's biggest clusters are selected like objects in an editor: dashed box, handles, crosshair, motion trail, predicted path, `PID`/`MAP` tags.
+- A patch of the drawing is overwritten with a framed hex dump (`MEM`).
+- The hijacked elements are linked edge to edge in computer-vision style: held links solid and ticked, probes dashed, both ringed at the ends and broken around type. Tags read as an intrusion (`SHELL :8080`, `PROBE :1337`), never as a tracker.
+- A double-framed stamp (`ACCESS GRANTED`, `ROOT SHELL`) and a tally go in a free corner.
+- Across the page (`treatPage`), a spanning tree links the nearest hijacked elements of neighbouring cells, plus a long probe or two (`PIVOT 10.0.8.216`, `EXFIL VAULT 3-C`), clear of type, tags, dumps and stamps.
 
-*Eliminated*: "Grid sampling" — overlaps with existing grid/dot pattern family. Not a treatment, just an element type.
+On a moving page the intrusion spreads across the loop.
 
-### 14.5 Hacking / Intrusion Treatment (SVG-Adapted)
-
-| Technique | SVG Implementation |
-|---|---|
-| **Exposed structure** | Add a secondary layer of hex dump text and register-like labels positioned behind or around the main content. These are just additional text paths in a `<g>` with low opacity. |
-| **Override indicators** | Replace or append status labels with override-vocabulary words (`ROOT`, `BYPASS`, `ACCESS GRANTED`). Applied at text generation stage. |
-| **Bracket intrusion** | Corner bracket elements are drawn with extended arms that exceed their expected boundary rectangle. The arms push past the cell/panel edge by 10–20%. Pure geometry modification. |
-| **Memory dump fragment** | Add a small grid of hex values (4x2 or 4x4) positioned in a corner of the composition. Generated as text paths. |
-
-*Eliminated*: "Layered transparency" — requires multiple overlapping compositions with opacity. Feasible in SVG but doubles the path count. Adapted instead as: draw the "background layer" content at very low opacity (0.1) as a single `<g>`, keeping it lightweight. "Blinking / alert state" — blinking is animation, not static SVG. Adapted as: double-border (two concentric rectangles with a gap) to suggest alert framing.
+The style guide's algorithm treatment (visible iteration, parametric variation) was never built as a treatment.
 
 ---
 

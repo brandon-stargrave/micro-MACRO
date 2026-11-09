@@ -4166,10 +4166,7 @@ function svgPoint(x, y) {
   svgRec._addPath(`M${svgRec._r(x-r)} ${svgRec._r(y)}a${r},${r} 0 1,0 ${r*2},0a${r},${r} 0 1,0 ${-r*2},0`, null, svgRec.currentStroke, null);
 }
 
-// While a treatment draws, every ink it asks for is the treatments' pen
-let _inkOverride = null;
 function svgSetStroke(c) {
-  if (_inkOverride) c = _inkOverride;
   stroke(c);
   svgRec.setStroke(c);
 }
@@ -4551,57 +4548,6 @@ function _measureBuiltinText(str, fontSize) {
   return str.length * fontSize * spacing;
 }
 
-// A glyph's strokes as straight segments for decomposition. Plotterm Vector:
-// its strokes run on the 5x7 lattice the round faces share, so each segment
-// is one lattice edge. Coordinates are font units, y up from the baseline.
-function _glyphSegments(ch) {
-  let f = loadedFonts.micro.find(f2 => f2.name === 'Plotterm Vector');
-  let g = f && (f.glyphs.get(ch) || f.glyphs.get(ch.toUpperCase()));
-  if (!g || !g.d) return null;
-  if (!g.segs) {
-    if (!g.polys) g.polys = parsePathToPolylines(g.d);
-    g.segs = [];
-    for (let poly of g.polys) for (let i = 1; i < poly.length; i++) g.segs.push([poly[i - 1][0], poly[i - 1][1], poly[i][0], poly[i][1]]);
-  }
-  return { segs: g.segs, em: f.em };
-}
-
-// Draw a single character with progressively dropped segments for zalgo decomposition
-// decompose: 0 = full glyph, 1 = nothing. hashSeed controls which segments survive.
-// xScale: 0 = collapsed to vertical center line, 1 = full width
-function _drawDecomposedGlyph(ch, x, y, fontSize, decompose, hashSeed, xScale) {
-  if (_drawingSuppressed || decompose >= 1) return;
-  if (xScale === undefined) xScale = 1;
-  let fullW = fontSize * 0.7;
-  let cx = x + fullW / 2; // horizontal center for X-scale compression
-  let pf = _glyphSegments(ch);
-  if (pf) {
-    // Scaled so the 0.6 em cell is as wide as the line glyphs' body
-    let k = fullW / (pf.em * 0.6);
-    for (let s = 0; s < pf.segs.length; s++) {
-      if (_profileHash(hashSeed + s * 7, 0x4380) < decompose) continue;
-      let seg = pf.segs[s];
-      svgLine(cx + (x + seg[0] * k - cx) * xScale, y - seg[1] * k, cx + (x + seg[2] * k - cx) * xScale, y - seg[3] * k);
-    }
-    return;
-  }
-  ch = ch.toUpperCase();
-  let glyph = FALLBACK_GLYPHS[ch] || FALLBACK_GLYPHS['?'] || [];
-  if (glyph.length === 0) return;
-  let scaleX = fullW / 5;
-  let scaleY = fontSize / 7;
-  for (let s = 0; s < glyph.length; s++) {
-    if (_profileHash(hashSeed + s * 7, 0x4380) < decompose) continue;
-    let seg = glyph[s];
-    let x1 = x + seg[0] * scaleX, x2 = x + seg[2] * scaleX;
-    let y1 = y + seg[1] * scaleY - fontSize, y2 = y + seg[3] * scaleY - fontSize;
-    // Compress X around center
-    x1 = cx + (x1 - cx) * xScale;
-    x2 = cx + (x2 - cx) * xScale;
-    svgLine(x1, y1, x2, y2);
-  }
-}
-
 // Primary text drawing — uses loaded fonts when available, builtin otherwise
 function drawFallbackText(str, x, y, fontSize) {
   fontSize = Math.max(fontSize, getMinTextSizePx());
@@ -4659,7 +4605,7 @@ function _tagSvgGroup(names, id) {
     };
   }
 }
-_tagSvgGroup(['_drawBuiltinText', '_drawDecomposedGlyph'], 'micro-text');
+_tagSvgGroup(['_drawBuiltinText'], 'micro-text');
 _tagSvgGroup(['drawBarcodeLines', 'drawDitherFill', 'drawTextureStamp', 'drawTextureStrip', 'drawTextureGreeble'], 'detail');
 _tagSvgGroup(['hatchFillContours'], 'hatch');
 
@@ -23770,6 +23716,7 @@ function generate(frameIndex) {
 
   let prng = new PRNG(state.seed);
   _facility = buildFacility(seedNumber(state.seed)); // the facility the page's panels describe (hashes only)
+  _tmHack = { cells: [], avoid: [] }; // hacked cells, for the links across the page
   syncStrokeWeight();
 
   // Randomize font selection for this generation
@@ -24176,9 +24123,9 @@ function generate(frameIndex) {
     // filled leftover space in sparse cells. Composers now lay out the whole
     // cell themselves, so those overlays only collided with their content.)
 
-    // Conservative stacking — secondary element overlay. It and the treatments
-    // below leave the cell's stream as they found it, so switching them on or
-    // off redraws this composition rather than reshuffling its borders
+    // Conservative stacking — secondary element overlay. It leaves the cell's
+    // stream as it found it, so switching it on or off redraws this
+    // composition rather than reshuffling its borders
     let _cellStream = cellPrng.s.slice();
     if (state.stacking.enabled && cellPrng.nextFloat() < state.stacking.probability) {
       svgSetStrokeWeight(state.geometry.strokeWeight * 0.45);
@@ -24189,26 +24136,6 @@ function generate(frameIndex) {
       svgSetStrokeWeight(state.geometry.strokeWeight);
     }
 
-    // Per-cell treatment pass — treatments modify cell content before border
-    // Disable text tracking so treatment draws don't pollute the log
-    let _savedTextLog = _cellTextLog;
-    _cellTextLog = null;
-    for (let tx of state.treatmentStack) {
-      if (!tx.enabled) continue;
-      let perCellFn = TREATMENT_PER_CELL[tx.id];
-      if (!perCellFn) continue;
-      // Grouped so label knockouts leave treatments alone (they may overlap),
-      // and drawn in the treatments' pen
-      svgRec.beginGroup('treatment-' + tx.id);
-      _inkOverride = penColor(treatmentPen());
-      svgSetStroke(_inkOverride);
-      // each its own stream: one switched on or off leaves the others as they were
-      // (and the stroke weight it found, which the border goes on to use)
-      let txPrng = new PRNG(((_cellStream[0] ^ _cellStream[2] ^ seedNumber(tx.id + '#tx')) >>> 0) || 1), txWeight = svgRec.currentStrokeWeight;
-      try { perCellFn(tx.intensity, padded, cellScale, archetype, txPrng, i); }
-      finally { svgRec.endGroup(); _inkOverride = null; svgSetStroke(state.fgColor); svgSetStrokeWeight(txWeight); }
-    }
-    _cellTextLog = _savedTextLog;
     cellPrng.s.set(_cellStream);
 
     // Clear content instability before border (border renders independently, always stable)
@@ -24225,11 +24152,13 @@ function generate(frameIndex) {
     while (svgRec.groupStack.length > 2) {
       svgRec.endGroup(); // close leaked inner groups
     }
-    // Clear the labels (border included) and hand out the pens; then repaint
-    // the cell from its record so screen = plot
+    // Clear the labels (border included), work the treatments into the
+    // drawing and hand out the pens; then repaint the cell from its record so
+    // screen = plot
     let cellGroup = svgRec.groupStack[1];
     if (cellGroup && !_drawingSuppressed) {
       let changed = state.labelKnockout !== false && knockoutCellLabels(cellGroup, cell);
+      if (treatCell(cellGroup, cell, i, cells.length)) changed = true;
       if (penPlan) changed = assignCellPens(cellGroup, i, cell, penPlan) || changed;
       if (changed) redrawCellFromRecord(cellGroup, cell);
     }
@@ -24240,19 +24169,9 @@ function generate(frameIndex) {
     resetMatrix();
   }
 
-  // Apply aesthetic treatments from the stack (in order)
-  // Disable text tracking so treatment draws don't pollute cell logs
+  // Treatments that span the page (the intrusion's links between cells)
   _cellTextLog = null;
-  _inkOverride = penColor(treatmentPen());
-  svgSetStroke(_inkOverride);
-  let txBase = prng.nextInt(0, 0x7FFFFFFF);
-  try {
-    for (let tx of state.treatmentStack) {
-      if (!tx.enabled) continue;
-      // each its own stream, so toggling or reordering one leaves the others alone
-      applyTreatment(tx.id, tx.intensity, contentRect, new PRNG(((txBase ^ seedNumber(tx.id + '#tx')) >>> 0) || 1), _cellMeta);
-    }
-  } finally { _inkOverride = null; svgSetStroke(state.fgColor); }
+  treatPage();
 
   svgRec.endGroup();
 
@@ -25326,1044 +25245,760 @@ function initTreatmentDragHandles() {
   });
 }
 
-// Iterate cellData calling fn(cellRect, cellMeta, cellIndex) for each cell
-function forEachCell(cellData, fn) {
-  if (!cellData) return;
-  for (let i = 0; i < cellData.length; i++) {
-    let cm = cellData[i];
-    fn(cm.rect, cm, i);
-  }
+// ---- Treatments as edits to the composition ----
+// A treatment works on a cell's own drawing (its SVG record) after label
+// knockout and before pens: it cuts, moves and rewrites what the composer
+// drew. What it moves or cuts keeps its pens; only what it adds goes in a
+// 'treatment-*' group (the treatments' pen). Cell borders stay whole.
+// Treatments run in stack order, each on the drawing the last one left, from
+// hashes of the page seed and the cell (and the frame, when animating): no
+// stream is drawn from, so switching one off returns the page as it was.
+
+const TX_CIPHER = '0123456789ABCDEF@#%&*<>{}[]=/\\|~^';
+const _tmH = (s, k) => _mmHash(s | 0, k | 0);
+const _tmCut = (polys, box) => polys.flatMap(p => _cutPolyline(p, box));
+const _tmClip = (polys, box) => polys.flatMap(p => clipPolylineToRect(p, box));
+const _tmShift = (polys, dx, dy) => polys.map(p => p.map(q => [q[0] + dx, q[1] + dy]));
+const _tmHits = (a, b) => a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1];
+const _tmHex = (u, n) => Math.floor(u * Math.pow(16, n)).toString(16).toUpperCase().padStart(n, '0');
+const _tmCtr = b => [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2];
+const _tmDist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+// Where a treatment stands in the loop: 0..1 across an animation, 1 on a still
+const _tmT = () => animCtx ? animCtx.t : 1;
+function _tmBB(polys) {
+  let B = [Infinity, Infinity, -Infinity, -Infinity];
+  for (let p of polys) for (let q of p) { if (q[0] < B[0]) B[0] = q[0]; if (q[1] < B[1]) B[1] = q[1]; if (q[0] > B[2]) B[2] = q[0]; if (q[1] > B[3]) B[3] = q[1]; }
+  return B;
+}
+function _tmD(polys) {
+  let r = svgRec._r;
+  return polys.filter(p => p.length > 1).map(p => p.map((q, i) => (i ? 'L' : 'M') + r(q[0]) + ' ' + r(q[1])).join('')).join('');
 }
 
-// A horizontal line at height y across the composition, broken at gutters:
-// one segment per cell spanning y (the whole width if there's no cell data).
-// Page-wide treatment lines read as stray hairlines where they cross gutters.
-function svgLineAcrossCells(x0, x1, y, cellData) {
-  if (!cellData || cellData.length < 2) { svgLine(x0, y, x1, y); return; }
-  for (let cm of cellData) {
-    let r = cm.rect;
-    if (y < r.y || y > r.y + r.h) continue;
-    let a = Math.max(x0, r.x), b = Math.min(x1, r.x + r.w);
-    if (b > a) svgLine(a, y, b, y);
+// The cell's stroked paths (not earlier treatments), in page space
+function _tmCollect(node, M, ids, out) {
+  for (let n of node.children) {
+    if (n.children) {
+      if (n.id && (n.id.startsWith('treatment-') || n.id.startsWith('clone-'))) continue;
+      let M2 = n.transform ? _matMul(M, parseTransformMatrix(n.transform)) : M;
+      _tmCollect(n, M2, n.id ? ids.concat(n.id) : ids, out);
+    } else if (n.d && n.stroke && n.stroke !== 'none' && !(n.fill && n.fill !== 'none')) {
+      let polys = parsePathToPolylines(n.d).map(p => p.map(q => _matApply(M, q)));
+      out.push({ n, M, polys, bb: _tmBB(polys), text: ids.some(id => _TEXT_GROUP_IDS.has(id)),
+                 border: ids.some(id => id === 'border' || id === 'anim-border'), fill: ids.some(id => id === 'hatch' || id === 'fill'), dirty: false });
+    }
+  }
+  return out;
+}
+// fn on every path that may reach [y0, y1]: never the border, and not type when noText
+function _tmEdit(Ls, y0, y1, fn, noText) {
+  for (let L of Ls) {
+    if (L.border || (noText && L.text) || L.bb[3] < y0 || L.bb[1] > y1) continue;
+    let np = fn(L.polys, L);
+    if (np !== L.polys) { L.polys = np; L.bb = _tmBB(np); L.dirty = true; }
   }
 }
-
-function applyTreatment(treatment, intensity, rect, prng, cellData) {
-  svgRec.beginGroup('treatment-' + treatment);
-
-  switch (treatment) {
-    case 'glitch': applyGlitchTreatment(intensity, rect, prng, cellData); break;
-    case 'terminal': applyTerminalTreatment(intensity, rect, prng, cellData); break;
-    case 'corruption': applyCorruptionTreatment(intensity, rect, prng, cellData); break;
-    case 'decode': applyDecodeTreatment(intensity, rect, prng, cellData); break;
-    case 'hacking': applyHackingTreatment(intensity, rect, prng, cellData); break;
+function _tmCommit(cellGroup, Ls) {
+  for (let L of Ls) {
+    if (!L.dirty) continue;
+    let Mi = _matInv(L.M), polys = L.polys.filter(p => p.length > 1);
+    L.n.d = Mi && polys.length ? _tmD(polys.map(p => p.map(q => _matApply(Mi, q)))) : '';
   }
-
-  svgRec.endGroup();
+  const prune = node => { node.children = node.children.filter(c => c.children ? (prune(c), true) : c.d !== ''); };
+  prune(cellGroup);
 }
-
-function applyGlitchTreatment(intensity, rect, prng, cellData) {
-  let { x, y, w, h } = rect;
-  let glitchAnimated = animCtx && shouldAnimate(0x474C);
-  // Drama + audio modulation
-  let drama = (_compBus && _compBus.dramaCurve) || 1;
-  let audioMod = _compBus ? Math.max(0.3, (_compBus.audioRmsDb + 40) / 40) : 1;
-  let eff = intensity * drama * audioMod;
-
-  // Audio-reactive slice displacement — bands align with audio waveform
-  let sliceCount = Math.round(3 + intensity * 10);
-  svgSetStrokeWeight(state.geometry.strokeWeight * 0.3);
-  svgSetStroke(state.fgColor);
-  for (let i = 0; i < sliceCount; i++) {
-    let sy = y + prng.nextFloat() * h;
-    let sliceH = 1 + prng.nextFloat() * h * 0.03 * intensity;
-    let dx = (prng.nextFloat() - 0.5) * w * 0.08 * intensity;
-    // Audio waveform modulates Y positions
-    if (_compBus && _compBus.audioWaveform) {
-      let wIdx = Math.floor((i / sliceCount) * _compBus.audioSlices) % _compBus.audioSlices;
-      dx += _compBus.audioWaveform[wIdx] * w * 0.06 * intensity;
-    }
-    if (glitchAnimated) {
-      sy = y + animCtx.framePRNG.nextFloat() * h;
-      dx = (animCtx.framePRNG.nextFloat() - 0.5) * w * 0.1 * eff;
-    }
-    svgLineAcrossCells(x, x + w, sy, cellData);
-    if (prng.nextFloat() < eff * 0.5) {
-      svgLineAcrossCells(x + dx, x + w * 0.3 + dx, sy + sliceH, cellData);
-    }
-  }
-
-  // Per-cell glitch intensity — cells near signal source get more
-  if (cellData && cellData.length > 1 && _compBus) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.2);
-    forEachCell(cellData, (cr, cm, ci) => {
-      let sig = _compBus.signalStrength(ci);
-      // Hash-based decision per cell (no PRNG)
-      let cellHash = _profileHash(ci * 7717, 0x474C);
-      if (cellHash < sig * eff * 0.6) {
-        // Per-cell horizontal slice through cell content
-        let slY = cr.y + _profileHash(ci * 131, 0x4701) * cr.h;
-        let slDx = (_profileHash(ci * 233, 0x4702) - 0.5) * cr.w * 0.15 * eff;
-        svgLine(cr.x, slY, cr.x + cr.w, slY);
-        svgLine(cr.x + slDx, slY + 1, cr.x + cr.w * 0.4 + slDx, slY + 1);
-      }
-    });
-  }
-
-  // Truncation — partial clip indicators at edges
-  if (intensity > 0.4 && prng.nextFloat() < intensity) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.8);
-    let clipSide = prng.nextInt(0, 3);
-    let clipDepth = w * (0.02 + prng.nextFloat() * 0.06 * intensity);
-    if (clipSide === 0) svgLine(x + clipDepth, y, x + clipDepth, y + h);
-    else if (clipSide === 1) svgLine(x + w - clipDepth, y, x + w - clipDepth, y + h);
-    else if (clipSide === 2) svgLine(x, y + clipDepth, x + w, y + clipDepth);
-    else svgLine(x, y + h - clipDepth, x + w, y + h - clipDepth);
-  }
-
-  // Fragment displacement
-  if (intensity > 0.3) {
-    let fragCount = Math.round(intensity * 4);
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.2);
-    for (let i = 0; i < fragCount; i++) {
-      let fx = x + prng.nextFloat() * w * 0.8;
-      let fy = y + prng.nextFloat() * h;
-      let fw = w * (0.05 + prng.nextFloat() * 0.15);
-      let fh = h * (0.01 + prng.nextFloat() * 0.03);
-      let fdx = (prng.nextFloat() - 0.5) * w * 0.05 * eff;
-      // A displaced slab: outline plus hatch at pen pitch (an empty outline
-      // read as a stray box, not as a torn-out strip of image)
-      svgRect(fx + fdx, fy, fw, fh);
-      let pitch = Math.max(1.5, unitToPx(state.plotter.hatch.penDiameter, 'mm', state.plotter.dpi) * 2.5);
-      for (let hy = fy + pitch; hy < fy + fh - pitch * 0.5; hy += pitch) svgLine(fx + fdx, hy, fx + fdx + fw, hy);
-    }
-  }
-
-  // Pixel sort / vertex clone displacement
-  // Clone line segments from scan bands and displace them vertically
-  // Lower clones decompose into shorter dashed segments then stipple dots
-  if (intensity > 0.2) {
-    let stretchCount = Math.round(2 + intensity * 5);
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.35);
-
-    for (let i = 0; i < stretchCount; i++) {
-      let bandY = y + prng.nextFloat() * h;
-      let bandH = h * (0.005 + prng.nextFloat() * 0.02 * intensity);
-      let stretchDir = prng.nextFloat() < 0.5 ? 1 : -1;
-      let stretchAmt = w * (0.03 + prng.nextFloat() * 0.12) * eff * stretchDir;
-
-      let srcX = x + prng.nextFloat() * w * 0.7;
-      let srcW = w * (0.05 + prng.nextFloat() * 0.2);
-
-      // Source scan band
-      svgLine(srcX, bandY, srcX + srcW, bandY);
-
-      // Displaced clones that decompose downward
-      let vertDisp = bandH * (3 + prng.nextFloat() * 8) * eff;
-      let steps = Math.min(10, Math.max(2, Math.round(vertDisp / 2.5)));
-
-      for (let s2 = 1; s2 <= steps; s2++) {
-        let t = s2 / steps;
-        let dy = vertDisp * t;
-        let dx = stretchAmt * t;
-        let taper = 1.0 - t * 0.6;
-        let segLen = srcW * taper;
-
-        if (t < 0.5) {
-          // Solid line clone
-          svgSetStrokeWeight(state.geometry.strokeWeight * (0.3 - t * 0.3));
-          svgLine(srcX + dx, bandY + dy, srcX + segLen + dx, bandY + dy);
-        } else if (t < 0.8) {
-          // Dashed decomposition — shorter fragments with gaps
-          svgSetStrokeWeight(state.geometry.strokeWeight * 0.12);
-          let dashLen = segLen * (1 - t);
-          let gapLen = dashLen * 0.8;
-          if (dashLen > 0.5 && gapLen > 0.3) {
-            drawDashedLine(srcX + dx, bandY + dy, srcX + segLen + dx, bandY + dy, dashLen, gapLen);
-          }
-        } else {
-          // Stipple dots — scattered points where line dissolved
-          svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-          let dotCount = Math.max(1, Math.round(segLen / 4));
-          for (let d = 0; d < dotCount; d++) {
-            let dotX = srcX + dx + _profileHash(i * 100 + s2 * 10 + d, 0x4703) * segLen;
-            svgPoint(dotX, bandY + dy + (_profileHash(i * 100 + s2 * 10 + d + 50, 0x4704) - 0.5) * 2);
-          }
-        }
-      }
-
-      // Reconnect last step to source
-      if (prng.nextFloat() < 0.4 * intensity) {
-        svgSetStrokeWeight(state.geometry.strokeWeight * 0.1);
-        svgLine(srcX, bandY, srcX + stretchAmt, bandY + vertDisp);
-        svgLine(srcX + srcW, bandY, srcX + srcW * 0.5 + stretchAmt, bandY + vertDisp);
-      }
-
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.35);
-    }
-  }
-
+// Polylines into a treatment group, in the treatments' pen
+function _tmAddPolys(cellGroup, id, polys) {
+  polys = polys.filter(p => p.length > 1);
+  if (!polys.length) return;
+  let sw = state.geometry.strokeWeight, ink = penColor(treatmentPen());
+  cellGroup.children.push({ id: 'treatment-' + id, children: polys.map(p => ({ d: _tmD([p]), stroke: ink, fill: 'none', strokeWidth: sw })) });
+}
+// Marks and text drawn into a treatment group (text in the page's small face)
+function _tmDraw(id, fn) {
+  svgRec.beginGroup('treatment-' + id);
+  svgSetStroke(penColor(treatmentPen()));
   svgSetStrokeWeight(state.geometry.strokeWeight);
+  try { fn(); } finally { svgRec.endGroup(); svgSetStroke(state.fgColor); }
+}
+// Ink (stroke length) per grid cell: where the drawing is, and the space round it
+function _tmInkGrid(Ls, R, cs, keep) {
+  let cols = Math.max(1, Math.ceil((R[2] - R[0]) / cs)), rows = Math.max(1, Math.ceil((R[3] - R[1]) / cs)), g = new Float32Array(cols * rows);
+  for (let L of Ls) {
+    if (keep && !keep(L)) continue;
+    for (let p of L.polys) for (let i = 1; i < p.length; i++) {
+      let [ax, ay] = p[i - 1], [bx, by] = p[i], len = Math.hypot(bx - ax, by - ay), n = Math.max(1, Math.ceil(len / (cs / 3)));
+      for (let k = 0; k < n; k++) {
+        let c = Math.floor((ax + (bx - ax) * (k + 0.5) / n - R[0]) / cs), r = Math.floor((ay + (by - ay) * (k + 0.5) / n - R[1]) / cs);
+        if (c >= 0 && r >= 0 && c < cols && r < rows) g[r * cols + c] += len / n;
+      }
+    }
+  }
+  return { cols, rows, cs, R, at: (c, r) => (c < 0 || r < 0 || c >= cols || r >= rows) ? 1e9 : g[r * cols + c] };
+}
+function _tmEmptyIn(G, b, tol) {
+  let c0 = Math.floor((b[0] - G.R[0]) / G.cs), c1 = Math.floor((b[2] - G.R[0]) / G.cs), r0 = Math.floor((b[1] - G.R[1]) / G.cs), r1 = Math.floor((b[3] - G.R[1]) / G.cs);
+  for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) if (G.at(c, r) > (tol || 0)) return false;
+  return true;
+}
+// The layout's long horizontal lines (rules, frames), where decay stops
+function _tmRules(Ls, minLen) {
+  let out = [];
+  for (let L of Ls) {
+    if (L.text) continue;
+    for (let p of L.polys) for (let i = 1; i < p.length; i++) {
+      let a = p[i - 1], b = p[i];
+      if (Math.abs(b[1] - a[1]) < 0.6 && Math.abs(b[0] - a[0]) >= minLen) out.push({ y: (a[1] + b[1]) / 2, x0: Math.min(a[0], b[0]), x1: Math.max(a[0], b[0]) });
+    }
+  }
+  return out;
+}
+function _tmStopAt(rules, x, y, dir, limit) {
+  let best = limit;
+  for (let ru of rules) {
+    if (x < ru.x0 || x > ru.x1) continue;
+    if (dir > 0 && ru.y > y && ru.y < best) best = ru.y;
+    if (dir < 0 && ru.y < y && ru.y > best) best = ru.y;
+  }
+  return best;
+}
+// The cell's upright labels, each with the text, size and face it was set in
+// (matched to the text log by where it starts)
+function _tmLabels(cellGroup) {
+  let log = _cellTextLog || [], out = [], used = new Set();
+  for (let L of _cellLabels(cellGroup, [1, 0, 0, 1, 0, 0], [])) {
+    if (Math.abs(L.M[1]) > 1e-6 || Math.abs(L.M[2]) > 1e-6 || L.node.id === 'otf-text') continue;
+    let best = -1, bd = Infinity;
+    log.forEach((e, k) => {
+      if (used.has(k) || !e.str || !e.str.trim()) return;
+      let d = Math.abs(e.x - L.page[0]) + Math.abs(e.y - L.page[3]) * 0.5;
+      if (d < e.fontSize * 1.2 && d < bd) { bd = d; best = k; }
+    });
+    if (best >= 0) { used.add(best); let e = log[best]; out.push({ L, e, font: _resolveFont(0, e.fontSize, 0) }); }
+  }
+  return out;
+}
+const _tmMeasure = (it, s) => it.font && it.font.type === 'svg' ? measureSVGFontText(s, it.e.fontSize, it.font) : _measureBuiltinText(s, it.e.fontSize);
+const _tmCharX = (it, k) => it.e.x + _tmMeasure(it, it.e.str.slice(0, k));
+const _tmDrop = it => { it.L.parent.children = it.L.parent.children.filter(c => c !== it.L.node); };
+// A glyph of the page's face as segments, some dropped (decomposition);
+// xScale squeezes it about its centre
+function _tmFaceGlyph(ch, font, x, y, fs, decompose, hseed, xScale, out) {
+  let g = font && font.glyphs && (font.glyphs.get(ch) || font.glyphs.get(ch.toUpperCase()));
+  if (!g || !g.d) return;
+  if (!g.segs) {
+    if (!g.polys) g.polys = parsePathToPolylines(g.d);
+    g.segs = [];
+    for (let poly of g.polys) for (let i = 1; i < poly.length; i++) g.segs.push([poly[i - 1][0], poly[i - 1][1], poly[i][0], poly[i][1]]);
+  }
+  let k = fs / font.em, cx = x + g.advance * k / 2;
+  for (let s = 0; s < g.segs.length; s++) {
+    if (_profileHash(hseed + s * 7, 0x4380) < decompose) continue;
+    let [x0, y0, x1, y1] = g.segs[s];
+    out.push([[cx + (x + x0 * k - cx) * xScale, y - y0 * k], [cx + (x + x1 * k - cx) * xScale, y - y1 * k]]);
+  }
 }
 
-function applyTerminalTreatment(intensity, rect, prng, cellData) {
-  let { x, y, w, h } = rect;
-  let termAnimated = animCtx && shouldAnimate(0x5445);
-  let scanOffset = termAnimated ?
-    anim.sweep(animCtx.frameIndex, animCtx.frameCount, animCtx.frameCount, animCtx.speedMul, 0) * h * 0.1 : 0;
-  let drama = (_compBus && _compBus.dramaCurve) || 1;
-
-  // Audio-modulated scan line spacing — density pulses with audio energy
-  let audioEnergy = 0;
-  if (_compBus && _compBus.audioWaveform) {
-    for (let i = 0; i < _compBus.audioSlices; i++) audioEnergy += _compBus.audioWaveform[i];
-    audioEnergy /= _compBus.audioSlices;
+// GLITCH: a vocabulary of moves on the drawing. On a moving page the moves are
+// dealt again every few frames, and a cell sits some bursts out.
+function txGlitch(cellGroup, Ls, R, t, seed, lead) {
+  if (animCtx) {
+    let k = Math.floor(animCtx.frameIndex / (2 + Math.floor(_tmH(seed, 0xF0) * 3)));
+    seed = (seed ^ Math.imul(k + 1, 0x27D4EB2F)) >>> 0;
+    if (_tmH(seed, 0xF1) > 0.3 + 0.5 * t) return;
   }
-  let spacingMod = 1 - audioEnergy * 0.4 * intensity; // louder = tighter spacing
-  // Pitch at least 4 pen widths (closer lines plot as a solid smear), and the
-  // lines always span the full height: past the 120-line cap the pitch
-  // widens instead of the band stopping partway down.
-  let pen = unitToPx(state.plotter.hatch.penDiameter, 'mm', state.plotter.dpi);
-  // At most 40 lines and none in the gutters: a page of 120 full-width lines
-  // was ~20 m of ink for an overlay.
-  let lineSpacing = Math.max(2, pen * 4, Math.round((6 - intensity * 3) * spacingMod), h / 40);
-  let lineCount = Math.floor(h / lineSpacing);
-  svgSetStrokeWeight(state.geometry.strokeWeight * 0.08);
-  svgSetStroke(state.fgColor);
-  for (let i = 0; i < lineCount; i++) {
-    let ly = y + ((i * lineSpacing + scanOffset) % h);
-    svgLineAcrossCells(x, x + w, ly, cellData);
-  }
-
-  // Screen bezel — double border in the inner half of the margin, tagged as
-  // a border so plot-safe export keeps it (as a treatment it sat 2-4% outside
-  // the content rect and was clipped away, though the screen showed it)
-  let mMin = Math.min(state.margin.top, state.margin.right, state.margin.bottom, state.margin.left);
-  let bezelInset = Math.max(1.5, Math.min(Math.min(w, h) * 0.02, mMin * 0.22));
-  svgRec.beginGroup('border');
-  svgSetStrokeWeight(state.geometry.strokeWeight * 0.6);
-  svgRect(x - bezelInset, y - bezelInset, w + bezelInset * 2, h + bezelInset * 2);
-  svgSetStrokeWeight(state.geometry.strokeWeight * 0.3);
-  svgRect(x - bezelInset * 2, y - bezelInset * 2, w + bezelInset * 4, h + bezelInset * 4);
-  svgRec.endGroup();
-
-  // Corner phosphor dots
-  if (intensity > 0.3) {
-    let dotR = 2;
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.5);
-    svgPoint(x + dotR * 2, y + dotR * 2);
-    svgPoint(x + w - dotR * 2, y + dotR * 2);
-    svgPoint(x + dotR * 2, y + h - dotR * 2);
-    svgPoint(x + w - dotR * 2, y + h - dotR * 2);
-  }
-
-  // Per-cell phosphor glow — dither dots around cell centers where content exists
-  if (cellData && intensity > 0.2) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.35);
-    forEachCell(cellData, (cr, cm, ci) => {
-      let cx = cr.x + cr.w / 2, cy = cr.y + cr.h / 2;
-      let glowR = Math.min(cr.w, cr.h) * 0.3 * intensity * drama;
-      let dotCount = Math.round(4 + intensity * 8);
-      for (let d = 0; d < dotCount; d++) {
-        let angle = _profileHash(ci * 50 + d, 0x5401) * TWO_PI;
-        let dist = _profileHash(ci * 50 + d + 25, 0x5402) * glowR;
-        svgPoint(cx + Math.cos(angle) * dist, cy + Math.sin(angle) * dist);
+  if (!lead && _tmH(seed, 1) > 0.35 + 0.65 * t) return;
+  let w = R[2] - R[0], h = R[3] - R[1], p = penPx(), added = [], marks = [];
+  let mv = (polys, box, dx, dy) => _tmClip(_tmShift(_tmClip(polys, box), dx, dy), R);
+  // tear marks at the cell's edges
+  let tear = (y, d) => {
+    if (y <= R[1] + p * 2 || y >= R[3] - p * 2) return;
+    let L = p * (3 + 5 * Math.min(1, Math.abs(d) / (w * 0.08)));
+    marks.push([[R[0] + p, y], [R[0] + p + L, y]], [[R[2] - p - L, y], [R[2] - p, y]]);
+  };
+  const MOVES = [['shift', 1], ['jitter', 1.3], ['stutter', 0.8], ['sort', 1], ['blocks', 0.9], ['wrap', 0.6], ['comb', 0.6], ['stretch', 0.5], ['split', 0.6]];
+  let total = MOVES.reduce((a, m) => a + m[1], 0), nm = 2 + Math.floor(_tmH(seed, 2) * (1 + 3.5 * t));
+  for (let m = 0; m < nm; m++) {
+    let u = _tmH(seed, 10 + m) * total, kind = 'shift';
+    for (let [k, wt] of MOVES) { if ((u -= wt) <= 0) { kind = k; break; } }
+    let s = (seed ^ Math.imul(m + 1, 0x9E3779B1)) >>> 0, Hs = k => _tmH(s, k);
+    // most bands thin, a few thick
+    let bh = h * (0.012 + 0.13 * Hs(1) * Hs(1)) * (0.6 + 0.8 * t), y0 = R[1] + Hs(2) * Math.max(0, h - bh);
+    let dx = (Hs(3) < 0.5 ? -1 : 1) * w * (0.02 + 0.16 * Hs(4)) * (0.4 + t);
+    if (kind === 'shift') {
+      let box = [R[0] - 1, y0, R[2] + 1, y0 + bh];
+      _tmEdit(Ls, y0, y0 + bh, polys => _tmCut(polys, box).concat(mv(polys, box, dx, 0)));
+      tear(y0, dx); tear(y0 + bh, dx);
+    } else if (kind === 'jitter') {
+      // tracking error: a stretch in thin slices, each nudged, the odd one far
+      let rh = h * (0.08 + 0.22 * Hs(5)) * (0.5 + t), ry = R[1] + Hs(6) * Math.max(0, h - rh), sh = Math.max(p * 2.5, rh / (6 + 16 * Hs(7)));
+      for (let y = ry, k = 0; y < ry + rh - 0.5; y += sh, k++) {
+        let d = (Hs(20 + k) - 0.5) * 2 * Math.abs(dx) * (Hs(40 + k) < 0.15 ? 1.2 : 0.3), box = [R[0] - 1, y, R[2] + 1, Math.min(y + sh, ry + rh)];
+        _tmEdit(Ls, box[1], box[3], polys => _tmCut(polys, box).concat(mv(polys, box, d, 0)));
       }
-    });
-  }
-
-  // Shared status in bezel corner
-  if (_compBus && intensity > 0.3) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.3);
-    let fontSize = Math.max(3, Math.min(w * 0.01, 5));
-    let statusStr = _compBus.audioSourceName || _compBus.masterStatus || 'READY';
-    drawAnimText(statusStr, x - bezelInset * 2 + 3, y - bezelInset * 2 + fontSize + 1, fontSize, 0x5445, 'bus:status');
-  }
-
-  svgSetStrokeWeight(state.geometry.strokeWeight);
-}
-
-function applyCorruptionTreatment(intensity, rect, prng, cellData) {
-  let { x, y, w, h } = rect;
-  let corruptAnimated = animCtx && shouldAnimate(0x4352);
-  let corruptSpread = corruptAnimated ?
-    anim.sweep(animCtx.frameIndex, animCtx.frameCount, animCtx.frameCount, animCtx.speedMul, 0) : 1;
-  let drama = (_compBus && _compBus.dramaCurve) || 1;
-  let effectiveIntensity = intensity * corruptSpread * drama;
-
-  // Audio-reactive decay direction — low-freq energy corrupts bottom-up, high corrupts top-down
-  let decayDir = 0; // 0 = neutral
-  if (_compBus && _compBus.audioAmps) {
-    let lowE = 0, highE = 0;
-    let half = Math.floor(_compBus.audioBins / 2);
-    for (let i = 0; i < half; i++) lowE += _compBus.audioAmps[i];
-    for (let i = half; i < _compBus.audioBins; i++) highE += _compBus.audioAmps[i];
-    decayDir = lowE > highE ? 1 : -1; // 1=bottom-up, -1=top-down
-  }
-
-  // Redaction blocks — snap to cell boundaries when cellData available
-  // CRITICAL: Always iterate max count to keep PRNG stable
-  let maxBlockCount = Math.round(2 + intensity * 6);
-  let visBlockCount = Math.round(2 + effectiveIntensity * 6);
-  svgSetStrokeWeight(state.geometry.strokeWeight * 0.5);
-  svgSetStroke(state.fgColor);
-  for (let i = 0; i < maxBlockCount; i++) {
-    let bx = x + prng.nextFloat() * w * 0.8;
-    let by = y + prng.nextFloat() * h * 0.9;
-    let bw = w * (0.03 + prng.nextFloat() * 0.1 * intensity);
-    let bh = state.geometry.strokeWeight * (2 + prng.nextFloat() * 3);
-    // Snap to cell edges when available
-    if (i < visBlockCount && cellData && cellData.length > 0) {
-      let snapIdx = Math.floor(_profileHash(i * 77, 0x4351) * cellData.length);
-      let snapCell = cellData[snapIdx].rect;
-      let edgePick = _profileHash(i * 131, 0x4352);
-      if (edgePick < 0.25) { bx = snapCell.x; by = snapCell.y + _profileHash(i * 37, 0x4353) * snapCell.h; bw = snapCell.w * (0.3 + _profileHash(i * 41, 0x4354) * 0.5); }
-      else if (edgePick < 0.5) { bx = snapCell.x + snapCell.w - bw; by = snapCell.y + _profileHash(i * 43, 0x4355) * snapCell.h; }
-      else if (edgePick < 0.75) { bx = snapCell.x + _profileHash(i * 47, 0x4356) * snapCell.w * 0.5; by = snapCell.y; bw = snapCell.w * 0.4; }
-      else { bx = snapCell.x + _profileHash(i * 53, 0x4357) * snapCell.w * 0.5; by = snapCell.y + snapCell.h - bh; bw = snapCell.w * 0.4; }
-      svgRect(bx, by, bw, bh);
-    } else if (i < visBlockCount) {
-      svgRect(bx, by, bw, bh);
-    }
-  }
-
-  // Corruption gradient with decay direction
-  if (intensity > 0.4) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.3);
-    let dotCount = Math.round(intensity * 25);
-    for (let i = 0; i < dotCount; i++) {
-      let px = x + prng.nextFloat() * w;
-      let py = y + prng.nextFloat() * h;
-      let normalizedY = (py - y) / h;
-      let dirMod = decayDir > 0 ? normalizedY : decayDir < 0 ? (1 - normalizedY) : 1;
-      let probability = ((px - x) / w) * effectiveIntensity * (0.5 + dirMod * 0.5);
-      if (prng.nextFloat() < probability) {
-        svgPoint(px, py);
+      tear(ry, dx); tear(ry + rh, dx);
+    } else if (kind === 'stutter') {
+      // a frozen band repeated below itself, each repeat nudged
+      let box = [R[0] - 1, y0, R[2] + 1, y0 + bh], n = 1 + Math.floor(Hs(8) * 3);
+      let src = Ls.map(L => L.border || L.bb[3] < box[1] || L.bb[1] > box[3] ? [] : _tmClip(L.polys, box));
+      for (let k = 1; k <= n; k++) {
+        let db = [R[0] - 1, y0 + bh * k, R[2] + 1, y0 + bh * (k + 1)];
+        if (db[1] >= R[3]) break;
+        _tmEdit(Ls, db[1], db[3], polys => _tmCut(polys, db));
+        let nudge = (Hs(60 + k) - 0.5) * p * 8;
+        for (let j = 0; j < Ls.length; j++) if (src[j].length) added.push(..._tmClip(_tmShift(src[j], nudge, bh * k), [R[0], db[1], R[2], Math.min(db[3], R[3])]));
+        tear(db[1], nudge);
       }
-    }
-  }
-
-  // Missing character replacement — spawn from actual text positions with erratic short cascades
-  if (cellData && intensity > 0.3) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.3);
-    forEachCell(cellData, (cr, cm, ci) => {
-      let cellCorrupt = _profileHash(ci * 311, 0x4358) < effectiveIntensity * (0.3 + cm.cascadeT * 0.7);
-      if (!cellCorrupt) return;
-      let tLog = cm.textLog;
-      if (!tLog || tLog.length === 0) return;
-
-      // Select text entries to spawn missing-data icons from
-      let maxEntries = Math.round(tLog.length * effectiveIntensity * 0.3);
-      maxEntries = Math.max(1, Math.min(maxEntries, tLog.length));
-
-      for (let m = 0; m < maxEntries; m++) {
-        let entryIdx = Math.floor(_profileHash(ci * 500 + m, 0x4359) * tLog.length);
-        let entry = tLog[entryIdx];
-        let fs = entry.fontSize;
-        let charSpacing = fs * 0.65;
-
-        // Pick a character position within this text entry
-        let charIdx = Math.floor(_profileHash(ci * 500 + m + 250, 0x435A) * Math.max(1, entry.str.length));
-        let startX = entry.x + charIdx * charSpacing + fs * 0.3;
-        let startY = entry.y - fs * 0.3;
-
-        // Erratic cascade: random direction, 1–3 icons, short trail
-        let angle = _profileHash(ci * 500 + m + 500, 0x435C) * TWO_PI; // full 360 degrees
-        let trailLen = 1 + Math.floor(_profileHash(ci * 500 + m + 750, 0x435D) * 3); // 1–3
-        let stepDist = fs * (0.8 + _profileHash(ci * 500 + m + 1000, 0x435E) * 1.5); // 0.8x–2.3x fontSize
-
-        for (let s = 0; s < trailLen; s++) {
-          let iconX = startX + Math.cos(angle) * stepDist * s;
-          let iconY = startY + Math.sin(angle) * stepDist * s;
-          let iconSize = fs * Math.pow(0.8, s); // shrink each step
-          drawMissingDataIcon(iconX, iconY, iconSize);
-          // Slight direction wobble per step
-          angle += (_profileHash(ci * 500 + m + s * 100 + 1250, 0x435F) - 0.5) * 0.8;
+      tear(y0, 0);
+    } else if (kind === 'sort') {
+      // pixel sort: where the drawing crosses one row, it runs down the band below
+      let ys = y0, len = Math.min(R[3] - ys - p, bh * (2 + 5 * Hs(9)), h * 0.22), xs = [];
+      for (let L of Ls) {
+        if (L.border || L.bb[3] < ys || L.bb[1] > ys) continue;
+        for (let poly of L.polys) for (let i = 1; i < poly.length; i++) {
+          let a = poly[i - 1], b = poly[i];
+          if ((a[1] - ys) * (b[1] - ys) < 0) xs.push(a[0] + (b[0] - a[0]) * (ys - a[1]) / (b[1] - a[1]));
         }
       }
-    });
-  }
-
-  // Missing segment indicators — short dashed lines
-  if (intensity > 0.3) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.15);
-    let gapCount = Math.round(intensity * 5);
-    for (let i = 0; i < gapCount; i++) {
-      let gy = y + prng.nextFloat() * h;
-      let gx = x + prng.nextFloat() * w * 0.5;
-      let gw = w * (0.1 + prng.nextFloat() * 0.2);
-      drawDashedLine(gx, gy, gx + gw, gy, 2, 4);
-    }
-  }
-
-  // Zalgo text contagion — spawns from actual rendered text characters
-  // Progressive decomposition: glyph clones → partial glyphs → slashes/dashes → strokes → dots
-  // Each character has individualized trail length, growth rate, and jitter
-  if (cellData && intensity > 0.35) {
-    let seedIdx = _compBus ? (_compBus.signalSourceIdx % cellData.length) : 0;
-    let loopT = _compBus ? _compBus.t : 1;
-    let frameJitter = animCtx ? animCtx.frameIndex : 0;
-    let slashChars = '/-\\|~_^';
-
-    forEachCell(cellData, (cr, cm, ci) => {
-      let distToSeed = 0;
-      if (cellData.length > 1) {
-        let seedR = cellData[seedIdx].rect;
-        let dx2 = (cr.x + cr.w/2) - (seedR.x + seedR.w/2);
-        let dy2 = (cr.y + cr.h/2) - (seedR.y + seedR.h/2);
-        distToSeed = Math.sqrt(dx2*dx2 + dy2*dy2) / Math.sqrt(w*w + h*h);
-      }
-      let infectionT = Math.max(0, (loopT * 1.5) - distToSeed);
-      if (infectionT <= 0) return;
-      let cellInfection = Math.min(1, infectionT) * effectiveIntensity;
-      if (cellInfection < 0.02) return;
-
-      let tLog = cm.textLog;
-      if (!tLog || tLog.length === 0) return;
-
-      let maxAffected = Math.round(tLog.length * cellInfection * 0.6);
-      maxAffected = Math.max(1, Math.min(maxAffected, tLog.length));
-
-      for (let tp = 0; tp < maxAffected; tp++) {
-        let entryIdx = Math.floor(_profileHash(ci * 700 + tp, 0x435B) * tLog.length);
-        let entry = tLog[entryIdx];
-        let fs = entry.fontSize;
-        let str = entry.str;
-        let charSpacing = fs * 0.65;
-        let charsToCorrupt = Math.max(1, Math.round(str.length * cellInfection * 0.7));
-
-        for (let ch = 0; ch < charsToCorrupt; ch++) {
-          let charIdx = Math.floor(_profileHash(ci * 710 + tp * 50 + ch, 0x4370) * str.length);
-          let charX = entry.x + charIdx * charSpacing;
-          let charY = entry.y;
-          let srcChar = str[charIdx] || str[0];
-
-          // Per-character individualized parameters
-          let hBase = ci * 1000 + tp * 100 + ch;
-          let trailMul = 0.3 + _profileHash(hBase, 0x4381) * 1.5;      // 0.3x–1.8x trail length
-          let growthRate = 0.5 + _profileHash(hBase + 1, 0x4382) * 1.5; // 0.5x–2.0x growth speed
-          let charInfection = Math.min(1, cellInfection * growthRate);
-          let cloneCount = Math.round(3 + charInfection * 7);           // 3–10 clones
-          let maxExtent = fs * 5.5 * trailMul * charInfection;          // grows from 0
-
-          for (let cl = 0; cl < cloneCount; cl++) {
-            let cloneDir = cl % 2 === 0 ? -1 : 1;
-            let spreadT = (cl + 1) / (cloneCount + 1);
-
-            // Surge: Y position pushes outward, X scale widens from 0
-            let cloneAge = Math.max(0, Math.min(1, (charInfection * 1.5 - spreadT) * 3));
-            let surge = cloneAge * cloneAge; // quadratic ease-in
-
-            let cloneDist = spreadT * maxExtent * cloneDir * surge;
-
-            let jx = (_profileHash(hBase + cl * 7 + 10, 0x4383) - 0.5) * fs * 0.35;
-            let jy = (_profileHash(hBase + cl * 7 + 11, 0x4384) - 0.5) * fs * 0.4;
-            if (frameJitter) {
-              jx += (_profileHash(hBase + cl + frameJitter * 3, 0x4385) - 0.5) * fs * 0.1;
-              jy += (_profileHash(hBase + cl + frameJitter * 3 + 1, 0x4386) - 0.5) * fs * 0.2;
-            }
-            let clX = charX + jx;
-            let clY = charY + cloneDist + jy;
-
-            let taperScale = Math.pow(1 - spreadT, 2);
-            let cloneSize = fs * 0.8 * taperScale;
-
-            // 5-zone progressive decomposition — uniform stroke weight throughout
-            svgSetStrokeWeight(state.geometry.strokeWeight);
-            if (spreadT < 0.15) {
-              let decompose = spreadT / 0.15 * 0.15;
-              _drawDecomposedGlyph(srcChar, clX, clY, Math.max(getPenTextFloorPx(), cloneSize), decompose, hBase + cl * 31, surge);
-            } else if (spreadT < 0.40) {
-              let decompose = 0.15 + ((spreadT - 0.15) / 0.25) * 0.35;
-              _drawDecomposedGlyph(srcChar, clX, clY, Math.max(getPenTextFloorPx(), cloneSize), decompose, hBase + cl * 31, surge);
-            } else if (spreadT < 0.65) {
-              let slashIdx = Math.floor(_profileHash(hBase + cl * 13, 0x4387) * slashChars.length);
-              let decompose = 0.3 + ((spreadT - 0.40) / 0.25) * 0.4;
-              _drawDecomposedGlyph(slashChars[slashIdx], clX, clY, Math.max(1.5, cloneSize), decompose, hBase + cl * 37, surge);
-            } else if (spreadT < 0.85) {
-              let markSize = Math.max(1, cloneSize * 0.5);
-              svgLine(clX, clY - markSize * 0.4, clX, clY + markSize * 0.4);
-              if (_profileHash(hBase + cl * 17, 0x4388) < 0.5) {
-                let hw = markSize * 0.3 * surge;
-                svgLine(clX - hw, clY, clX + hw, clY);
-              }
-            } else {
-              svgPoint(clX, clY);
-            }
-
-            // Cross-strokes
-            let crossProb = spreadT < 0.3 ? 0.3 : spreadT < 0.7 ? 0.55 : 0.2;
-            if (_profileHash(hBase + cl * 19 + 5, 0x4389) < crossProb) {
-              let tw = Math.max(1, cloneSize * 0.5) * surge;
-              svgLine(clX - tw/2, clY, clX + tw/2, clY);
-            }
-          }
-
-          // Vertical spine — broken segments with random gaps
-          svgSetStrokeWeight(state.geometry.strokeWeight);
-          let spX = charX + charSpacing * 0.3;
-          let spTop = charY - maxExtent * 0.6, spBot = charY + maxExtent * 0.6;
-          let spLen = spBot - spTop;
-          let segs = Math.max(3, Math.round(spLen / (fs * 0.8)));
-          let segH = spLen / segs;
-          for (let si = 0; si < segs; si++) {
-            if (_profileHash(hBase + si * 11 + 200, 0x438A) < 0.3) continue; // gap
-            let sTop = spTop + si * segH;
-            let sBot = sTop + segH * (0.5 + _profileHash(hBase + si * 11 + 201, 0x438B) * 0.5);
-            svgLine(spX, sTop, spX, Math.min(sBot, spBot));
-          }
-        }
-      }
-
-      // Background ghost columns — sparse, stroke-only
-      let ghostCount = Math.round(1 + cellInfection * 2);
-      for (let g = 0; g < ghostCount; g++) {
-        let gx = cr.x + _profileHash(ci * 1200 + g, 0x4372) * cr.w;
-        let gy = cr.y + _profileHash(ci * 1200 + g + 600, 0x4373) * cr.h;
-        let ghostSize = 4 + _profileHash(ci * 1200 + g + 300, 0x4374) * 8;
-        let ghostClones = Math.round(2 + cellInfection * 3);
-        let ghostExtent = ghostSize * (1.5 + cellInfection * 3);
-        svgSetStrokeWeight(state.geometry.strokeWeight * 0.1);
-        for (let gc = 0; gc < ghostClones; gc++) {
-          let gDir = gc % 2 === 0 ? -1 : 1;
-          let gDist = ((gc + 1) / (ghostClones + 1)) * ghostExtent * gDir;
-          let gjx = (_profileHash(ci * 1300 + g * 20 + gc, 0x4375) - 0.5) * ghostSize * 0.6;
-          svgLine(gx + gjx, gy + gDist - ghostSize * 0.3, gx + gjx, gy + gDist + ghostSize * 0.3);
-          if (_profileHash(ci * 1300 + g * 20 + gc + 10, 0x4376) < 0.35) {
-            svgLine(gx + gjx - ghostSize * 0.25, gy + gDist, gx + gjx + ghostSize * 0.25, gy + gDist);
-          }
-        }
-      }
-    });
-  }
-
-  svgSetStrokeWeight(state.geometry.strokeWeight);
-}
-
-function applyDecodeTreatment(intensity, rect, prng, cellData) {
-  let { x, y, w, h } = rect;
-  let decodeAnimated = animCtx && shouldAnimate(0x4443);
-  let drama = (_compBus && _compBus.dramaCurve) || 1;
-  let loopT = _compBus ? _compBus.t : 1;
-
-  // Audio-reactive decode speed — louder = faster decode progress
-  let audioMod = _compBus ? Math.max(0.3, (_compBus.audioRmsDb + 40) / 40) : 1;
-  // Scan beam position sweeps across composition
-  // A still frame freezes the beam partway across (a decode in progress);
-  // at 1 it sat on the right content edge, and audioMod could push it into
-  // the margin, so the position is clamped
-  let scanPos = decodeAnimated ?
-    anim.sweep(animCtx.frameIndex, animCtx.frameCount, animCtx.frameCount, animCtx.speedMul, 0) : 0.62;
-  scanPos = Math.max(0, Math.min(1, scanPos * audioMod));
-  let scanX = x + scanPos * w; // vertical beam sweeping left to right
-
-  // PRNG consumption for stability (always consume same count)
-  let cipherChars = '0123456789ABCDEF@#$%&*!?<>{}[]=/\\|~^';
-  let gridCols = prng.nextInt(8, 16);
-  let gridRows = prng.nextInt(4, 8);
-
-  svgSetStroke(state.fgColor);
-
-  // Scan beam — vertical line sweeping across
-  if (intensity > 0.15) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.5);
-    svgLine(scanX, y, scanX, y + h);
-    // Small tick marks along the beam
-    let tickCount = Math.round(8 + intensity * 12);
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.2);
-    for (let i = 0; i < tickCount; i++) {
-      let ty = y + (i / tickCount) * h;
-      let tw = 2 + _profileHash(i * 17, 0x4401) * 4;
-      svgLine(scanX - tw, ty, scanX + tw, ty);
-    }
-  }
-
-  // Translation grid — faint coordinate overlay on cells
-  if (cellData && intensity > 0.25) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.08);
-    forEachCell(cellData, (cr, cm, ci) => {
-      // Faint grid within cell bounds
-      let gSpacingX = cr.w / 4;
-      let gSpacingY = cr.h / 4;
-      for (let gx = 1; gx < 4; gx++) {
-        svgLine(cr.x + gx * gSpacingX, cr.y, cr.x + gx * gSpacingX, cr.y + cr.h);
-      }
-      for (let gy = 1; gy < 4; gy++) {
-        svgLine(cr.x, cr.y + gy * gSpacingY, cr.x + cr.w, cr.y + gy * gSpacingY);
-      }
-      // Coordinate marker in top-left
-      let coordSize = Math.max(2, Math.min(cr.w * 0.02, 4));
-      let coordStr = String.fromCharCode(65 + (ci % 26)) + (ci + 1);
-      drawFallbackText(coordStr, cr.x + 2, cr.y + coordSize + 1, coordSize);
-    });
-  }
-
-  // Per-cell cipher/decode — characters ahead of scan beam are cipher, behind are decoded
-  if (cellData && intensity > 0.2) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.25);
-    forEachCell(cellData, (cr, cm, ci) => {
-      // Per-cell decode stagger based on cascadeT
-      let cellDecodeT = Math.max(0, scanPos - cm.cascadeT * 0.3);
-      cellDecodeT = Math.min(1, cellDecodeT * (1 + intensity * 0.5));
-
-      // Laid out at the drawn (min text) size and capped per cell, with
-      // built-in glyphs: a 3-5px grid overdrew at min text size, and the
-      // font pick per glyph shifted the cell PRNG as the decode advanced
-      // frame to frame.
-      let fontSize = Math.max(getMinTextSizePx(), Math.min(cr.w * 0.03, 5));
-      let pitchX = fontSize * 1.1, pitchY = fontSize * 1.5;
-      let cols = Math.max(2, Math.floor(cr.w / pitchX));
-      let rows = Math.max(1, Math.floor(cr.h / pitchY));
-      rows = Math.min(rows, Math.max(1, Math.floor(260 / cols)));
-      // Only draw cipher characters in undecoded region
-      let decodedCols = Math.floor(cols * cellDecodeT);
-
-      for (let row = 0; row < rows; row++) {
-        for (let col = decodedCols; col < cols; col++) {
-          let cx2 = cr.x + col * pitchX + fontSize * 0.3;
-          let cy2 = cr.y + row * pitchY + fontSize + 1;
-          // Hash-based cipher character
-          let charIdx = Math.floor(_profileHash(ci * 1000 + row * 50 + col, 0x4402) * cipherChars.length);
-          // Animated: cycle cipher chars per frame
-          if (decodeAnimated) {
-            charIdx = Math.floor(_profileHash(ci * 1000 + row * 50 + col + animCtx.frameIndex * 7, 0x4403) * cipherChars.length);
-          }
-          _drawBuiltinText(cipherChars[charIdx], cx2, cy2, fontSize);
-        }
-      }
-    });
-  }
-
-  // Global decode progress readout
-  if (intensity > 0.2) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.3);
-    let fontSize = Math.max(4, Math.min(w * 0.012, 6));
-    let pct = Math.round(scanPos * 100);
-    drawAnimText('DECODE:' + pct + '%', x + 4, y + h - 4, fontSize, 0x4443, 'counter');
-    // Hash display
-    let hashStr = state.seed.toString(16).toUpperCase().padStart(8, '0');
-    drawAnimText('0x' + hashStr, x + w * 0.6, y + h - 4, fontSize, 0x4444, 'bus:hex');
-  }
-
-  svgSetStrokeWeight(state.geometry.strokeWeight);
-}
-
-function applyHackingTreatment(intensity, rect, prng, cellData) {
-  let { x, y, w, h } = rect;
-  let hackAnimated = animCtx && shouldAnimate(0x4841);
-  let hackEnvelope = hackAnimated ? animEnvelope(animCtx.t, 'attackDecay', ease.outExpo) : 1;
-  let breachRamp = hackAnimated ? animEnvelope(animCtx.t, 'rampUp', ease.inCubic) : 1;
-  let drama = (_compBus && _compBus.dramaCurve) || 1;
-  let loopT = _compBus ? _compBus.t : 1;
-
-  // Audio-reactive bracket extension — extends with waveform peaks
-  svgSetStrokeWeight(state.geometry.strokeWeight * 0.6);
-  svgSetStroke(state.fgColor);
-  let audioExt = 1;
-  if (_compBus && _compBus.audioWaveform) {
-    let peak = 0;
-    for (let i = 0; i < _compBus.audioSlices; i++) peak = Math.max(peak, _compBus.audioWaveform[i]);
-    audioExt = 1 + peak * intensity * 0.5;
-  }
-  let baseExtension = Math.min(w, h) * (0.05 + intensity * 0.1);
-  let extension = baseExtension * (hackAnimated ? hackEnvelope : 1) * audioExt;
-  let armLen = Math.min(w, h) * 0.1;
-  drawCornerBrackets(x - extension, y - extension, w + extension * 2, h + extension * 2, armLen);
-
-  // Per-cell hex dump — each cell gets a small hex overlay at its edges
-  // CRITICAL: Always iterate max count to keep PRNG stable
-  if (intensity > 0.2) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.3);
-    let fontSize = Math.max(4, Math.min(w * 0.012, 6));
-    let maxRows = Math.min(4, Math.round(intensity * 5));
-    let visibleRows = Math.min(4, Math.round(intensity * 5 * breachRamp));
-    // Global hex dump (original)
-    let dumpX = x + w * 0.65;
-    let dumpY = y + fontSize * 2;
-    for (let row = 0; row < maxRows; row++) {
-      let addr = '0x' + prng.nextInt(0, 0xFFFF).toString(16).toUpperCase().padStart(4, '0') + ': ';
-      let hexData = textGen.hexDump(prng, 4);
-      if (row < visibleRows) {
-        drawAnimText(addr + hexData, dumpX, dumpY + row * fontSize * 1.4, fontSize, 0x4841 + row, 'bus:hex');
-      }
-    }
-    // Per-cell hex at edges
-    if (cellData && intensity > 0.4) {
-      let cellFontSize = Math.max(2, fontSize * 0.7);
-      forEachCell(cellData, (cr, cm, ci) => {
-        if (_profileHash(ci * 191, 0x4851) > intensity * drama * 0.7) return;
-        let edge = _profileHash(ci * 193, 0x4852);
-        let hexStr = '0x' + Math.floor(_profileHash(ci * 197, 0x4853) * 0xFFFF).toString(16).toUpperCase().padStart(4, '0');
-        if (edge < 0.5) drawFallbackText(hexStr, cr.x + 1, cr.y + cellFontSize + 1, cellFontSize);
-        else drawFallbackText(hexStr, cr.x + cr.w - hexStr.length * cellFontSize * 0.65, cr.y + cr.h - 1, cellFontSize);
+      xs.sort((a, b) => a - b);
+      let cols = [];
+      for (let x of xs) if (!cols.length || x - cols[cols.length - 1] >= p * 1.6) cols.push(x);
+      if (cols.length < 2) continue;
+      // only across the stretch of row the drawing crosses; a sparse row smears a
+      // short way (the drips are all that is left of what they run over)
+      let xa0 = cols[0] - p * 1.5, xb0 = cols[cols.length - 1] + p * 1.5;
+      if ((xb0 - xa0) / cols.length > p * 6) len = Math.min(len, p * 20);
+      if (len < p * 6) continue;
+      let box = [xa0, ys, xb0, ys + len];
+      _tmEdit(Ls, ys, ys + len, polys => _tmCut(polys, box));
+      let ramp = Hs(10) < 0.5, xa = cols[0], xb = cols[cols.length - 1];
+      cols.forEach((x, k) => {
+        let L2 = len * (ramp ? 0.2 + 0.8 * Math.pow((x - xa) / Math.max(1, xb - xa), 1.5) : 0.25 + 0.75 * Hs(100 + k));
+        added.push([[x, ys], [x, ys + L2 * 0.5]]);
+        for (let y = ys + L2 * 0.5 + p * 1.6; y < ys + L2 * 0.82; y += p * 4.5) added.push([[x, y], [x, Math.min(y + p * 2.5, ys + L2 * 0.82)]]);
+        for (let y = ys + L2 * 0.82 + p * 1.6; y < ys + L2; y += p * 3.2) added.push([[x, y], [x, y + p * 0.5]]);
       });
-    }
-  }
-
-  // Network intrusion visualization — connecting lines between cells showing breach path
-  if (cellData && cellData.length > 1 && intensity > 0.3) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.15);
-    let pathLen = Math.min(cellData.length, Math.round(2 + intensity * 4));
-    let visPath = Math.round(pathLen * breachRamp * drama);
-    // Build breach path through spatial layout using hash-based ordering
-    let order = [];
-    for (let i = 0; i < cellData.length; i++) order.push(i);
-    order.sort((a, b) => _profileHash(a * 337, 0x4854) - _profileHash(b * 337, 0x4854));
-    for (let i = 0; i < visPath - 1 && i < order.length - 1; i++) {
-      let fromR = cellData[order[i]].rect;
-      let toR = cellData[order[i + 1]].rect;
-      let fx = fromR.x + fromR.w / 2, fy = fromR.y + fromR.h / 2;
-      let tx = toR.x + toR.w / 2, ty = toR.y + toR.h / 2;
-      drawDashedLine(fx, fy, tx, ty, 3, 2);
-      // Small diamond at connection point
-      let midX = (fx + tx) / 2, midY = (fy + ty) / 2;
-      let ds = 1.5;
-      svgLine(midX, midY - ds, midX + ds, midY);
-      svgLine(midX + ds, midY, midX, midY + ds);
-      svgLine(midX, midY + ds, midX - ds, midY);
-      svgLine(midX - ds, midY, midX, midY - ds);
-    }
-  }
-
-  // Override labels — animated strobe
-  if (intensity > 0.4) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-    let labelCount = Math.round(intensity * 3);
-    let fontSize = Math.max(4, Math.min(w * 0.015, 7));
-    for (let i = 0; i < labelCount; i++) {
-      let lx = x + prng.nextFloat() * w * 0.7;
-      let ly = y + prng.nextFloat() * h * 0.8;
-      let labelStr = textGen.overrideLabel(prng);
-      let labelVisible = hackAnimated ? animStrobe(animCtx.frameIndex, 2 + i, 0.5, i * 0.2) : true;
-      if (labelVisible) {
-        drawAnimText(labelStr, lx, ly, fontSize, 0x4841 + 100 + i, 'bus:status');
+      tear(ys, dx);
+    } else if (kind === 'blocks') {
+      // datamosh: blocks lifted and dropped elsewhere; the hole keeps its corners
+      let nb = 1 + Math.floor(Hs(11) * 3);
+      for (let k = 0; k < nb; k++) {
+        let bw = w * (0.08 + 0.22 * Hs(70 + k)), bk = h * (0.04 + 0.14 * Hs(80 + k));
+        let bx = R[0] + Hs(90 + k) * (w - bw), by = R[1] + Hs(100 + k) * (h - bk);
+        let ddx = (Hs(110 + k) - 0.5) * w * 0.35, ddy = (Hs(120 + k) - 0.5) * h * 0.2;
+        let box = [bx, by, bx + bw, by + bk], db = [bx + ddx, by + ddy, bx + ddx + bw, by + ddy + bk];
+        let lifted = Ls.map(L => L.border || !_tmHits(L.bb, box) ? [] : _tmClip(L.polys, box));
+        _tmEdit(Ls, by, by + bk, polys => _tmCut(polys, box));
+        _tmEdit(Ls, db[1], db[3], polys => _tmCut(polys, db));
+        Ls.forEach((L, j) => { if (lifted[j].length) { L.polys = L.polys.concat(_tmClip(_tmShift(lifted[j], ddx, ddy), R)); L.bb = _tmBB(L.polys); L.dirty = true; } });
+        let c = Math.min(bw, bk) * 0.2;
+        for (let [x, y, sx, sy] of [[bx, by, 1, 1], [bx + bw, by, -1, 1], [bx, by + bk, 1, -1], [bx + bw, by + bk, -1, -1]]) marks.push([[x + sx * c, y], [x, y], [x, y + sy * c]]);
       }
-    }
-  }
-
-  // Double-border alert framing
-  if (intensity > 0.5) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.25);
-    let gap3 = Math.min(w, h) * 0.015;
-    svgRect(x - gap3, y - gap3, w + gap3 * 2, h + gap3 * 2);
-    svgRect(x - gap3 * 3, y - gap3 * 3, w + gap3 * 6, h + gap3 * 6);
-  }
-
-  // Text disruption — corrupted glitchy strings
-  if (intensity > 0.3) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.35);
-    let disruptCount = Math.round(1 + intensity * 3);
-    let fontSize = Math.max(5, Math.min(w * 0.02, 10));
-    for (let i = 0; i < disruptCount; i++) {
-      let dx2 = x + prng.nextFloat() * w * 1.1 - w * 0.05;
-      let dy2 = y + prng.nextFloat() * h * 1.1 - h * 0.05;
-      let disrupted = '';
-      let dLen = prng.nextInt(3, 10);
-      for (let j = 0; j < dLen; j++) {
-        let r2 = prng.nextFloat();
-        if (r2 < 0.3) disrupted += prng.pick(['/', '\\', '|', '-', '_', '~']);
-        else if (r2 < 0.6) disrupted += prng.nextInt(0, 15).toString(16).toUpperCase();
-        else disrupted += prng.pick(['X', '#', '@', '!', '?', '*', '%', '&']);
+    } else if (kind === 'wrap') {
+      // the band rolls sideways and comes round the other edge
+      let box = [R[0] - 1, y0, R[2] + 1, y0 + bh];
+      _tmEdit(Ls, y0, y0 + bh, polys => { let band = _tmShift(_tmClip(polys, box), dx, 0); return _tmCut(polys, box).concat(_tmClip(band, R), _tmClip(_tmShift(band, dx > 0 ? -w : w, 0), R)); });
+      tear(y0, dx); tear(y0 + bh, dx);
+    } else if (kind === 'comb') {
+      // interlace comb: alternate thin slices pulled apart
+      let rh = h * (0.06 + 0.14 * Hs(12)), ry = R[1] + Hs(13) * Math.max(0, h - rh), sh = Math.max(p * 2.2, rh / 10), d = Math.max(p * 2, Math.abs(dx) * 0.2);
+      for (let y = ry, k = 0; y < ry + rh - 0.5; y += sh, k++) {
+        let box = [R[0] - 1, y, R[2] + 1, Math.min(y + sh, ry + rh)];
+        _tmEdit(Ls, box[1], box[3], polys => _tmCut(polys, box).concat(mv(polys, box, k % 2 ? d : -d, 0)));
       }
-      let rotateRoll = prng.nextFloat();
-      let angle = prng.pick([90, -90, 45, -45, 180]);
-      if (rotateRoll < 0.3 * intensity) {
-        drawFallbackTextRotated(disrupted, dx2, dy2, fontSize, angle);
-      } else {
-        drawFallbackText(disrupted, dx2, dy2, fontSize);
-      }
-    }
-  }
-
-  // Progressive XXXX redaction + cell content flood
-  // Spreads cell-by-cell over animation cycle
-  if (cellData && intensity > 0.35) {
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.25);
-    forEachCell(cellData, (cr, cm, ci) => {
-      // Flood spreads over loop: early cells infected first based on hash order
-      let cellFloodT = Math.max(0, loopT * 1.4 - _profileHash(ci * 431, 0x4855) * 0.8);
-      cellFloodT *= intensity * drama;
-      if (cellFloodT < 0.15) return;
-
-      // Grid pitch from the size glyphs are actually drawn at (min text size),
-      // capped per cell: a 3-5px grid overdrew ~20x at 300 DPI (+290K paths).
-      // Built-in glyphs: no font pick, so the cell PRNG is untouched while the
-      // flood grows across animation frames.
-      let fontSize = Math.max(getMinTextSizePx(), Math.min(cr.w * 0.03, 5));
-      let pitchX = fontSize * 0.9, pitchY = fontSize * 1.3;
-      let cols = Math.max(2, Math.floor(cr.w / pitchX));
-      let rows = Math.max(1, Math.floor(cr.h / pitchY));
-      rows = Math.min(rows, Math.max(1, Math.floor(300 / cols)));
-      let floodCols = Math.round(cols * Math.min(1, cellFloodT));
-
-      // 50% XXXX fill, 50% hex dump fill
-      let isHex = _profileHash(ci * 439, 0x4856) < 0.5;
-
-      for (let row = 0; row < rows; row++) {
-        for (let col = 0; col < floodCols; col++) {
-          let fx = cr.x + col * pitchX + 1;
-          let fy = cr.y + row * pitchY + fontSize + 1;
-          let ch = isHex ? '0123456789ABCDEF'[Math.floor(_profileHash(ci * 1000 + row * 50 + col, 0x4857) * 16)] : 'X';
-          _drawBuiltinText(ch, fx, fy, fontSize);
+    } else if (kind === 'stretch') {
+      // a band smeared wide from a point
+      let box = [R[0] - 1, y0, R[2] + 1, y0 + bh], px = R[0] + Hs(14) * w, sx = 1.3 + Hs(15) * 1.4;
+      _tmEdit(Ls, y0, y0 + bh, polys => _tmCut(polys, box).concat(_tmClip(_tmClip(polys, box).map(q2 => q2.map(q => [px + (q[0] - px) * sx, q[1]])), R)));
+      tear(y0, w * 0.05); tear(y0 + bh, w * 0.05);
+    } else if (kind === 'split') {
+      // misregistration: a band printed again a few pens off, in the second ink
+      // off diagonally, outlines and type only; like a print off register it
+      // shows only where it falls on bare paper (anywhere else it would land
+      // on the drawing's own lines)
+      let bb = bh * (1.5 + 2 * Hs(16)), box = [R[0] - 1, y0, R[2] + 1, Math.min(R[3], y0 + bb)];
+      let ox = (Hs(17) < 0.5 ? -1 : 1) * p * (2 + 3 * Hs(18)), oy = (Hs(19) < 0.5 ? -1 : 1) * p * (1.6 + 1.4 * Hs(20));
+      let G = _tmInkGrid(Ls, R, p * 2.5, L => true), bare = (x, y) => { let c = Math.floor((x - R[0]) / G.cs), r = Math.floor((y - R[1]) / G.cs); for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) if (G.at(c + dc, r + dr) > 0 && G.at(c + dc, r + dr) < 1e9) return false; return true; };
+      for (let L of Ls) {
+        if (L.border || L.fill || !_tmHits(L.bb, box)) continue;
+        for (let poly of mv(L.polys, box, ox, oy)) {
+          let run = [];
+          for (let i = 1; i < poly.length; i++) {
+            let a = poly[i - 1], b = poly[i], n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / (G.cs * 0.5)));
+            for (let k = 0; k < n; k++) {
+              let q0 = [a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n], q1 = [a[0] + (b[0] - a[0]) * (k + 1) / n, a[1] + (b[1] - a[1]) * (k + 1) / n];
+              if (bare((q0[0] + q1[0]) / 2, (q0[1] + q1[1]) / 2)) { if (!run.length) run.push(q0); run.push(q1); }
+              else if (run.length) { added.push(run); run = []; }
+            }
+          }
+          if (run.length > 1) added.push(run);
         }
       }
-    });
+    }
   }
-
-  svgSetStrokeWeight(state.geometry.strokeWeight);
+  _tmAddPolys(cellGroup, 'glitch', added.concat(marks));
 }
 
-// ---- Per-cell treatment functions (run inside cell loop before border) ----
-// Each receives: (intensity, cellRect, cellScale, archetype, prng, cellIndex)
-// CRITICAL: Must consume PRNG unconditionally for stream stability
+// TERMINAL: the drawing interlaced. The scanlines are gaps cut through the
+// graphics (type and borders stay whole), so it takes ink away rather than
+// adding it; above 40% a wider bar rolls through. On a moving page the scan
+// rolls down two pitches a loop and the bar once.
+function txTerminal(cellGroup, Ls, R, t, seed) {
+  let h = R[3] - R[1], p = penPx();
+  let pitch = Math.max(p * 6, h / (30 + 34 * t)) * (0.85 + 0.3 * _tmH(seed, 1)), gap = Math.max(p * 1.5, pitch * (0.22 + 0.25 * t));
+  let roll = animCtx ? animCtx.t * pitch * 2 : 0, gaps = [];
+  for (let y = R[1] - pitch + (pitch - gap + roll) % pitch; y < R[3]; y += pitch) if (y + gap > R[1]) gaps.push([R[0] - 1, y, R[2] + 1, y + gap]);
+  if (t > 0.4) { let y = R[1] + ((_tmH(seed, 2) + (animCtx ? animCtx.t : 0)) % 1) * h; gaps.push([R[0] - 1, y, R[2] + 1, y + gap * 4]); }
+  for (let g of gaps) _tmEdit(Ls, g[1], g[3], polys => _tmCut(polys, g), true);
+}
 
-const TREATMENT_PER_CELL = {
-  glitch: function(intensity, rect, cellScale, archetype, prng, ci) {
-    // Per-cell horizontal slice displacement through individual cell content
-    let drama = (_compBus && _compBus.dramaCurve) || 1;
-    let eff = intensity * drama;
-    // Always consume PRNG
-    let sliceY = prng.nextFloat();
-    let sliceDx = prng.nextFloat();
-    let sliceW = prng.nextFloat();
-    if (eff < 0.2) return;
-    let { x, y, w, h } = rect;
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.2);
-    svgSetStroke(state.fgColor);
-    let sy = y + sliceY * h;
-    let dx = (sliceDx - 0.5) * w * 0.15 * eff;
-    // Displaced band
-    svgLine(x, sy, x + w, sy);
-    let sOff = Math.max(1, penPx() * PEN_CLEAR);
-    svgLine(x + dx, sy + sOff, x + sliceW * w * 0.4 + dx, sy + sOff);
-    // Pixel-sort trail below slice
-    if (eff > 0.4) {
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.1);
-      let trailSteps = Math.round(3 + eff * 4);
-      for (let s = 1; s <= trailSteps; s++) {
-        let t = s / trailSteps;
-        let tLen = w * sliceW * 0.4 * (1 - t * 0.7);
-        if (t < 0.6) {
-          svgLine(x + dx * t, sy + s * 2, x + tLen + dx * t, sy + s * 2);
-        } else {
-          // Stipple decomposition
-          svgSetStrokeWeight(state.geometry.strokeWeight * 0.3);
-          let dots = Math.max(1, Math.round(tLen / 3));
-          for (let d = 0; d < dots; d++) {
-            svgPoint(x + dx * t + _profileHash(ci * 200 + s * 10 + d, 0x4710) * tLen, sy + s * 2);
-          }
-          svgSetStrokeWeight(state.geometry.strokeWeight * 0.1);
+// CORRUPTION: letters decay where they stand. The source glyph breaks, its
+// clones run up and down until a rule of the layout stops them and pool along
+// it; words are redacted in place, the layout's own rules lose segments, and
+// missing-data marks and ghost columns keep to the empty space. It spreads
+// from one point on the page (across the loop, when animating).
+function txCorruption(cellGroup, Ls, R, t, seed) {
+  let p = penPx(), out = [], base = seedNumber(state.seed);
+  let sx = state.width * (0.2 + 0.6 * _tmH(base, 0xC0)), sy = state.height * (0.2 + 0.6 * _tmH(base, 0xC1));
+  let dist = Math.hypot((R[0] + R[2]) / 2 - sx, (R[1] + R[3]) / 2 - sy) / Math.hypot(state.width, state.height);
+  let inf = Math.min(1, t * (1.3 - dist * 1.3)) * Math.max(0, Math.min(1, (_tmT() * 1.6 - dist) * 2));
+  if (inf < 0.08) return;
+  let items = _tmLabels(cellGroup), rules = _tmRules(Ls, Math.max(p * 8, 10));
+  let G = _tmInkGrid(Ls, R, Math.max(p * 4, getMinTextSizePx() * 0.6), L => !L.border);
+  let slash = '/-\\|~_^', floor = getPenTextFloorPx(), fj = animCtx ? animCtx.frameIndex : 0;
+  // the decay of letters
+  let nAff = Math.max(1, Math.round(items.length * inf * 0.6));
+  for (let a = 0; a < nAff && items.length; a++) {
+    let it = items[Math.floor(_tmH(seed, 0x100 + a) * items.length)], { e, font } = it, fs = e.fontSize, str = e.str;
+    let nch = Math.max(1, Math.round(str.length * inf * 0.7));
+    for (let c = 0; c < nch; c++) {
+      let ci = Math.floor(_tmH(seed, 0x200 + a * 31 + c) * str.length), ch = str[ci];
+      if (!ch || !ch.trim()) continue;
+      let x0 = _tmCharX(it, ci), x1 = _tmCharX(it, ci + 1), cx = (x0 + x1) / 2, cy = e.y, hb = (seed ^ Math.imul(a * 1000 + c * 37 + 1, 0x85EBCA6B)) >>> 0;
+      let strip = _tmH(hb, 1) < 0.5 ? [x0 - 0.5, cy - fs * 0.8, x1 + 0.5, cy - fs * 0.42] : [x0 - 0.5, cy - fs * 0.36, x1 + 0.5, cy + 1];
+      _tmEdit(Ls, strip[1], strip[3], (polys, L) => L.text && _tmHits(L.bb, strip) ? _tmCut(polys, strip) : polys);
+      let trailMul = 0.3 + _tmH(hb, 2) * 1.5, ci2 = Math.min(1, inf * (0.5 + _tmH(hb, 3) * 1.5)), maxExt = fs * 5.5 * trailMul * ci2;
+      let below = _tmStopAt(rules, cx, cy + fs * 0.25, 1, R[3]), above = _tmStopAt(rules, cx, cy - fs * 1.05, -1, R[1]);
+      let down = Math.max(0, Math.min(maxExt * 0.6, below - cy - p * 1.6)), up = Math.max(0, Math.min(maxExt * 0.6, cy - fs - above - p * 1.6));
+      // no more clones than the run between the rules has room for
+      let n = Math.min(Math.round(3 + ci2 * 7), Math.max(2, Math.floor((up + down) / (fs * 0.4))));
+      for (let cl = 0; cl < n; cl++) {
+        let dir = cl % 2 ? 1 : -1, sp = (cl + 1) / (n + 1), reach = dir > 0 ? down : up;
+        let age = Math.max(0, Math.min(1, (ci2 * 1.5 - sp) * 3)), surge = age * age;
+        let dd = sp * reach * 1.4 * surge * dir;
+        if (Math.abs(dd) > reach) dd = reach * dir;
+        if (Math.abs(dd) < fs * 0.45) continue; // it would sit on its own letter
+        let jx = (_tmH(hb, 10 + cl) - 0.5) * fs * 0.35, jy = (_tmH(hb, 30 + cl) - 0.5) * fs * 0.3;
+        if (fj) { jx += (_tmH(hb, 400 + cl + fj * 3) - 0.5) * fs * 0.1; jy += (_tmH(hb, 500 + cl + fj * 3) - 0.5) * fs * 0.15; }
+        let clX = x0 + jx, clY = cy + dd + jy, size = Math.max(floor, fs * 0.8 * Math.pow(1 - sp, 2));
+        if (sp < 0.4) _tmFaceGlyph(ch, font, clX, clY, size, sp < 0.15 ? sp : 0.15 + (sp - 0.15) / 0.25 * 0.35, hb + cl * 31, surge, out);
+        else if (sp < 0.65) _tmFaceGlyph(slash[Math.floor(_tmH(hb, 50 + cl) * slash.length)], font, clX, clY, size, 0.3 + (sp - 0.4) / 0.25 * 0.4, hb + cl * 37, surge, out);
+        else if (sp < 0.85) {
+          let ms = Math.max(1, size * 0.5);
+          out.push([[clX, clY - ms * 0.4], [clX, clY + ms * 0.4]]);
+          if (_tmH(hb, 70 + cl) < 0.5) out.push([[clX - ms * 0.3 * surge, clY], [clX + ms * 0.3 * surge, clY]]);
+        } else out.push([[clX, clY], [clX + p * 0.5, clY]]);
+        if (_tmH(hb, 90 + cl) < (sp < 0.3 ? 0.3 : sp < 0.7 ? 0.55 : 0.2)) { let tw = Math.max(1, size * 0.5) * surge; out.push([[clX - tw / 2, clY], [clX + tw / 2, clY]]); }
+      }
+      // the spine between the stops, broken
+      let spX = x0 + (x1 - x0) * 0.3, top = cy - fs - up, bot = cy + down, segs = Math.max(3, Math.round((bot - top) / (fs * 0.8))), sh = (bot - top) / segs;
+      for (let si = 0; si < segs; si++) {
+        if (_tmH(hb, 200 + si) < 0.3) continue;
+        let a2 = top + si * sh;
+        out.push([[spX, a2], [spX, Math.min(a2 + sh * (0.5 + _tmH(hb, 230 + si) * 0.5), bot)]]);
+      }
+      // where the decay meets a rule it pools along it
+      for (let [lim, y, dirn] of [[below, cy + down, 1], [above, cy - fs - up, -1]]) {
+        if (Math.abs(y - lim) > p * 2.5 || lim === R[3] || lim === R[1]) continue;
+        let py = lim - dirn * p * 1.6, spread = fs * (0.6 + 1.2 * ci2);
+        for (let k = -2; k <= 2; k++) {
+          let px = cx + k * spread * 0.45 + (_tmH(hb, 300 + k) - 0.5) * fs * 0.3, len = spread * 0.3 * (1 - Math.abs(k) * 0.25);
+          if (len > p) out.push([[px - len / 2, py], [px + len / 2, py]]);
         }
       }
     }
-    svgSetStrokeWeight(state.geometry.strokeWeight);
-  },
-
-  terminal: function(intensity, rect, cellScale, archetype, prng, ci) {
-    // Individual cell scan line overlay at its own scale
-    let drama = (_compBus && _compBus.dramaCurve) || 1;
-    // Always consume PRNG
-    let scanDensity = prng.nextFloat();
-    if (intensity * drama < 0.25) return;
-    let { x, y, w, h } = rect;
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.06);
-    svgSetStroke(state.fgColor);
-    // Span the whole cell (a 50-line cap at 2-4px stopped the band near the
-    // top of tall cells), at least 4 pen widths apart, at most ~18 lines
-    let pen = unitToPx(state.plotter.hatch.penDiameter, 'mm', state.plotter.dpi);
-    let spacing = Math.max(2, pen * 4, Math.round(4 - scanDensity * 2), h / 18);
-    let count = Math.floor(h / spacing);
-    // Half a pitch in, so the first line clears the cell's top border
-    for (let i = 0; i < count; i++) {
-      svgLine(x, y + (i + 0.5) * spacing, x + w, y + (i + 0.5) * spacing);
-    }
-    svgSetStrokeWeight(state.geometry.strokeWeight);
-  },
-
-  corruption: function(intensity, rect, cellScale, archetype, prng, ci) {
-    // Per-cell redaction block + zalgo contagion on text positions
-    let drama = (_compBus && _compBus.dramaCurve) || 1;
-    let loopT = _compBus ? _compBus.t : 1;
-    // Always consume PRNG
-    let blockX = prng.nextFloat();
-    let blockY = prng.nextFloat();
-    let blockW = prng.nextFloat();
-    let eff = intensity * drama;
-    if (eff < 0.25) return;
-    let { x, y, w, h } = rect;
-    // Small redaction block within cell
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-    svgSetStroke(state.fgColor);
-    let bx = x + blockX * w * 0.7;
-    let by = y + blockY * h * 0.8;
-    let bw = w * (0.1 + blockW * 0.2) * eff;
-    let bh = state.geometry.strokeWeight * (2 + eff * 2);
-    svgRect(bx, by, bw, bh);
-
-    // Zalgo contagion — spawns from actual rendered text, progressive decomposition
-    if (eff > 0.35 && _cellTextLog && _cellTextLog.length > 0) {
-      let slashChars = '/-\\|~_^';
-      let frameJitter = animCtx ? animCtx.frameIndex : 0;
-      let maxAffected = Math.round(_cellTextLog.length * eff * 0.4 * loopT);
-      maxAffected = Math.max(1, Math.min(maxAffected, _cellTextLog.length));
-
-      for (let p = 0; p < maxAffected; p++) {
-        let entryIdx = Math.floor(_profileHash(ci * 600 + p, 0x4360) * _cellTextLog.length);
-        let entry = _cellTextLog[entryIdx];
-        let fs = entry.fontSize;
-        let str = entry.str;
-        let charSpacing = fs * 0.65;
-
-        let charsToCorrupt = Math.max(1, Math.round(str.length * eff * loopT * 0.6));
-        for (let ch = 0; ch < charsToCorrupt; ch++) {
-          let charIdx = Math.floor(_profileHash(ci * 610 + p * 50 + ch, 0x4363) * str.length);
-          let charX = entry.x + charIdx * charSpacing;
-          let charY = entry.y;
-          let srcChar = str[charIdx] || str[0];
-
-          // Per-character individualized parameters
-          let hBase = ci * 2000 + p * 100 + ch;
-          let trailMul = 0.3 + _profileHash(hBase, 0x4390) * 1.5;
-          let growthRate = 0.5 + _profileHash(hBase + 1, 0x4391) * 1.5;
-          let charEff = Math.min(1, eff * growthRate);
-          let cloneCount = Math.round(2 + charEff * 6);
-          let maxExtent = fs * 4.7 * trailMul * charEff;                // grows from 0
-
-          for (let c = 0; c < cloneCount; c++) {
-            let dir = c % 2 === 0 ? -1 : 1;
-            let spreadT = (c + 1) / (cloneCount + 1);
-
-            // Surge: Y position pushes outward, X scale widens from 0
-            let cloneAge = Math.max(0, Math.min(1, (charEff * 1.5 - spreadT) * 3));
-            let surge = cloneAge * cloneAge;
-
-            let dist = spreadT * maxExtent * dir * surge;
-
-            let jx = (_profileHash(hBase + c * 7 + 10, 0x4392) - 0.5) * fs * 0.35;
-            let jy = (_profileHash(hBase + c * 7 + 11, 0x4393) - 0.5) * fs * 0.35;
-            if (frameJitter) {
-              jx += (_profileHash(hBase + c + frameJitter * 3, 0x4394) - 0.5) * fs * 0.1;
-              jy += (_profileHash(hBase + c + frameJitter * 3 + 1, 0x4395) - 0.5) * fs * 0.15;
-            }
-            let clX = charX + jx;
-            let clY = charY + dist + jy;
-            let taperScale = Math.pow(1 - spreadT, 2);
-            let cloneSize = fs * 0.75 * taperScale;
-
-            // 5-zone decomposition — uniform stroke weight throughout
-            svgSetStrokeWeight(state.geometry.strokeWeight);
-            if (spreadT < 0.15) {
-              let decompose = spreadT / 0.15 * 0.15;
-              _drawDecomposedGlyph(srcChar, clX, clY, Math.max(getPenTextFloorPx(), cloneSize), decompose, hBase + c * 31, surge);
-            } else if (spreadT < 0.40) {
-              let decompose = 0.15 + ((spreadT - 0.15) / 0.25) * 0.35;
-              _drawDecomposedGlyph(srcChar, clX, clY, Math.max(getPenTextFloorPx(), cloneSize), decompose, hBase + c * 31, surge);
-            } else if (spreadT < 0.65) {
-              let slashIdx = Math.floor(_profileHash(hBase + c * 13, 0x4396) * slashChars.length);
-              let decompose = 0.3 + ((spreadT - 0.40) / 0.25) * 0.4;
-              _drawDecomposedGlyph(slashChars[slashIdx], clX, clY, Math.max(1.5, cloneSize), decompose, hBase + c * 37, surge);
-            } else if (spreadT < 0.85) {
-              let markSize = Math.max(1, cloneSize * 0.5);
-              svgLine(clX, clY - markSize * 0.4, clX, clY + markSize * 0.4);
-              if (_profileHash(hBase + c * 17, 0x4397) < 0.5) {
-                let hw = markSize * 0.3 * surge;
-                svgLine(clX - hw, clY, clX + hw, clY);
-              }
-            } else {
-              svgPoint(clX, clY);
-            }
-
-            // Cross-strokes
-            let crossProb = spreadT < 0.3 ? 0.25 : spreadT < 0.7 ? 0.5 : 0.15;
-            if (_profileHash(hBase + c * 19 + 5, 0x4398) < crossProb) {
-              let tw = Math.max(1, cloneSize * 0.4) * surge;
-              svgLine(clX - tw/2, clY, clX + tw/2, clY);
-            }
-          }
-
-          // Vertical spine — broken segments with random gaps
-          svgSetStrokeWeight(state.geometry.strokeWeight);
-          let spX2 = charX + charSpacing * 0.3;
-          let spTop2 = charY - maxExtent * 0.5, spBot2 = charY + maxExtent * 0.5;
-          let spLen2 = spBot2 - spTop2;
-          let segs2 = Math.max(3, Math.round(spLen2 / (fs * 0.8)));
-          let segH2 = spLen2 / segs2;
-          for (let si = 0; si < segs2; si++) {
-            if (_profileHash(hBase + si * 11 + 200, 0x438A) < 0.3) continue;
-            let sTop2 = spTop2 + si * segH2;
-            let sBot2 = sTop2 + segH2 * (0.5 + _profileHash(hBase + si * 11 + 201, 0x438B) * 0.5);
-            svgLine(spX2, sTop2, spX2, Math.min(sBot2, spBot2));
-          }
-        }
-      }
-    }
-    svgSetStrokeWeight(state.geometry.strokeWeight);
-  },
-
-  decode: function(intensity, rect, cellScale, archetype, prng, ci) {
-    // Scan beam within cell: characters ahead rendered as cipher, behind normal
-    let drama = (_compBus && _compBus.dramaCurve) || 1;
-    let loopT = _compBus ? _compBus.t : 1;
-    // Always consume PRNG
-    let stagger = prng.nextFloat();
-    let eff = intensity * drama;
-    if (eff < 0.2) return;
-    let { x, y, w, h } = rect;
-    // Cell-local scan beam
-    let cellScanT = Math.max(0, Math.min(1, loopT * 1.3 - stagger * 0.4));
-    let beamX = x + cellScanT * w;
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.3);
-    svgSetStroke(state.fgColor);
-    svgLine(beamX, y, beamX, y + h);
-    // Small ticks along beam
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.15);
-    let ticks = Math.round(3 + eff * 5);
-    for (let t = 0; t < ticks; t++) {
-      let ty = y + (t / ticks) * h;
-      let tw = 1 + _profileHash(ci * 40 + t, 0x4410) * 2;
-      svgLine(beamX - tw, ty, beamX + tw, ty);
-    }
-    svgSetStrokeWeight(state.geometry.strokeWeight);
-  },
-
-  hacking: function(intensity, rect, cellScale, archetype, prng, ci) {
-    // Small bracket intrusion at individual cell corners + progressive XXXX flood
-    let drama = (_compBus && _compBus.dramaCurve) || 1;
-    let loopT = _compBus ? _compBus.t : 1;
-    // Always consume PRNG
-    let bracketScale = prng.nextFloat();
-    let floodRoll = prng.nextFloat();
-    let eff = intensity * drama;
-    if (eff < 0.25) return;
-    let { x, y, w, h } = rect;
-    svgSetStroke(state.fgColor);
-    // Mini bracket intrusion at cell corners
-    svgSetStrokeWeight(state.geometry.strokeWeight * 0.4);
-    let ext = Math.min(w, h) * (0.02 + bracketScale * 0.04) * eff;
-    let arm = Math.min(w, h) * 0.06;
-    drawCornerBrackets(x - ext, y - ext, w + ext * 2, h + ext * 2, arm);
-
-    // Progressive flood from cell edge
-    if (eff > 0.4 && floodRoll < eff * 0.5) {
-      svgSetStrokeWeight(state.geometry.strokeWeight * 0.2);
-      // Pitch from the drawn (min text) size; built-in glyphs, no PRNG use
-      let fontSize = Math.max(getMinTextSizePx(), Math.min(w * 0.025, 4));
-      let pitchX = fontSize * 0.9, pitchY = fontSize * 1.2;
-      let cols = Math.max(1, Math.floor(w / pitchX));
-      let rows = Math.max(1, Math.floor(h / pitchY));
-      let floodProgress = Math.min(1, loopT * 1.5 * eff);
-      let floodCols = Math.round(cols * floodProgress);
-      let isHex = _profileHash(ci * 443, 0x4860) < 0.5;
-      for (let row = 0; row < Math.min(rows, 4); row++) {
-        for (let col = 0; col < floodCols; col++) {
-          let ch = isHex ? '0123456789ABCDEF'[Math.floor(_profileHash(ci * 1100 + row * 50 + col, 0x4861) * 16)] : 'X';
-          _drawBuiltinText(ch, x + col * pitchX + 1, y + row * pitchY + fontSize + 1, fontSize);
-        }
-      }
-    }
-    svgSetStrokeWeight(state.geometry.strokeWeight);
   }
-};
+  // missing data: icons trail from letters, only through empty space
+  let nIcon = Math.round(items.length * inf * 0.3);
+  for (let m = 0; m < nIcon; m++) {
+    let it = items[Math.floor(_tmH(seed, 0x400 + m) * items.length)], fs = it.e.fontSize;
+    let x = _tmCharX(it, Math.floor(_tmH(seed, 0x420 + m) * it.e.str.length)) + fs * 0.3, y = it.e.y - fs * 0.3;
+    let ang = _tmH(seed, 0x440 + m) * Math.PI * 2, step = fs * (1 + _tmH(seed, 0x460 + m) * 1.3);
+    for (let s2 = 1; s2 <= 3; s2++) {
+      x += Math.cos(ang) * step; y += Math.sin(ang) * step; ang += (_tmH(seed, 0x480 + m * 4 + s2) - 0.5) * 0.8;
+      let sz = fs * Math.pow(0.8, s2), q = sz / 2;
+      if (!_tmEmptyIn(G, [x - q, y - q, x + q, y + q], sz * 0.5)) break;
+      out.push([[x - q, y - q], [x + q, y - q], [x + q, y + q], [x - q, y + q], [x - q, y - q]], [[x - q * 0.5, y - q * 0.5], [x + q * 0.5, y + q * 0.5]], [[x + q * 0.5, y - q * 0.5], [x - q * 0.5, y + q * 0.5]]);
+    }
+  }
+  // redaction: some words blacked out where they stand (a solid, so fused on purpose)
+  let nRed = Math.round(items.length * inf * 0.12);
+  for (let k = 0; k < nRed; k++) {
+    let it = items[Math.floor(_tmH(seed, 0x500 + k) * items.length)], [x0, y0, x1, y1] = it.L.page;
+    if (!it.L.parent.children.includes(it.L.node)) continue;
+    _tmDrop(it);
+    let b = [x0 - p, y0 - p, x1 + p, y1 + p];
+    out.push([[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]], [b[0], b[1]]]);
+    for (let y = b[1] + p * 0.9; y < b[3] - p * 0.4; y += p * 0.9) out.push([[b[0], y], [b[2], y]]);
+  }
+  // missing segments: the layout's rules broken, the gap dashed
+  let nGap = Math.min(rules.length, Math.round(1 + inf * 5));
+  for (let k = 0; k < nGap; k++) {
+    let ru = rules[Math.floor(_tmH(seed, 0x600 + k) * rules.length)], fs = getMinTextSizePx();
+    let gl = Math.min(ru.x1 - ru.x0, fs * (2 + 4 * _tmH(seed, 0x620 + k))), gx = ru.x0 + _tmH(seed, 0x640 + k) * (ru.x1 - ru.x0 - gl);
+    let b = [gx, ru.y - p * 0.8, gx + gl, ru.y + p * 0.8];
+    _tmEdit(Ls, b[1], b[3], (polys, L) => L.text ? polys : _tmCut(polys, b));
+    for (let x = gx + p; x < gx + gl - p; x += p * 4.5) out.push([[x, ru.y], [Math.min(x + p * 2, gx + gl - p), ru.y]]);
+  }
+  // ghost columns in the empty space (a few tries each to find some, so a
+  // cell without type still shows the decay)
+  let nGhost = Math.round(1 + inf * 3);
+  for (let g = 0, k = 0; g < nGhost && k < nGhost * 8; k++) {
+    let gx = R[0] + _tmH(seed, 0x700 + k) * (R[2] - R[0]), gy = R[1] + _tmH(seed, 0x720 + k) * (R[3] - R[1]), gs = 4 + _tmH(seed, 0x740 + k) * 8;
+    let n2 = Math.round(2 + inf * 3), ext = gs * (1.5 + inf * 3);
+    if (!_tmEmptyIn(G, [gx - gs, gy - ext, gx + gs, gy + ext])) continue;
+    for (let gc = 0; gc < n2; gc++) {
+      let gd = ((gc + 1) / (n2 + 1)) * ext * (gc % 2 ? 1 : -1), gj = (_tmH(seed, 0x760 + g * 20 + gc) - 0.5) * gs * 0.6;
+      out.push([[gx + gj, gy + gd - gs * 0.3], [gx + gj, gy + gd + gs * 0.3]]);
+      if (_tmH(seed, 0x780 + g * 20 + gc) < 0.35) out.push([[gx + gj - gs * 0.25, gy + gd], [gx + gj + gs * 0.25, gy + gd]]);
+    }
+    g++;
+  }
+  _tmAddPolys(cellGroup, 'corruption', _tmClip(out, R));
+}
+
+// DECODE: ahead of the beam the drawing exists only as its encoding, one
+// cipher glyph wherever a cell of the grid held ink, and its words are cipher
+// too; the beam is a double rule with a tick ladder, the letter at it locks
+// in brackets and words just decoded are underlined. A still page is frozen
+// mid-decode; on a moving one the beam crosses each cell once a loop.
+function txDecode(cellGroup, Ls, R, t, seed) {
+  let w = R[2] - R[0], h = R[3] - R[1], p = penPx(), fsMin = getMinTextSizePx();
+  let enc = animCtx ? (1 - ((animCtx.t + _tmH(seed, 9) * 0.3) % 1)) * (0.35 + 0.65 * t) : (0.3 + 0.4 * t) * (0.7 + 0.3 * _tmH(seed, 1));
+  let bx = R[2] - w * enc, fsF = Math.max(fsMin, p * 5), cs = fsF * 1.2, band = 3, fr = animCtx ? animCtx.frameIndex * 7919 : 0;
+  let cols = Math.floor((R[2] - bx) / cs), rows = Math.floor(h / cs);
+  if (cols < band + 1 || rows < 2) return;
+  let items = _tmLabels(cellGroup), boxes = items.map(it => [it.L.page[0] - p, it.L.page[1] - p, it.L.page[2] + p, it.L.page[3] + p]);
+  let ink = new Float32Array(cols * rows);
+  for (let L of Ls) {
+    if (L.text || L.border || L.bb[2] < bx) continue;
+    for (let poly of L.polys) for (let i = 1; i < poly.length; i++) {
+      let [ax, ay] = poly[i - 1], [ex, ey] = poly[i], len = Math.hypot(ex - ax, ey - ay), n = Math.max(1, Math.ceil(len / (cs / 3)));
+      for (let k = 0; k < n; k++) {
+        let c = Math.floor((ax + (ex - ax) * (k + 0.5) / n - bx) / cs), r = Math.floor((ay + (ey - ay) * (k + 0.5) / n - R[1]) / cs);
+        if (c >= 0 && r >= 0 && c < cols && r < rows) ink[r * cols + c] += len / n;
+      }
+    }
+  }
+  let ahead = [bx + band * cs, R[1] - 1, R[2] + 1, R[3] + 1];
+  _tmEdit(Ls, R[1], R[3], polys => _tmCut(polys, ahead), true);
+  _tmDraw('decode', () => {
+    // the field; it thins across the band at the beam, where the drawing comes back
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+      let v = ink[r * cols + c];
+      if (v < cs * 0.3) continue;
+      let x = bx + c * cs, y = R[1] + r * cs, b = [x, y, x + cs, y + cs];
+      if (boxes.some(q => _tmHits(q, b))) continue;
+      if (c < band && _tmH(seed, 0x1000 + r * 97 + c) > (c + 0.5) / (band + 1)) continue;
+      _drawBuiltinText(TX_CIPHER[Math.floor(_tmH(seed, 0x2000 + r * 131 + c + fr) * (v > cs * 1.6 ? 16 : TX_CIPHER.length))], x + cs * 0.12, y + cs * 0.86, fsF);
+    }
+    let edge = bx + band * cs * 0.5;
+    for (let it of items) {
+      let { L, e } = it, str = e.str, fs = e.fontSize;
+      if (L.page[2] <= bx - cs * 3) continue;
+      if (L.page[2] <= edge) { svgLine(L.page[0], e.y + p * 1.8, L.page[2], e.y + p * 1.8); continue; }
+      let keep = 0;
+      if (L.page[0] < edge) while (keep < str.length && _tmCharX(it, keep + 1) <= edge) keep++;
+      _tmDrop(it);
+      _drawBuiltinText(str.slice(0, keep) + str.slice(keep).replace(/\S/g, (ch, k) => TX_CIPHER[Math.floor(_tmH(seed, 0x3000 + k + str.length * 31 + Math.round(e.y) + fr) * TX_CIPHER.length)]), e.x, e.y, fs);
+      if (keep > 0 && keep < str.length) {
+        let lx0 = _tmCharX(it, keep), lx1 = _tmCharX(it, keep + 1);
+        svgPolyline([[lx0 - p, e.y - fs * 0.85], [lx0 - p * 2, e.y - fs * 0.85], [lx0 - p * 2, e.y + p * 1.5], [lx0 - p, e.y + p * 1.5]]);
+        svgPolyline([[lx1 + p, e.y - fs * 0.85], [lx1 + p * 2, e.y - fs * 0.85], [lx1 + p * 2, e.y + p * 1.5], [lx1 + p, e.y + p * 1.5]]);
+      }
+    }
+    let b2 = bx + band * cs;
+    svgLine(bx, R[1], bx, R[3]); svgLine(b2, R[1], b2, R[3]);
+    for (let r = 1; r < rows; r++) { let y = R[1] + r * cs; svgLine(bx, y, bx + (r % 4 ? p * 2 : cs * 0.8), y); }
+    for (let c = band; c <= cols; c += 2) svgLine(bx + c * cs, R[1], bx + c * cs, R[1] + (c % 8 === band % 8 ? p * 4 : p * 2));
+    let tag = 'DEC ' + Math.round((1 - enc) * 100) + '%', tw = _measureBuiltinText(tag, fsMin);
+    let tx = bx - tw - p * 3 > R[0] ? bx - tw - p * 3 : b2 + p * 3;
+    _drawBuiltinText(tag, tx, R[1] + fsMin * 1.2, fsMin);
+    _drawBuiltinText('0x' + _tmHex(_tmH(seed, 0x4000), 4), tx, R[3] - p * 2, fsMin);
+  });
+}
+
+// HACKING: the intrusion takes the cell's own elements. Labels are bracketed,
+// addressed and wired to a bus down the cell's edge; some are overwritten or
+// X'd out, some get a dump beside them. The drawing's biggest clusters are
+// selected like objects in an editor (dashed box, handles, crosshair, motion
+// trail, predicted path), a patch of the drawing is overwritten with a hex
+// dump, and the hijacked elements are linked edge to edge in computer-vision
+// style. The words are an intrusion's (pids, maps, tunnels, probes), never a
+// tracker's. On a moving page the intrusion spreads across the loop.
+let _tmHack = null; // the hijacked elements of every cell, for the links across the page (per generate)
+function txHacking(cellGroup, Ls, R, t, seed, lead) {
+  if (!lead && _tmH(seed, 1) > 0.45 + 0.55 * t) return;
+  let p = penPx(), fsMin = getMinTextSizePx(), fr = animCtx ? animCtx.frameIndex : 0;
+  let pr = animCtx ? Math.max(0, Math.min(1, animCtx.t * 1.5 - _tmH(seed, 9) * 0.5)) : 1;
+  if (pr <= 0) return;
+  let items = _tmLabels(cellGroup);
+  let G = _tmInkGrid(Ls, R, Math.max(p * 3, fsMin * 0.5), L => !L.border);
+  let placed = [], free = b => b[0] >= R[0] && b[2] <= R[2] && b[1] >= R[1] && b[3] <= R[3] && !placed.some(q => _tmHits(q, b)) && _tmEmptyIn(G, b);
+  let sel = items.filter((it, i) => _tmH(seed, 0x10 + i) < 0.45 + 0.5 * t);
+  if (!sel.length && items.length) sel = [items[Math.floor(_tmH(seed, 2) * items.length)]];
+  let rest = items.filter(it => !sel.includes(it));
+  sel = sel.slice(0, Math.ceil(sel.length * pr));
+  // clusters of ink on a coarse grid (connected cells), largest first
+  let cs = Math.max(p * 6, Math.min(R[2] - R[0], R[3] - R[1]) / 14), C = _tmInkGrid(Ls, R, cs, L => !L.border && !L.text), seen = new Uint8Array(C.cols * C.rows), clusters = [];
+  for (let r0 = 0; r0 < C.rows; r0++) for (let c0 = 0; c0 < C.cols; c0++) {
+    if (seen[r0 * C.cols + c0] || C.at(c0, r0) < cs * 0.6) continue;
+    let stack = [[c0, r0]], B = [c0, r0, c0, r0], n = 0;
+    seen[r0 * C.cols + c0] = 1;
+    while (stack.length) {
+      let [c, r] = stack.pop();
+      n++; B = [Math.min(B[0], c), Math.min(B[1], r), Math.max(B[2], c), Math.max(B[3], r)];
+      for (let [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        let c2 = c + dc, r2 = r + dr;
+        if (c2 < 0 || r2 < 0 || c2 >= C.cols || r2 >= C.rows || seen[r2 * C.cols + c2] || C.at(c2, r2) < cs * 0.6) continue;
+        seen[r2 * C.cols + c2] = 1; stack.push([c2, r2]);
+      }
+    }
+    if (n >= 4) clusters.push({ n, b: [R[0] + B[0] * cs, R[1] + B[1] * cs, Math.min(R[2], R[0] + (B[2] + 1) * cs), Math.min(R[3], R[1] + (B[3] + 1) * cs)] });
+  }
+  clusters = clusters.sort((a, b) => b.n - a.n).map(q => [q.b[0] + p * 2, q.b[1] + p * 2, q.b[2] - p * 2, q.b[3] - p * 2]);
+  let nObj = Math.min(clusters.length, Math.ceil((1 + Math.round(t * 2.5)) * pr));
+  // the memory patch: part of the biggest cluster cut away for the dump
+  let patch = null;
+  if (clusters.length && pr > 0.3 && _tmH(seed, 4) < 0.4 + 0.6 * t) {
+    let [x0, y0, x1, y1] = clusters[0], pw = (x1 - x0) * (0.3 + 0.25 * _tmH(seed, 5)), ph = fsMin * 1.25 * (3 + Math.floor(_tmH(seed, 6) * 4)) + p * 2;
+    if (pw > fsMin * 6 && ph < (y1 - y0) * 0.8) {
+      let px = x0 + _tmH(seed, 7) * (x1 - x0 - pw), py = y0 + _tmH(seed, 8) * (y1 - y0 - ph);
+      patch = [px, py, px + pw, py + ph];
+      let b = [px - p * 2.5, py - p * 2.5, px + pw + p * 2.5, py + ph + p * 2.5];
+      _tmEdit(Ls, b[1], b[3], polys => _tmCut(polys, b));
+    }
+  }
+  // the hijacked set (clusters, the patch, labels from apart in the cell), linked
+  // by a spanning tree (held) and a few probes
+  let nodes = [];
+  for (let k = 0; k < nObj; k++) nodes.push(clusters[k]);
+  if (patch) nodes.push([patch[0] - p * 1.6, patch[1] - p * 1.6, patch[2] + p * 1.6, patch[3] + p * 1.6]);
+  for (let it of sel) {
+    let b = [it.L.page[0] - p * 1.8, it.L.page[1] - p * 1.8, it.L.page[2] + p * 1.8, it.L.page[3] + p * 1.8];
+    if (nodes.every(nd => !_tmHits(nd, b) && _tmDist(_tmCtr(nd), _tmCtr(b)) > fsMin * 4.5)) nodes.push(b);
+  }
+  let links = [];
+  if (nodes.length > 1) {
+    let inT = [0], todo = nodes.map((_, i) => i).slice(1);
+    while (todo.length) {
+      let best = null;
+      for (let a of inT) for (let b of todo) { let d = _tmDist(_tmCtr(nodes[a]), _tmCtr(nodes[b])); if (!best || d < best.d) best = { a, b, d }; }
+      links.push({ a: best.a, b: best.b, held: true }); inT.push(best.b); todo = todo.filter(x => x !== best.b);
+    }
+    nodes.forEach((nd, i) => {
+      if (_tmH(seed, 0x800 + i) > 0.45 + 0.45 * t) return;
+      let order = nodes.map((_, j) => j).filter(j => j !== i).sort((x, y) => _tmDist(_tmCtr(nd), _tmCtr(nodes[x])) - _tmDist(_tmCtr(nd), _tmCtr(nodes[y])));
+      let j = order[1] !== undefined ? order[1] : order[0];
+      if (j === undefined || links.some(l => (l.a === i && l.b === j) || (l.a === j && l.b === i))) return;
+      links.push({ a: i, b: j, held: false });
+    });
+  }
+  let textBoxes = items.map(it => [it.L.page[0] - p, it.L.page[1] - p, it.L.page[2] + p, it.L.page[3] + p]);
+  _tmDraw('hacking', () => {
+    let pad = p * 1.8, nOver = Math.min(sel.length, 1 + Math.round(t * 3)), stubs = { l: [], r: [] };
+    sel.forEach((it, i) => {
+      let { L, e } = it, [x0, y0, x1, y1] = L.page;
+      drawCornerBrackets(x0 - pad, y0 - pad, x1 - x0 + pad * 2, y1 - y0 + pad * 2, Math.min(fsMin * 0.8, (y1 - y0) * 0.5 + pad));
+      let tag = '0x' + _tmHex(_tmH(seed, 0x100 + i), 4), tw = _measureBuiltinText(tag, fsMin * 0.9), tb = [x0 - pad, y0 - pad - fsMin * 1.15, x0 - pad + tw, y0 - pad - p];
+      if (free(tb)) { _drawBuiltinText(tag, tb[0], tb[3], fsMin * 0.9); placed.push(tb); }
+      if (i < nOver) {
+        // overwritten with the intrusion's own word, and its cursor (blinking when moving)
+        let words = LORE_OVERRIDES.concat(textGen._overrideWords, ['ROOT', 'NULL', 'OWNED', '0xDEAD']).filter(wd => wd.length <= Math.max(4, e.str.length));
+        let wd = words[Math.floor(_tmH(seed, 0x200 + i) * words.length)];
+        _tmDrop(it);
+        _drawBuiltinText(wd, e.x, e.y, e.fontSize);
+        if (!animCtx || Math.floor(fr / 3) % 2 === 0) {
+          let cx2 = e.x + _measureBuiltinText(wd, e.fontSize) + p * 1.5;
+          svgRect(cx2, e.y - e.fontSize * 0.8, e.fontSize * 0.55, e.fontSize * 0.9);
+          for (let y = e.y - e.fontSize * 0.8 + p; y < e.y + e.fontSize * 0.1; y += p * 1.1) svgLine(cx2, y, cx2 + e.fontSize * 0.55, y);
+        }
+      }
+      if (_tmH(seed, 0x300 + i) < 0.35 + 0.3 * t) {
+        let rowsN = 2 + Math.floor(_tmH(seed, 0x320 + i) * 3), rw = _measureBuiltinText('00 00 00 00', fsMin * 0.9);
+        let db = [x1 + pad * 3, y0 - fsMin * 0.2, x1 + pad * 3 + rw, y0 + rowsN * fsMin * 1.25];
+        if (free(db)) {
+          for (let k = 0; k < rowsN; k++) _drawBuiltinText([0, 1, 2, 3].map(j => _tmHex(_tmH(seed, 0x400 + i * 16 + k * 4 + j), 2)).join(' '), db[0], db[1] + (k + 1) * fsMin * 1.2, fsMin * 0.9);
+          placed.push(db);
+        }
+      }
+      let side = (x0 + x1) / 2 < (R[0] + R[2]) / 2 ? 'l' : 'r';
+      stubs[side].push([side === 'l' ? x0 - pad : x1 + pad, (y0 + y1) / 2]);
+    });
+    // the wiring: each hooked label runs to a bus down the cell's edge
+    for (let side of ['l', 'r']) {
+      let S = stubs[side];
+      if (!S.length) continue;
+      let bxs = side === 'l' ? R[0] + p * 4 : R[2] - p * 4;
+      for (let [sx, sy] of S) { svgLine(sx, sy, bxs, sy); svgCircle(bxs, sy, p * 2.2); }
+      let ys = S.map(q => q[1]), ya = Math.min(...ys), yb = Math.max(...ys);
+      if (yb - ya > p * 2) svgLine(bxs, ya, bxs, yb);
+      svgPolyline([[bxs - p * 1.6, ya - p * 3], [bxs, ya - p * 5.5], [bxs + p * 1.6, ya - p * 3]]);
+      svgLine(bxs, ya, bxs, ya - p * 5.5);
+    }
+    rest.forEach((it, i) => {
+      if (_tmH(seed, 0x500 + i) > 0.25 * t * pr) return;
+      _tmDrop(it);
+      _drawBuiltinText(it.e.str.replace(/\S/g, 'X'), it.e.x, it.e.y, it.e.fontSize);
+    });
+    // the clusters, selected: dashed box, handles, crosshair, trail, predicted path, tags
+    for (let k = 0; k < nObj; k++) {
+      let [x0, y0, x1, y1] = clusters[k], q = p * 2.4, cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, m = Math.min(x1 - x0, y1 - y0);
+      let handles = [[x0, y0], [cx, y0], [x1, y0], [x1, cy], [x1, y1], [cx, y1], [x0, y1], [x0, cy]], hb = handles.map(([hx, hy]) => [hx - q - p * 1.5, hy - q - p * 1.5, hx + q + p * 1.5, hy + q + p * 1.5]);
+      for (let [ax, ay, bx2, by2] of [[x0, y0, x1, y0], [x1, y0, x1, y1], [x1, y1, x0, y1], [x0, y1, x0, y0]]) {
+        let len = Math.hypot(bx2 - ax, by2 - ay), n = Math.max(1, Math.floor(len / (p * 6))), dash = [];
+        for (let j = 0; j < n; j++) { let u0 = j / n, u1 = (j + 0.55) / n; dash.push([[ax + (bx2 - ax) * u0, ay + (by2 - ay) * u0], [ax + (bx2 - ax) * u1, ay + (by2 - ay) * u1]]); }
+        for (let b of hb) dash = _tmCut(dash, b);
+        for (let d of dash) svgPolyline(d);
+      }
+      for (let [hx, hy] of handles) svgRect(hx - q, hy - q, q * 2, q * 2);
+      let ch = Math.max(fsMin * 0.9, m * 0.07), gp = ch * 0.4;
+      svgLine(cx - ch, cy, cx - gp, cy); svgLine(cx + gp, cy, cx + ch, cy); svgLine(cx, cy - ch, cx, cy - gp); svgLine(cx, cy + gp, cx, cy + ch);
+      svgCircle(cx, cy, gp * 1.3);
+      let th = (_tmH(seed, 0x900 + k) + (animCtx ? animCtx.t : 0)) * Math.PI * 2, ux = Math.cos(th), uy = Math.sin(th);
+      for (let j = 1; j <= 4; j++) { let sz = ch * 0.55 * (1 - j * 0.17), d = ch * (1.1 + j * 1.05); svgRect(cx - ux * d - sz / 2, cy - uy * d - sz / 2, sz, sz); }
+      let a0 = ch * 1.3, a1 = ch * 4.6;
+      for (let d = a0; d < a1 - p * 3; d += p * 5) svgLine(cx + ux * d, cy + uy * d, cx + ux * Math.min(d + p * 2.8, a1), cy + uy * Math.min(d + p * 2.8, a1));
+      let hx = cx + ux * a1, hy = cy + uy * a1, hs = ch * 0.45;
+      svgPolyline([[hx - ux * hs - uy * hs * 0.6, hy - uy * hs + ux * hs * 0.6], [hx, hy], [hx - ux * hs + uy * hs * 0.6, hy - uy * hs - ux * hs * 0.6]]);
+      let tg = 'PID ' + (1000 + Math.floor(_tmH(seed, 0x920 + k) * 8999)) + '  ' + ['RWX', 'RW-', 'R-X'][Math.floor(_tmH(seed, 0x930 + k) * 3)] + '  0x' + _tmHex(_tmH(seed, 0x600 + k), 6);
+      let ab = [x0, y0 - q - fsMin * 1.15, x0 + _measureBuiltinText(tg, fsMin), y0 - q - p];
+      if (ab[1] > R[1] && ab[2] < R[2]) { _drawBuiltinText(tg, ab[0], ab[3], fsMin); placed.push(ab); }
+      let dim = 'MAP ' + Math.round(x1 - x0) + 'x' + Math.round(y1 - y0) + '  UID ' + (_tmH(seed, 0x940 + k) < 0.5 ? 0 : Math.floor(_tmH(seed, 0x950 + k) * 999));
+      if (y1 + q + fsMin * 1.2 < R[3]) _drawBuiltinText(dim, x1 - _measureBuiltinText(dim, fsMin * 0.9), y1 + q + fsMin * 1.05, fsMin * 0.9);
+    }
+    if (patch) {
+      let [x0, y0, x1, y1] = patch;
+      svgRect(x0, y0, x1 - x0, y1 - y0); svgRect(x0 - p * 1.6, y0 - p * 1.6, x1 - x0 + p * 3.2, y1 - y0 + p * 3.2);
+      let lh = fsMin * 1.25, cw = _measureBuiltinText('00 ', fsMin * 0.9), nB = Math.max(1, Math.floor((x1 - x0 - p * 3) / cw));
+      for (let k = 0, y = y0 + lh; y < y1 - p; y += lh, k++) _drawBuiltinText(Array.from({ length: nB }, (_, j) => _tmHex(_tmH(seed, 0x700 + k * 31 + j), 2)).join(' '), x0 + p * 1.5, y, fsMin * 0.9);
+      let mh = 'MEM 0x' + _tmHex(_tmH(seed, 0x780), 4) + ' [' + (nB * 8) + 'B]', mb = [x0 - p * 1.6, y0 - p * 1.6 - fsMin * 1.2, x0 - p * 1.6 + _measureBuiltinText(mh, fsMin * 0.9), y0 - p * 2.4];
+      if (mb[1] > R[1]) { _drawBuiltinText(mh, mb[0], mb[3], fsMin * 0.9); placed.push(mb); }
+    }
+    // the links: edge to edge, broken where they cross type, ringed, ticked, tagged
+    links.forEach((lk, li) => {
+      let ends = _tmLinkEnds(nodes[lk.a], nodes[lk.b], p);
+      if (!ends) return;
+      let [s0, s1, len] = ends;
+      _tmLinkLine(s0, s1, len, lk.held, textBoxes, p, p * 3.2, false, fsMin * 1.4);
+      let port = [22, 23, 80, 443, 1337, 4444, 6667, 8080, 31337][Math.floor(_tmH(seed, 0xA00 + li) * 9)];
+      let tag = (lk.held ? ['TUN', 'PIPE', 'HOOK', 'SHELL', 'RELAY'] : ['PROBE', 'SCAN', 'PING', 'SNIFF'])[Math.floor(_tmH(seed, 0xA10 + li) * (lk.held ? 5 : 4))] + ' :' + port;
+      let tw = _measureBuiltinText(tag, fsMin * 0.9), nx = -(s1[1] - s0[1]) / len, ny = (s1[0] - s0[0]) / len;
+      let mx = (s0[0] + s1[0]) / 2 + nx * fsMin * 0.9, my = (s0[1] + s1[1]) / 2 + ny * fsMin * 0.9, lb = [mx - tw / 2, my - fsMin * 0.6, mx + tw / 2, my + fsMin * 0.6];
+      if (free(lb)) { _drawBuiltinText(tag, lb[0], lb[3] - fsMin * 0.15, fsMin * 0.9); placed.push(lb); }
+    });
+    // the stamp, double-framed, in the first free corner, and the tally
+    if (pr > 0.8) {
+      let st = _tmH(seed, 3) < 0.5 ? 'ACCESS GRANTED' : 'ROOT SHELL', fsS = fsMin * 1.35, sw = _measureBuiltinText(st, fsS), sh2 = fsS * 1.8;
+      for (let [sx, sy] of [[R[2] - sw - p * 12, R[1] + p * 4], [R[0] + p * 4, R[3] - sh2 - p * 4], [R[2] - sw - p * 12, R[3] - sh2 - p * 4], [R[0] + p * 4, R[1] + p * 4]]) {
+        let sb = [sx, sy, sx + sw + p * 8, sy + sh2];
+        if (!free([sb[0] - p * 2, sb[1] - p * 2, sb[2] + p * 2, sb[3] + p * 2])) continue;
+        svgRect(sb[0], sb[1], sb[2] - sb[0], sb[3] - sb[1]); svgRect(sb[0] - p * 1.6, sb[1] - p * 1.6, sb[2] - sb[0] + p * 3.2, sb[3] - sb[1] + p * 3.2);
+        _drawBuiltinText(st, sb[0] + p * 4, sb[3] - fsS * 0.48, fsS); placed.push(sb);
+        let tally = 'PWN ' + nObj + '  HOPS ' + links.length + '  SHELLS ' + links.filter(l => l.held).length + '  HOOKED ' + sel.length, tw = _measureBuiltinText(tally, fsMin * 0.9);
+        let yb2 = sb[1] < (R[1] + R[3]) / 2 ? sb[3] + p * 2 + fsMin * 1.1 : sb[1] - p * 3, tb3 = [sb[0], yb2 - fsMin * 1.05, sb[0] + tw, yb2 + p];
+        if (free(tb3)) { _drawBuiltinText(tally, tb3[0], yb2, fsMin * 0.9); placed.push(tb3); }
+        break;
+      }
+    }
+  });
+  if (_tmHack) { _tmHack.cells.push(nodes); _tmHack.avoid.push(...textBoxes, ...placed, ...(patch ? [patch] : [])); }
+}
+// Where a link between two boxes leaves the one and meets the other: [s0, s1, len] or null
+function _tmLinkEnds(A, B, p) {
+  let exitT = (b, a, c) => { let dx = c[0] - a[0], dy = c[1] - a[1], tt = Infinity; if (dx) tt = Math.min(tt, ((dx > 0 ? b[2] : b[0]) - a[0]) / dx); if (dy) tt = Math.min(tt, ((dy > 0 ? b[3] : b[1]) - a[1]) / dy); return Math.max(0, Math.min(1, tt)); };
+  let ca = _tmCtr(A), cb = _tmCtr(B), ta = exitT(A, ca, cb), tb = exitT(B, cb, ca);
+  let s0 = [ca[0] + (cb[0] - ca[0]) * ta, ca[1] + (cb[1] - ca[1]) * ta], s1 = [cb[0] + (ca[0] - cb[0]) * tb, cb[1] + (ca[1] - cb[1]) * tb];
+  let len = _tmDist(s0, s1);
+  return len < p * 8 ? null : [s0, s1, len];
+}
+// A link in computer-vision style: solid when held, dashed when only probed,
+// broken around type, ringed at both ends (twice, across the page), ticked
+function _tmLinkLine(s0, s1, len, held, avoid, p, ring, outer, tickStep) {
+  let ux = (s1[0] - s0[0]) / len, uy = (s1[1] - s0[1]) / len, nx = -uy, ny = ux, inset = ring * 0.8;
+  let a = [s0[0] + ux * inset, s0[1] + uy * inset], dl = len - inset * 2, pieces = [];
+  if (held) pieces.push([a, [a[0] + ux * dl, a[1] + uy * dl]]);
+  else for (let d = 0; d < dl; d += p * 7) pieces.push([[a[0] + ux * d, a[1] + uy * d], [a[0] + ux * Math.min(d + p * 4, dl), a[1] + uy * Math.min(d + p * 4, dl)]]);
+  for (let b of avoid) pieces = pieces.flatMap(pp => _cutPolyline(pp, b));
+  for (let pp of pieces) svgPolyline(pp);
+  for (let q of [s0, s1]) { svgCircle(q[0], q[1], ring); if (outer) svgCircle(q[0], q[1], ring * 1.8); }
+  if (!held) return;
+  let nt = Math.floor(len / tickStep);
+  for (let k = 1; k < nt; k++) {
+    let x = s0[0] + ux * len * k / nt, y = s0[1] + uy * len * k / nt, tl = k % (outer ? 5 : 4) ? p * 1.4 : p * 2.8;
+    if (avoid.some(q => x > q[0] && x < q[2] && y > q[1] && y < q[3])) continue;
+    svgLine(x - nx * tl, y - ny * tl, x + nx * tl, y + ny * tl);
+  }
+}
+
+const TREATMENT_CELL = { glitch: txGlitch, terminal: txTerminal, corruption: txCorruption, decode: txDecode, hacking: txHacking };
+
+// The treatments switched on, run over one cell's record in stack order.
+// Glitch and hacking skip some cells by hash, but one cell of the page (cell i
+// of n), also picked by hash, always takes each of them, so a page of one or a
+// few cells never switches a treatment on to no effect.
+// Returns true when the cell needs repainting from its record.
+function treatCell(cellGroup, cell, i, n) {
+  let on = state.treatmentStack.filter(tx => tx.enabled && tx.intensity > 0 && TREATMENT_CELL[tx.id]);
+  if (!on.length) return false;
+  let seed = (seedNumber(state.seed) ^ Math.imul(Math.round(cell.x) + 1, 73856093) ^ Math.imul(Math.round(cell.y) + 1, 19349663)) >>> 0;
+  let R = [cell.x, cell.y, cell.x + cell.w, cell.y + cell.h];
+  for (let tx of on) {
+    let Ls = _tmCollect(cellGroup, [1, 0, 0, 1, 0, 0], [], []);
+    let lead = i === Math.floor(_tmH((seedNumber(state.seed) ^ seedNumber(tx.id + '#lead')) >>> 0, 0) * n);
+    TREATMENT_CELL[tx.id](cellGroup, Ls, R, tx.intensity, (seed ^ seedNumber(tx.id + '#tx')) >>> 0, lead);
+    _tmCommit(cellGroup, Ls);
+  }
+  return true;
+}
+
+// What spans the page: the intrusion's links between cells, the nearest
+// hijacked elements of neighbouring cells (a spanning tree) and a long probe or
+// two, broken where they cross type, tags, dumps or stamps
+function treatPage() {
+  let hk = state.treatmentStack.find(tx => tx.id === 'hacking' && tx.enabled && tx.intensity > 0);
+  let cells = _tmHack ? _tmHack.cells.filter(c => c.length) : [];
+  if (!hk || cells.length < 2) return;
+  let p = penPx(), fsMin = getMinTextSizePx(), seed = seedNumber(state.seed), avoid = _tmHack.avoid;
+  let nearest = (A, B) => { let best = null; for (let a of A) for (let b of B) { let d = _tmDist(_tmCtr(a), _tmCtr(b)); if (!best || d < best.d) best = { a, b, d }; } return best; };
+  let links = [], inT = [0], todo = cells.map((_, i) => i).slice(1);
+  while (todo.length) {
+    let best = null;
+    for (let i of inT) for (let j of todo) { let n = nearest(cells[i], cells[j]); if (!best || n.d < best.d) best = { ...n, j }; }
+    links.push({ a: best.a, b: best.b, held: true }); inT.push(best.j); todo = todo.filter(x => x !== best.j);
+  }
+  let nProbe = Math.min(cells.length - 1, 1 + Math.floor(_tmH(seed, 0xB00) * 2));
+  for (let k = 0; k < nProbe; k++) {
+    let i = Math.floor(_tmH(seed, 0xB10 + k) * cells.length), j = Math.floor(_tmH(seed, 0xB20 + k) * cells.length);
+    if (i !== j) links.push({ a: cells[i][Math.floor(_tmH(seed, 0xB30 + k) * cells[i].length)], b: cells[j][Math.floor(_tmH(seed, 0xB40 + k) * cells[j].length)], held: false });
+  }
+  let shown = animCtx ? Math.ceil(links.length * Math.min(1, animCtx.t * 1.3)) : links.length;
+  _tmDraw('hacking', () => {
+    links.slice(0, shown).forEach((lk, li) => {
+      let ends = _tmLinkEnds(lk.a, lk.b, p * 1.25);
+      if (!ends) return;
+      let [s0, s1, len] = ends;
+      _tmLinkLine(s0, s1, len, lk.held, avoid, p, p * 3.4, true, fsMin * 2);
+      let a1 = 1 + Math.floor(_tmH(seed, 0xB70 + li) * 9), a2 = 2 + Math.floor(_tmH(seed, 0xB80 + li) * 250), port = [22, 443, 4444, 8080, 31337][Math.floor(_tmH(seed, 0xB90 + li) * 5)];
+      let pool = lk.held ? ['PIVOT 10.0.' + a1 + '.' + a2, 'EXFIL ' + Math.round(len * 4) + 'B', 'TUNNEL :' + port, 'C2 :' + port, loreFill('SSH warden@{sitelc}', _facility), loreFill('EXFIL VAULT {vault}', _facility)]
+                         : ['BEACON 0x' + _tmHex(_tmH(seed, 0xB60 + li), 4), 'SCAN 10.0.' + a1 + '.0/24', 'ARP 10.0.' + a1 + '.' + a2, 'PROBE :' + port];
+      let tag = pool[Math.floor(_tmH(seed, 0xBA0 + li) * pool.length)], tw = _measureBuiltinText(tag, fsMin * 0.9);
+      let nx = -(s1[1] - s0[1]) / len, ny = (s1[0] - s0[0]) / len, mx = (s0[0] + s1[0]) / 2 + nx * fsMin, my = (s0[1] + s1[1]) / 2 + ny * fsMin;
+      let lb = [mx - tw / 2, my - fsMin * 0.65, mx + tw / 2, my + fsMin * 0.65];
+      if (!avoid.some(q => _tmHits(q, lb))) _drawBuiltinText(tag, lb[0], lb[3] - fsMin * 0.2, fsMin * 0.9);
+    });
+  });
+}
 
 // ========================================================
 // ERROR DISPLAY
