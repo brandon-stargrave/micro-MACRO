@@ -1261,7 +1261,7 @@ The intrusion takes the cell's own elements:
 - The drawing's biggest clusters are selected like objects in an editor: dashed box, handles, crosshair, motion trail, predicted path, `PID`/`MAP` tags.
 - A patch of the drawing is overwritten with a framed hex dump (`MEM`).
 - The hijacked elements are linked edge to edge in computer-vision style: held links solid and ticked, probes dashed, both ringed at the ends and broken around type. Tags read as an intrusion (`SHELL :8080`, `PROBE :1337`), never as a tracker.
-- A double-framed stamp (`ACCESS GRANTED`, `ROOT SHELL`) and a tally go in a free corner.
+- A stamp and a tally go in a free corner, along a free edge or just inside a selection box, clear of the intrusion's own marks (the links break round them). Each cell gets its own word (`ACCESS GRANTED`, `ROOT SHELL`, `ICE BROKEN`, `AUTH BYPASSED` and ten more, two of them the site's, such as `VAULT 3-C OPEN`), frame (double, chamfered, or with a hatched tab) and tally. They are dealt from the page's seed by the cell's place in the layout, so a page's stamps don't repeat (up to fourteen of them) and none changes from frame to frame.
 - Across the page (`treatPage`), a spanning tree links the nearest hijacked elements of neighbouring cells, plus a long probe or two (`PIVOT 10.0.8.216`, `EXFIL VAULT 3-C`), clear of type, tags, dumps and stamps.
 
 On a moving page the intrusion spreads across the loop.

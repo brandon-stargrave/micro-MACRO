@@ -25734,10 +25734,11 @@ function txDecode(cellGroup, Ls, R, t, seed) {
 // selected like objects in an editor (dashed box, handles, crosshair, motion
 // trail, predicted path), a patch of the drawing is overwritten with a hex
 // dump, and the hijacked elements are linked edge to edge in computer-vision
-// style. The words are an intrusion's (pids, maps, tunnels, probes), never a
-// tracker's. On a moving page the intrusion spreads across the loop.
+// style, and a stamp claims the cell (its word, frame and tally its own on
+// the page). The words are an intrusion's (pids, maps, tunnels, probes), never
+// a tracker's. On a moving page the intrusion spreads across the loop.
 let _tmHack = null; // the hijacked elements of every cell, for the links across the page (per generate)
-function txHacking(cellGroup, Ls, R, t, seed, lead) {
+function txHacking(cellGroup, Ls, R, t, seed, lead, ci = 0) {
   if (!lead && _tmH(seed, 1) > 0.45 + 0.55 * t) return;
   let p = penPx(), fsMin = getMinTextSizePx(), fr = animCtx ? animCtx.frameIndex : 0;
   let pr = animCtx ? Math.max(0, Math.min(1, animCtx.t * 1.5 - _tmH(seed, 9) * 0.5)) : 1;
@@ -25806,10 +25807,11 @@ function txHacking(cellGroup, Ls, R, t, seed, lead) {
   }
   let textBoxes = items.map(it => [it.L.page[0] - p, it.L.page[1] - p, it.L.page[2] + p, it.L.page[3] + p]);
   _tmDraw('hacking', () => {
-    let pad = p * 1.8, nOver = Math.min(sel.length, 1 + Math.round(t * 3)), stubs = { l: [], r: [] };
+    let pad = p * 1.8, nOver = Math.min(sel.length, 1 + Math.round(t * 3)), stubs = { l: [], r: [] }, wired = []; // wired: what the stamp keeps off
     sel.forEach((it, i) => {
       let { L, e } = it, [x0, y0, x1, y1] = L.page;
       drawCornerBrackets(x0 - pad, y0 - pad, x1 - x0 + pad * 2, y1 - y0 + pad * 2, Math.min(fsMin * 0.8, (y1 - y0) * 0.5 + pad));
+      wired.push([x0 - pad - p * 2, y0 - pad - p * 2, x1 + pad + p * 2, y1 + pad + p * 2]);
       let tag = '0x' + _tmHex(_tmH(seed, 0x100 + i), 4), tw = _measureBuiltinText(tag, fsMin * 0.9), tb = [x0 - pad, y0 - pad - fsMin * 1.15, x0 - pad + tw, y0 - pad - p];
       if (free(tb)) { _drawBuiltinText(tag, tb[0], tb[3], fsMin * 0.9); placed.push(tb); }
       if (i < nOver) {
@@ -25840,8 +25842,9 @@ function txHacking(cellGroup, Ls, R, t, seed, lead) {
       let S = stubs[side];
       if (!S.length) continue;
       let bxs = side === 'l' ? R[0] + p * 4 : R[2] - p * 4;
-      for (let [sx, sy] of S) { svgLine(sx, sy, bxs, sy); svgCircle(bxs, sy, p * 2.2); }
+      for (let [sx, sy] of S) { svgLine(sx, sy, bxs, sy); svgCircle(bxs, sy, p * 2.2); wired.push([Math.min(sx, bxs) - p * 3.5, sy - p * 3.5, Math.max(sx, bxs) + p * 3.5, sy + p * 3.5]); }
       let ys = S.map(q => q[1]), ya = Math.min(...ys), yb = Math.max(...ys);
+      wired.push([bxs - p * 3.5, ya - p * 7, bxs + p * 3.5, yb + p * 3.5]);
       if (yb - ya > p * 2) svgLine(bxs, ya, bxs, yb);
       svgPolyline([[bxs - p * 1.6, ya - p * 3], [bxs, ya - p * 5.5], [bxs + p * 1.6, ya - p * 3]]);
       svgLine(bxs, ya, bxs, ya - p * 5.5);
@@ -25885,32 +25888,68 @@ function txHacking(cellGroup, Ls, R, t, seed, lead) {
       let mh = 'MEM 0x' + _tmHex(_tmH(seed, 0x780), 4) + ' [' + (nB * 8) + 'B]', mb = [x0 - p * 1.6, y0 - p * 1.6 - fsMin * 1.2, x0 - p * 1.6 + _measureBuiltinText(mh, fsMin * 0.9), y0 - p * 2.4];
       if (mb[1] > R[1]) { _drawBuiltinText(mh, mb[0], mb[3], fsMin * 0.9); placed.push(mb); }
     }
+    // the stamp and its tally: word, frame and tally dealt from the page's seed
+    // by the cell's place in the layout, so they hold still on a moving page and
+    // no two stamps of a page share a word (the intrusion's words and two of the
+    // site's). Placed before the links, which break round it, in the first free
+    // spot: the corners, along the cell's edges, then just inside a selection box
+    let stampAt = [];
+    if (pr > 0.8) {
+      // a stamp may sit inside a selection box, but not on its edges, handles and
+      // tags, nor on the crosshair and trail at its middle, the wiring or the patch
+      let mq = p * 4.4, boxed = b => clusters.slice(0, nObj).some(c => {
+        let inside = b[0] >= c[0] + mq && b[1] >= c[1] + mq && b[2] <= c[2] - mq && b[3] <= c[3] - mq;
+        let r = Math.max(fsMin * 0.9, Math.min(c[2] - c[0], c[3] - c[1]) * 0.07) * 4.6 + p * 3, cx = (c[0] + c[2]) / 2, cy = (c[1] + c[3]) / 2;
+        return (!inside && _tmHits([c[0] - mq, c[1] - mq - fsMin * 1.2, c[2] + mq, c[3] + mq + fsMin * 1.3], b)) || _tmHits([cx - r, cy - r, cx + r, cy + r], b);
+      }) || wired.some(w => _tmHits(w, b)) || (patch && _tmHits([patch[0] - p * 4, patch[1] - p * 4 - fsMin * 1.4, patch[2] + p * 4, patch[3] + p * 4], b));
+      let base = seedNumber(state.seed), deal = (n, k) => Array.from({ length: n }, (_, j) => j).sort((a, b) => _tmH(base, k + a) - _tmH(base, k + b))[ci % n];
+      let words = ['ACCESS GRANTED', 'ROOT SHELL', 'ICE BROKEN', 'AUTH BYPASSED', 'PRIV ESC OK', 'BACKDOOR SET', 'SYSTEM OWNED', 'KEYS DUMPED', 'UPLINK OPEN', 'PAYLOAD LIVE', 'SHELL SPAWNED', 'WARDS DOWN'];
+      if (_facility) words.push(loreFill('VAULT {vault} OPEN', _facility), loreFill('{site} OWNED', _facility));
+      let st = words[deal(words.length, 0x5100)], frame = deal(3, 0x5180), fsS = fsMin * 1.35, sw = _measureBuiltinText(st, fsS), sh2 = fsS * 1.8;
+      let tab = frame === 2 ? sh2 * 0.7 : 0, bw = tab + sw + p * 8, off = p * 1.6;
+      let chamfer = (b, c) => [[b[0] + c, b[1]], [b[2] - c, b[1]], [b[2], b[1] + c], [b[2], b[3] - c], [b[2] - c, b[3]], [b[0] + c, b[3]], [b[0], b[3] - c], [b[0], b[1] + c], [b[0] + c, b[1]]];
+      // the corners first, then places slid in along the cell's edges from them
+      let spots = [];
+      for (let u of [0, 0.12, 0.24, 0.36]) for (let [x, y, ex, ey] of [[R[2] - bw - p * 4, R[1] + p * 4, -1, 1], [R[0] + p * 4, R[3] - sh2 - p * 4, 1, -1], [R[2] - bw - p * 4, R[3] - sh2 - p * 4, -1, -1], [R[0] + p * 4, R[1] + p * 4, 1, 1]]) {
+        spots.push([x + ex * u * (R[2] - R[0]), y]);
+        if (u) spots.push([x, y + ey * u * (R[3] - R[1])]);
+      }
+      // and just inside a selection box's corners, clear of its edges
+      for (let c of clusters.slice(0, nObj)) {
+        let ix0 = c[0] + mq + p * 2, iy0 = c[1] + mq + p * 2, ix1 = c[2] - mq - p * 2 - bw, iy1 = c[3] - mq - p * 2 - sh2;
+        if (ix1 > ix0 && iy1 > iy0) spots.push([ix1, iy0], [ix0, iy1], [ix1, iy1], [ix0, iy0]);
+      }
+      for (let [sx, sy] of spots) {
+        let sb = [sx, sy, sx + bw, sy + sh2], ob = [sb[0] - off, sb[1] - off, sb[2] + off, sb[3] + off];
+        let room = [sb[0] - p * 2, sb[1] - p * 2, sb[2] + p * 2, sb[3] + p * 2];
+        if (!free(room) || boxed(room)) continue;
+        if (frame === 0) { svgRect(sb[0], sb[1], bw, sh2); svgRect(ob[0], ob[1], ob[2] - ob[0], ob[3] - ob[1]); } // double frame
+        else if (frame === 1) { let c = sh2 * 0.3; svgPolyline(chamfer(sb, c)); svgPolyline(chamfer(ob, c + off * (2 - Math.SQRT2))); } // chamfered, doubled
+        else { // single frame with a hatched tab at its head
+          svgRect(sb[0], sb[1], bw, sh2); svgLine(sb[0] + tab, sb[1], sb[0] + tab, sb[3]);
+          let tb = [sb[0], sb[1], sb[0] + tab, sb[3]], step = p * 1.8 * Math.SQRT2;
+          for (let k = tb[0] + tb[1] + step; k < tb[2] + tb[3]; k += step) for (let q of _tmClip([[[k - tb[1], tb[1]], [k - tb[3], tb[3]]]], tb)) svgPolyline(q);
+        }
+        _drawBuiltinText(st, sb[0] + tab + p * 4, sb[3] - fsS * 0.48, fsS); placed.push(ob); stampAt.push([ob[0] - p, ob[1] - p, ob[2] + p, ob[3] + p]);
+        let held = links.filter(l => l.held).length;
+        let tally = [['PWN', 'HOPS', 'SHELLS', 'HOOKED'], ['NODES', 'LINKS', 'ROOTED', 'HOOKS'], ['IMPLANTS', 'PIVOTS', 'SESSIONS', 'TAPS']][deal(3, 0x51C0)].map((k, j) => k + ' ' + [nObj, links.length, held, sel.length][j]).join('  ');
+        let tw = _measureBuiltinText(tally, fsMin * 0.9), yb2 = sb[1] < (R[1] + R[3]) / 2 ? ob[3] + p * 2 + fsMin * 1.1 : ob[1] - p * 3, tb3 = [sb[0], yb2 - fsMin * 1.05, sb[0] + tw, yb2 + p];
+        if (free(tb3) && !boxed(tb3)) { _drawBuiltinText(tally, tb3[0], yb2, fsMin * 0.9); placed.push(tb3); stampAt.push(tb3); }
+        break;
+      }
+    }
     // the links: edge to edge, broken where they cross type, ringed, ticked, tagged
     links.forEach((lk, li) => {
       let ends = _tmLinkEnds(nodes[lk.a], nodes[lk.b], p);
       if (!ends) return;
       let [s0, s1, len] = ends;
-      _tmLinkLine(s0, s1, len, lk.held, textBoxes, p, p * 3.2, false, fsMin * 1.4);
+      _tmLinkLine(s0, s1, len, lk.held, textBoxes.concat(stampAt), p, p * 3.2, false, fsMin * 1.4);
       let port = [22, 23, 80, 443, 1337, 4444, 6667, 8080, 31337][Math.floor(_tmH(seed, 0xA00 + li) * 9)];
       let tag = (lk.held ? ['TUN', 'PIPE', 'HOOK', 'SHELL', 'RELAY'] : ['PROBE', 'SCAN', 'PING', 'SNIFF'])[Math.floor(_tmH(seed, 0xA10 + li) * (lk.held ? 5 : 4))] + ' :' + port;
       let tw = _measureBuiltinText(tag, fsMin * 0.9), nx = -(s1[1] - s0[1]) / len, ny = (s1[0] - s0[0]) / len;
       let mx = (s0[0] + s1[0]) / 2 + nx * fsMin * 0.9, my = (s0[1] + s1[1]) / 2 + ny * fsMin * 0.9, lb = [mx - tw / 2, my - fsMin * 0.6, mx + tw / 2, my + fsMin * 0.6];
       if (free(lb)) { _drawBuiltinText(tag, lb[0], lb[3] - fsMin * 0.15, fsMin * 0.9); placed.push(lb); }
     });
-    // the stamp, double-framed, in the first free corner, and the tally
-    if (pr > 0.8) {
-      let st = _tmH(seed, 3) < 0.5 ? 'ACCESS GRANTED' : 'ROOT SHELL', fsS = fsMin * 1.35, sw = _measureBuiltinText(st, fsS), sh2 = fsS * 1.8;
-      for (let [sx, sy] of [[R[2] - sw - p * 12, R[1] + p * 4], [R[0] + p * 4, R[3] - sh2 - p * 4], [R[2] - sw - p * 12, R[3] - sh2 - p * 4], [R[0] + p * 4, R[1] + p * 4]]) {
-        let sb = [sx, sy, sx + sw + p * 8, sy + sh2];
-        if (!free([sb[0] - p * 2, sb[1] - p * 2, sb[2] + p * 2, sb[3] + p * 2])) continue;
-        svgRect(sb[0], sb[1], sb[2] - sb[0], sb[3] - sb[1]); svgRect(sb[0] - p * 1.6, sb[1] - p * 1.6, sb[2] - sb[0] + p * 3.2, sb[3] - sb[1] + p * 3.2);
-        _drawBuiltinText(st, sb[0] + p * 4, sb[3] - fsS * 0.48, fsS); placed.push(sb);
-        let tally = 'PWN ' + nObj + '  HOPS ' + links.length + '  SHELLS ' + links.filter(l => l.held).length + '  HOOKED ' + sel.length, tw = _measureBuiltinText(tally, fsMin * 0.9);
-        let yb2 = sb[1] < (R[1] + R[3]) / 2 ? sb[3] + p * 2 + fsMin * 1.1 : sb[1] - p * 3, tb3 = [sb[0], yb2 - fsMin * 1.05, sb[0] + tw, yb2 + p];
-        if (free(tb3)) { _drawBuiltinText(tally, tb3[0], yb2, fsMin * 0.9); placed.push(tb3); }
-        break;
-      }
-    }
   });
   if (_tmHack) { _tmHack.cells.push(nodes); _tmHack.avoid.push(...textBoxes, ...placed, ...(patch ? [patch] : [])); }
 }
@@ -25956,7 +25995,7 @@ function treatCell(cellGroup, cell, i, n) {
   for (let tx of on) {
     let Ls = _tmCollect(cellGroup, [1, 0, 0, 1, 0, 0], [], []);
     let lead = i === Math.floor(_tmH((seedNumber(state.seed) ^ seedNumber(tx.id + '#lead')) >>> 0, 0) * n);
-    TREATMENT_CELL[tx.id](cellGroup, Ls, R, tx.intensity, (seed ^ seedNumber(tx.id + '#tx')) >>> 0, lead);
+    TREATMENT_CELL[tx.id](cellGroup, Ls, R, tx.intensity, (seed ^ seedNumber(tx.id + '#tx')) >>> 0, lead, i);
     _tmCommit(cellGroup, Ls);
   }
   return true;
