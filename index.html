@@ -5717,8 +5717,8 @@ const ComposedLayout = (() => {
     fm: { f: x => Math.sin(TAU * x + 1.4 * Math.sin(TAU * x / 2)), per: 2 }
   };
   const STEEP = new Set(['saw', 'square', 'pulse', 'ring']);
-  // one wave line across the band: v = vb + A W(u / P * f + ph)
-  const waveLine = (W, P, ph, A, vb, L, f) => { let du = Math.min(P / 90, 0.45), n = Math.ceil(L / du), pts = []; for (let i = 0; i <= n; i++) { let u = L * i / n; pts.push([u, vb + A * W.f(u / P * (f || 1) + ph)]); } return rdp(pts, 0.05); };
+  // one wave line across the band: v = vb + A E(u) W(u / P * f + ph), E an amplitude envelope (whole if none)
+  const waveLine = (W, P, ph, A, vb, L, f, E, Q) => { let du = Math.min(P / 90, 0.45), n = Math.ceil(L / du), pts = []; for (let i = 0; i <= n; i++) { let u = L * i / n; pts.push([u, vb + A * (E ? E(u) : 1) * W.f(u / P * (f || 1) + ph + (Q ? Q(u) : 0))]); } return rdp(pts, 0.05); };
   // how long two curves, sampled at the same steps of u, run within c of
   // each other at under 15 degrees (the clash audit's test: a crossing does not count)
   function fusedLen(A, B, c, w) {
@@ -5813,10 +5813,23 @@ const ComposedLayout = (() => {
       let { L, s, g, h } = c, T = fit(L, s * (0.95 + 0.45 * h)), n = Math.round(L / T), r = 0.87, v0 = g * 0.5, v1 = s - g * 0.5;
       c.rails(v0, v1);
       for (let k = 0; k <= n; k++) c.draw([[k * T, v0], [k * T, v1]]);
+      // in motion the gaze wanders, each tunnel a step behind the last, and the frames fly in (or out),
+      // the tunnels at their own rates
+      let ZR = [[1, 2, 1, -1], [1, -1], [2, 1, 1]][Math.floor(c.H(30) * 3)];
       for (let k = 0; k < n; k++) {
         let u0 = k * T, u1 = (k + 1) * T, t = (k + 0.5) / n, vp = [u0 + (u1 - u0) * (0.2 + 0.6 * t), s / 2 + (s / 2 - g * 4) * 0.3 * Math.sin(TAU * t * 1.5)];
+        if (c.mo) {
+          let w = 0.13 * c.amt, ph = c.go(1) - k * 0.17;
+          vp[0] = Math.max(u0 + (u1 - u0) * 0.15, Math.min(u1 - (u1 - u0) * 0.15, vp[0] + (u1 - u0) * w * Math.sin(TAU * ph)));
+          vp[1] = Math.max(v0 + (v1 - v0) * 0.22, Math.min(v1 - (v1 - v0) * 0.22, vp[1] + (v1 - v0) * w * 1.3 * Math.sin(TAU * (2 * ph + 0.25))));
+        }
         let dn = Math.min(vp[0] - u0, u1 - vp[0], vp[1] - v0, v1 - vp[1]), df = g * 1.2 / dn, fl = 1;
-        for (let f = 1 - df, fi = 0; f > 0.1; f -= df, fi++) { c.pen(fi % 3 === 2 ? 2 : 1, () => c.rect(vp[0] + (u0 - vp[0]) * f, vp[1] + (v0 - vp[1]) * f, vp[0] + (u1 - vp[0]) * f, vp[1] + (v1 - vp[1]) * f)); fl = f; }
+        let frame = (f, fi) => { c.pen(fi % 3 === 2 ? 2 : 1, () => c.rect(vp[0] + (u0 - vp[0]) * f, vp[1] + (v0 - vp[1]) * f, vp[0] + (u1 - vp[0]) * f, vp[1] + (v1 - vp[1]) * f)); fl = f; };
+        if (c.mo) {
+          // frame m sits m + 1 - z steps in; it keeps its ink as it flies (its identity is m + floor z)
+          let z = c.rate(k, ZR) * 3, zf = frac(z), z0 = Math.floor(z);
+          for (let m = 0; m < 400; m++) { let f = 1 - df * (m + 1 - zf); if (f <= 0.1) break; if (f <= 1 - df * 0.8) frame(f, (((m + z0) % 3) + 3) % 3); }
+        } else for (let f = 1 - df, fi = 0; f > 0.1; f -= df, fi++) frame(f, fi);
         let ray = (x, y, sp) => { let f = Math.max(fl, Math.min(1, g * 1.25 / sp)); c.pen(3, () => c.draw([[x, y], [vp[0] + (x - vp[0]) * f, vp[1] + (y - vp[1]) * f]])); };
         for (let i = 0; i <= 4; i++) { let x = u0 + (u1 - u0) * i / 4, sp = i === 0 || i === 4 ? Infinity : (u1 - u0) / 4; ray(x, v0, sp); ray(x, v1, sp); }
         ray(u0, (v0 + v1) / 2, (v1 - v0) / 2); ray(u1, (v0 + v1) / 2, (v1 - v0) / 2);
@@ -5836,6 +5849,18 @@ const ComposedLayout = (() => {
       for (let k = 1; k < 400 && vs[k - 1] + 2 * A < s - g; k++) vs.push(vs[k - 1] + pairGap(W, P, A, ph(k) - ph(k - 1), cl));
       while (vs.length > 1 && vs[vs.length - 1] + 2 * A > s - g) vs.pop();
       let off = (s - vs[vs.length - 1]) / 2;
+      if (c.mo) {
+        // in motion each ribbon runs at its own rate, so the second voice phases through the first and the
+        // knots travel; a ribbon's lines come square and shear again, a wave of it running down the ribbons;
+        // the ripple sends a pulse through each ribbon in turn (one a ribbon, so its lines never close up)
+        let RR = [[1, -1], [1, 0, -1, 0], [2, -1, 1, -2], [1, 2]][Math.floor(c.H(20) * 4)], top = {};
+        vs.forEach((v, k) => { if (!(lines[k][0] in top)) top[lines[k][0]] = off + v; });
+        let phT = k => { let [gi, j] = lines[k], rho = 0.5 + 0.5 * Math.cos(TAU * (c.go(1) - gi * 0.13)); return Math.round((j * d * rho + gi * sig) * 500) / 500 + c.rate(gi, RR) * W.per; };
+        let pu = {};
+        for (let gi in top) pu[gi] = c.pushed(0.7, top[gi], P);
+        vs.forEach((v, k) => { let gi = lines[k][0]; c.pen(cyc(gi, [1, 2, 1, 3]), () => c.draw(waveLine(W, P, phT(k), A, off + v, L, gi % 2 ? 1 + R / N : 1, pu[gi].E, pu[gi].Q))); });
+        return;
+      }
       vs.forEach((v, k) => c.pen(cyc(lines[k][0], [1, 2, 1, 3]), () => c.draw(waveLine(W, P, ph(k), A, off + v, L, lines[k][0] % 2 ? 1 + R / N : 1))));
     },
     // One wave, each line as close under the last as the pen allows (never crossing). The phase steps
@@ -5852,8 +5877,14 @@ const ComposedLayout = (() => {
       let K = 6 + Math.floor(c.H(12) * 8), mu = 0.8 + 1.6 * c.H(13), sw = k => 1 + mu * (0.5 - 0.5 * Math.cos(TAU * k / K));
       let inc = k => { let base = mode === 'euclid' ? (ons.has(k % m8) ? J : d * 0.25) : k % G === 0 ? (mode === 'mirror' ? 0 : J) : (mode === 'mirror' && Math.floor(k / G) % 2 ? -d : d); return Math.round(base * (mode === 'chain' && k % G === 0 ? 1 : sw(k)) * 500) / 500; };
       let lam = P * (4 + Math.floor(c.H(14) * 5)), mod = ['flat', 'fm', 'am'][Math.floor(c.H(15) * 3)], beta = 0.35, Pg = mod === 'fm' ? P / (1 + beta) : P;
-      let X = u => mod === 'fm' ? u / P + beta * lam / (P * TAU) * Math.sin(TAU * u / lam) : u / P, E = u => mod === 'am' ? 0.5 + 0.5 * Math.cos(TAU * u / lam) : 1;
-      let line = (ph, vb, Aa) => { let du = Math.min(Pg / 90, 0.45), n = Math.ceil(L / du), pts = []; for (let i = 0; i <= n; i++) { let u = L * i / n; pts.push([u, vb + Aa * E(u) * W.f(X(u) + ph)]); } return rdp(pts, 0.05); };
+      // in motion the carrier runs one way and its modulation (the quickening, or the swelling) the other;
+      // the ripple sends a pulse through the whole stack together (one for every line, so the lines never
+      // close up); and the shear between lines eases off and comes back, a wave of it running down the
+      // stack group by group (never past the shear each pair was spaced for)
+      let rc = c.H(21) < 0.5 ? 1 : -1, sc = c.go(rc) * W.per, sm = c.go(-rc * (1 + Math.floor(c.H(22) * 2)));
+      let X = u => mod === 'fm' ? u / P + beta * lam / (P * TAU) * Math.sin(TAU * u / lam - TAU * sm) : u / P, E = u => mod === 'am' ? 0.5 + 0.5 * Math.cos(TAU * u / lam - TAU * sm) : 1;
+      let pu = c.pushed(0.7, s / 2, Pg);
+      let line = (ph, vb, Aa) => { let du = Math.min(Pg / 90, 0.45), n = Math.ceil(L / du), pts = []; for (let i = 0; i <= n; i++) { let u = L * i / n; pts.push([u, vb + Aa * E(u) * (pu ? pu.E(u) : 1) * W.f(X(u) + ph + (pu ? pu.Q(u) : 0))]); } return rdp(pts, 0.05); };
       let phs = [0], vs = [0];
       for (let k = 1; k < 400 && vs[k - 1] + 2 * A < s - g; k++) { phs.push(phs[k - 1] + inc(k)); vs.push(vs[k - 1] + pairGap(W, Pg, A, phs[k] - phs[k - 1], cl)); }
       while (vs.length > 1 && vs[vs.length - 1] + 2 * A > s - g) { vs.pop(); phs.pop(); }
@@ -5862,11 +5893,19 @@ const ComposedLayout = (() => {
         let wv = solveWeave(W, P, jj, ph, G, cl, cl * 2, g * 6);
         if (wv) {
           let n2 = Math.max(3, Math.floor((s - 2 * wv.A - g) / wv.dv) + 1), v0 = (s - (n2 - 1) * wv.dv) / 2;
-          if (n2 > vs.length) { for (let k = 0; k < n2; k++) c.pen(cyc(Math.floor(k / G), [1, 2, 1, 3]), () => c.draw(waveLine(W, P, ph(k), wv.A, v0 + k * wv.dv, L))); return; }
+          if (n2 > vs.length) { for (let k = 0; k < n2; k++) c.pen(cyc(Math.floor(k / G), [1, 2, 1, 3]), () => c.draw(waveLine(W, P, ph(k) + sc, wv.A, v0 + k * wv.dv, L))); return; }
         }
       }
-      let off = (s - vs[vs.length - 1]) / 2;
-      vs.forEach((v, k) => c.pen(cyc(Math.floor(k / G), [1, 2, 1, 3]), () => c.draw(line(phs[k], off + v, A))));
+      let off = (s - vs[vs.length - 1]) / 2, phT = phs;
+      if (c.mo) {
+        phT = [phs[0] + sc];
+        for (let k = 1; k < phs.length; k++) {
+          let D = phs[k] - phs[k - 1], rho = 0.5 + 0.5 * Math.cos(TAU * (c.go(1) - Math.floor(k / G) * 0.11)), Dt = Math.round(D * rho * 500) / 500;
+          if (pairGap(W, Pg, A, Dt, cl) > vs[k] - vs[k - 1] + 1e-6) Dt = D;
+          phT.push(phT[k - 1] + Dt);
+        }
+      }
+      vs.forEach((v, k) => c.pen(cyc(Math.floor(k / G), [1, 2, 1, 3]), () => c.draw(line(phT[k], off + v, A))));
     },
     // Lanes of a carrier under a beating envelope, each lane's envelope a step behind the lane above (the
     // still points run down the band in diagonals); the carriers' rates in a repeating order, so the lanes
@@ -5875,9 +5914,12 @@ const ComposedLayout = (() => {
       let { L, s, g } = c, lanes = Math.max(3, Math.floor(s / Math.max(3.8 * g, s / 15))), lh = s / lanes, a = (lh - g * 1.25) / 2;
       let wn = ['sine', 'tri', 'square', 'saw'][Math.floor(c.H(1) * 4)], Wc = WAVES[wn], Pc0 = Math.max(2.6 * g, a * 1.5);
       let Pb = fit(L, s * (0.8 + 0.5 * c.H(2))), sig = [0.125, 0.25, 1 / 6, 1 / 3][Math.floor(c.H(3) * 4)], rates = [[1, 1.25, 1.5, 1.25], [1, 1, 1.6], [1.5, 1, 1, 1.5, 2]][Math.floor(c.H(4) * 3)];
+      // in motion each lane's carrier runs at its own rate, the beating's still points travel down the lanes
+      // in their diagonals, and the ripple sends a pulse through the lanes in turn
+      let CR = [[1, -1, 2, -2], [1, 2, 3, 2], [-1, 1, 0, 2]][Math.floor(c.H(23) * 3)], eb = c.go(c.H(24) < 0.5 ? 1 : -1);
       for (let k = 0; k < lanes; k++) {
-        let Pc = Pc0 * rates[k % rates.length], vb = (k + 0.5) * lh, du = Math.min(Pc / 24, 0.4), n = Math.ceil(L / du), pts = [];
-        for (let i = 0; i <= n; i++) { let u = L * i / n; pts.push([u, vb + a * Math.cos(Math.PI * (u / Pb - k * sig)) * Wc.f(u / Pc)]); }
+        let Pc = Pc0 * rates[k % rates.length], vb = (k + 0.5) * lh, du = Math.min(Pc / 24, 0.4), n = Math.ceil(L / du), pts = [], sc = c.rate(k, CR) * Wc.per, pu = c.pushed(0.9, vb, Pc);
+        for (let i = 0; i <= n; i++) { let u = L * i / n; pts.push([u, vb + a * Math.cos(Math.PI * (u / Pb - k * sig) - TAU * eb) * Wc.f(u / Pc + sc + (pu ? pu.Q(u) : 0))]); }
         c.pen(cyc(k, [1, 2, 1, 3]), () => c.draw(rdp(pts, 0.04)));
       }
     },
@@ -5890,8 +5932,12 @@ const ComposedLayout = (() => {
       let hit = n => { n = ((n % 16) + 16) % 16; return hits.has(n) ? (acc.has(n) ? 1 : 0.62) : 0; };
       let sig = u => { let n = Math.floor(u / st), t = (u - n * st) / st, a = 0; for (let b = 0; b < 3; b++) { let hv = hit(n - b); if (hv) a = Math.max(a, hv * Math.exp(-(t + b) * 2)); } return Math.max(a, 0.16) * (0.72 + 0.28 * Math.abs(Math.sin(TAU * f1 * u))); };
       let dash = g * 1.5, gap = g * 1.05, dot = g * 1.55;
+      // in motion the three copies run at their own rates, so the canon phases (in step, then apart), and
+      // the ripple lifts the bars it passes
+      let RS = [[1, -1, 2], [1, 2, 3], [-1, 1, -2], [2, 1, -1]][Math.floor(c.H(25) * 4)], sh = [0, 1, 2].map(k => c.rate(k, RS) * 16 * st);
+      if (c.mo) f1 = Math.max(1, Math.round(16 * st * f1)) / (16 * st); // the texture fits the pattern a whole number of times, so the loop closes
       for (let i = 0, u = q / 2; u < L; u += q, i++) {
-        let k = i % 3, a = Math.min(Am, sig(u - k * st) * Am * [1, 0.88, 0.76][k]);
+        let k = i % 3, a = Math.min(Am, sig(u - k * st - sh[k]) * Am * [1, 0.88, 0.76][k] * (c.mo ? 1 + 0.75 * c.amt * c.ripple(u, mid) : 1));
         if (k === 0) { a = Math.max(g * 0.6, a); c.draw([[u, mid - a], [u, mid + a]]); }
         else if (k === 1) c.pen(2, () => { for (let v = g * 0.5; v < a - g * 0.3; v += dash + gap) { let e = Math.min(a, v + dash); c.draw([[u, mid - e], [u, mid - v]]); c.draw([[u, mid + v], [u, mid + e]]); } });
         else c.pen(3, () => { for (let v = dot / 2; v < a; v += dot) { c.circ(u, mid - v, p * 1.05); c.circ(u, mid + v, p * 1.05); } });
@@ -5906,6 +5952,24 @@ const ComposedLayout = (() => {
       let M = [8, 12, 10, 6][Math.floor(c.H(1) * 4)], sg = 1 + Math.floor(c.H(2) * 3), base = [];
       for (let i = 0; i < M; i++) base.push(c.H(300 + i) < 0.5);
       base[0] = true; base[Math.floor(M / 2)] = false;
+      if (c.mo) {
+        // in motion the word streams along (a word a turn), and the eye closes as the ripple passes: the
+        // traces' edges spread further apart (never closer), their transitions quickening to make room
+        let grow = Math.min(0.9 * c.amt, Math.max(0, (T - g * 2 - lam * 0.55) / Math.max(1, N - 1) / a - 1));
+        let lamA = Math.max(g * 1.5, Math.min(lam, T - a * (1 + grow) * (N - 1) - g * 2));
+        let shU = c.go(c.H(26) < 0.5 ? 1 : -1) * M * T, K0 = Math.floor(shU / T), fr = shU - K0 * T;
+        for (let j = 0; j < N; j++) {
+          let bit = k => base[(((k - K0 + j * sg) % M) + M) % M], lvl = k => (bit(k) ? vt : vl) + j * b, pts = [[-T, lvl(-1)]];
+          for (let k = 0; k <= n + 1; k++) {
+            if (bit(k) === bit(k - 1)) continue;
+            let uk = k * T + fr, aa = a * (1 + grow * c.ripple(uk, s / 2)), u0 = uk + (bit(k) ? 1 : -1) * aa * (j - (N - 1) / 2) - lamA / 2, y0 = lvl(k - 1), y1 = lvl(k);
+            for (let t = 0; t <= 20; t++) { let x = t / 20; pts.push([u0 + lamA * x, y0 + (y1 - y0) * (1 - Math.cos(Math.PI * x)) / 2]); }
+          }
+          pts.push([L + T * 2, lvl(n + 1)]);
+          c.pen(cyc(j, [1, 2, 3]), () => c.draw(pts));
+        }
+        return;
+      }
       for (let j = 0; j < N; j++) {
         let bit = k => base[(((k + j * sg) % M) + M) % M], lvl = k => (bit(k) ? vt : vl) + j * b, pts = [[0, lvl(0)]];
         for (let k = 1; k < n; k++) {
@@ -5926,28 +5990,37 @@ const ComposedLayout = (() => {
       let M = 12 + Math.floor(c.H(1) * 9), word = [], on = 16 + 8 * Math.floor(c.H(2) * 3), off = 4 + 4 * Math.floor(c.H(3) * 2), sg = 1 + Math.floor(c.H(4) * 2);
       for (let i = 0; i < M; i++) word.push(c.H(400 + i) < 0.5 ? 1 : 0);
       word[0] = 1; word[1] = 0;
-      let live = ck => ((ck % (on + off)) + on + off) % (on + off) < on, cnt = [];
+      // in motion the bursts slide along (the counters follow them), and the word clocks on through the
+      // register a step at a time, each lane a beat after the lane above
+      let bs = Math.floor(c.go(c.H(27) < 0.5 ? 1 : -1) * (on + off)), tick = k => Math.floor(c.go(2) * M + k * 0.4);
+      let live = ck => (((ck - bs) % (on + off)) + on + off) % (on + off) < on, cnt = [];
       for (let ck = 0, k = 0; ck <= nh / 2 + 2; ck++) { cnt.push(k); if (live(ck)) k++; }
       for (let k = 0; k < n; k++) {
         let y1 = top + k * lp, y0 = y1 + sw, kind = k === 0 ? 'clk' : k % 6 === 5 ? 'q' : 'd', di = k - 1 - Math.floor(k / 6), bits;
         if (kind === 'clk') bits = i => (live(Math.floor(i / 2)) ? 1 - (i % 2) : 0);
         else if (kind === 'q') bits = i => Math.floor(cnt[Math.floor(i / 2)] / (1 << (Math.floor(k / 6) % 3))) % 2;
-        else bits = i => word[(((cnt[Math.floor(i / 2)] - di * sg) % M) + M) % M];
+        else { let tk = c.mo ? tick(k) : 0; bits = i => word[(((cnt[Math.floor(i / 2)] - di * sg - tk) % M) + M) % M]; }
         let pts = [[0, bits(0) ? y1 : y0]];
         for (let i = 1; i < nh; i++) if (bits(i) !== bits(i - 1)) { let u = i * half; pts.push([u - sl / 2, bits(i - 1) ? y1 : y0], [u + sl / 2, bits(i) ? y1 : y0]); }
         pts.push([L, bits(nh - 1) ? y1 : y0]);
         c.pen(kind === 'clk' ? 2 : kind === 'q' ? 3 : 1, () => c.draw(pts));
       }
-      for (let b = 1; b * (on + off) * 2 * half < L; b++) { let u = (b * (on + off) * 2 - 0.5) * half; for (let v = top - g * 0.5; v < top + n * lp - g; v += g * 2.2) c.pen(2, () => c.draw([[u, v], [u, v + g * 1.1]])); }
+      for (let b = c.mo ? Math.floor(-bs / (on + off)) - 1 : 1; (b * (on + off) + bs) * 2 * half < L; b++) { let u = ((b * (on + off) + bs) * 2 - 0.5) * half; if (u < 0) continue; for (let v = top - g * 0.5; v < top + n * lp - g; v += g * 2.2) c.pen(2, () => c.draw([[u, v], [u, v + g * 1.1]])); }
     },
     // A waterfall of a harmonic tone: the comb a step along on each trace, so its ridges run up the stack
     // in diagonals; the partials swelling in turn R times down the stack; every fourth trace struck harder
     waterfall(c) {
       let { L, s, g } = c, n = Math.max(8, Math.floor(s * 0.6 / (g * 1.45))), dv = s * 0.6 / n, du = 0.6, N = Math.ceil(L / du), env = new Float32Array(N + 1).fill(1e9);
       let H = [8, 11, 14][Math.floor(c.H(1) * 3)], f0 = L / (H + 1), hp = [1, 0.5, 0.75], pw = Math.max(g * 1.6, f0 * 0.09), ds = f0 * (0.05 + 0.06 * c.H(2)) * (c.H(3) < 0.5 ? -1 : 1), R = 2 + Math.floor(c.H(4) * 2);
+      // in motion the comb slides along (three partials a turn), its slant rocks, the swelling runs through the
+      // stack at its own rate, and the ripple raises the partials it passes (the hidden lines keep it clean)
+      let cs = c.go(c.H(28) < 0.5 ? 1 : -1) * 3 * f0, shr = 1 + 0.6 * c.amt * Math.sin(TAU * c.go(1)), swl = c.go(c.H(29) < 0.5 ? 2 : -1);
       for (let k = 0; k < n; k++) {
         let base = s * 0.975 - k * dv, run = [], t = k / n, pk = [], acc = k % 4 === 0 ? 1.25 : 1, vo = k % 4 === 0 ? 2 : k % 4 === 2 ? 3 : 1;
-        for (let m = 0; m <= H; m++) { let pu = (((m * f0 + k * ds) % L) + L) % L; pk.push([pu, s * 0.26 * hp[m % 3] * acc * (0.3 + 0.7 * Math.pow(0.5 + 0.5 * Math.cos(TAU * (t * R + (m % 3) * 0.33)), 2)), pw]); }
+        for (let m = 0; m <= H; m++) {
+          let pu = c.mo ? (((m * f0 + k * ds * shr + cs) % L) + L) % L : (((m * f0 + k * ds) % L) + L) % L;
+          pk.push([pu, s * 0.26 * hp[m % 3] * acc * (0.3 + 0.7 * Math.pow(0.5 + 0.5 * Math.cos(TAU * (t * R + (m % 3) * 0.33 - swl)), 2)) * (c.mo ? c.swell(0.5, pu, base) : 1), pw]);
+        }
         let prev = null, front = env.slice();
         for (let i = 0; i <= N; i++) {
           let u = i * du, v = base - s * 0.015 * c.noise(u / (s * 0.05), k);
@@ -5969,12 +6042,16 @@ const ComposedLayout = (() => {
       let { L, s, g, p } = c, cs = Math.max(p * 2.2, s / 34), R = Math.floor((s - g) / cs), rr = R > 22 ? Math.floor(R / 2) : R, nV = Math.floor(R / rr), cc = rr + 2 * Math.floor(c.H(1) * 3);
       let C = Math.floor((L - cs) / cs), u0 = (L - C * cs) / 2, v0 = (s - nV * rr * cs) / 2, NR = nV * rr;
       let M = 7 + Math.floor(c.H(2) * 9), stp = 1 + Math.floor(c.H(3) * 3), lam = cc * (2 + Math.floor(c.H(4) * 3)), grid = new Uint8Array(C * NR);
+      // in motion the data slides a module at a time through the fixed finders and clocks, pairs of rows at
+      // their own rates (some against the others); the fill's swell runs along, and the ripple thickens it
+      let DR = [[1, -1], [1, 2, -1], [1, 0, -1, 2], [2, 1]][Math.floor(c.H(31) * 4)], tl = c.go(c.H(32) < 0.5 ? 1 : -1), dsh = [];
+      for (let jj = 0; jj < NR; jj++) dsh.push(Math.floor(c.rate(Math.floor(jj / 2), DR) * M));
       for (let i = 0; i < C; i++) for (let jj = 0; jj < NR; jj++) {
         let ri = i % cc, rj = jj % rr, on;
         if (ri === 0 || rj === rr - 1) on = 2;
         else if (rj === 0) on = ri % 2 === 0 ? 2 : 0;
         else if (ri === cc - 1) on = rj % 2 ? 2 : 0;
-        else on = c.H(7000 + ((((i + jj * stp) % M) + M) % M) * 31 + (jj % 3)) < 0.5 + 0.28 * Math.sin(TAU * i / lam) ? (Math.floor(i / cc) % 3 === 2 ? 3 : 1) : 0;
+        else on = c.H(7000 + ((((i - dsh[jj] + jj * stp) % M) + M) % M) * 31 + (jj % 3)) < 0.5 + 0.28 * Math.sin(TAU * i / lam - TAU * tl) + (c.mo ? 0.3 * c.amt * (c.ripple(u0 + (i + 0.5) * cs, v0 + (jj + 0.5) * cs) - 0.3) : 0) ? (Math.floor(i / cc) % 3 === 2 ? 3 : 1) : 0;
         grid[i * NR + jj] = on;
       }
       // one bitmap per ink (with one ink, the same modules as one)
@@ -5988,9 +6065,14 @@ const ComposedLayout = (() => {
       let { L, s, g, p } = c, bw = g * 1.6, cg = g * 1.15, segH = g * 1.15, segG = g * 1.05, sp = segH + segG, rows = Math.max(3, Math.floor((s / 2 - g * 0.6) / sp));
       let n = Math.floor((L + cg) / (bw + cg)), u0 = (L - n * (bw + cg) + cg) / 2;
       let K = 8 + Math.floor(c.H(1) * 9), lam = K * (3 + Math.floor(c.H(2) * 3)), D = Math.floor(K / 2) + Math.floor(c.H(3) * 3);
-      let lev = ch => { let t = (((ch % K) + K) % K) / K; return 0.12 + 0.88 * Math.exp(-t * 3) * (0.55 + 0.45 * Math.cos(TAU * ch / lam)); };
+      // in motion the hits run along the bridge, the two halves their own ways and rates, the strength's
+      // swell at a third; held peaks fall in time as they fell along; the ripple drives the meters it passes
+      let LR = [[1, -1], [1, 2], [-1, 2], [2, -1]][Math.floor(c.H(33) * 4)], sw = 0;
+      let lev = ch => { let t = (((ch % K) + K) % K) / K; return 0.12 + 0.88 * Math.exp(-t * 3) * (0.55 + 0.45 * Math.cos(TAU * ch / lam - TAU * sw)); };
       for (let i = 0; i < n; i++) for (let side = 0; side < 2; side++) {
-        let ch = i - side * D, lit = Math.max(1, Math.round(lev(ch) * rows)), held = 0;
+        sw = c.go(side ? 1 : -1);
+        let bo = c.mo ? 1 + 0.45 * c.amt * c.ripple(u0 + i * (bw + cg), s / 2 + (side ? 1 : -1) * s / 4) : 1;
+        let ch = i - side * D - c.rate(side, LR) * lam, lit = Math.max(1, Math.round(lev(ch) * bo * rows)), held = 0;
         for (let m = 1; m <= 5; m++) held = Math.max(held, Math.round(lev(ch - m) * rows) - m);
         let peak = held > lit ? Math.min(rows - 1, held) : -1, u = u0 + i * (bw + cg), dir = side ? 1 : -1;
         for (let r = 0; r < rows; r++) {
@@ -6008,6 +6090,34 @@ const ComposedLayout = (() => {
       let top = g * 2.4, bot = s - g * 0.8, f0 = Math.max(g * 1.7, (bot - top) / 15), st = f0 * 0.085, fb = b => f0 + riff[((b % 8) + 8) % 8] * st, glide = Math.min(beat * 0.2, g * 3), du = 0.5;
       let fAt = u => { let b = Math.floor(u / beat), t = u - b * beat; if (t < glide && b > 0) { let x = t / glide; return fb(b - 1) + (fb(b) - fb(b - 1)) * x * x * (3 - 2 * x); } return fb(b); };
       let K = Math.floor((bot - top) / f0), va = f0 * 0.16, vibP = Math.max(g * 3, beat / 4), fw = Math.max(1.5, K / 5), fc = u => 1 + (K - 1) * tri01(u / (beat * 8));
+      if (c.mo) {
+        // in motion the song plays: the notes stream along (eight beats a turn), the formant sweeps up and
+        // down at its own rate against them, and the ripple brings up the partials it passes
+        let sh = c.go(c.H(34) < 0.5 ? 1 : -1) * 8 * beat, fs = c.go(c.H(35) < 0.5 ? 1 : -2), mod = (x, m) => ((x % m) + m) % m;
+        // the samples, dashes and dots fitted to eight beats, so the picture comes round exactly
+        let B8 = 8 * beat, dq = B8 / Math.round(B8 / du), Pdash = B8 / Math.round(B8 / (g * 3.2)), Pdot = B8 / Math.round(B8 / (g * 1.6));
+        let fAtX = x => { let b = Math.floor(x / beat), t = x - b * beat; if (t < glide) { let y = t / glide; return fb(b - 1) + (fb(b) - fb(b - 1)) * y * y * (3 - 2 * y); } return fb(b); };
+        for (let k = 1; k <= K; k++) {
+          let vk = k === 1 ? 2 : k % 3 === 0 ? 3 : 1, seg = [], flush = () => { if (seg.length > 1) c.pen(vk, () => c.draw(seg)); seg = []; };
+          for (let iu = 0, u = 0; u <= L; iu++, u = iu * dq) {
+            let x = u - sh, b = Math.floor(x / beat), t = (x - b * beat) / beat, v = bot - k * fAtX(x), bm = mod(b, 4);
+            if (v < top) { flush(); continue; }
+            let amp = (bm === 0 ? 1 : bm % 2 ? 0.75 : 0.88) * Math.exp(-t * (0.7 + k * 0.08)) * (0.12 + 0.88 * Math.exp(-(((k - (1 + (K - 1) * tri01(x / (beat * 8) - fs))) / fw) ** 2))) * (1 + 0.6 * c.amt * c.ripple(u, v));
+            if (amp > 0.42) seg.push([u, v]);
+            else if (amp > 0.18) { if (mod(x, Pdash) < Pdash * 0.625) seg.push([u, v]); else flush(); }
+            else { flush(); if (mod(x, amp > 0.07 ? Pdot : Pdash) < dq) c.pen(vk, () => c.circ(u, v, p * 1.05)); }
+          }
+          flush();
+        }
+        for (let b = Math.floor(-sh / beat) - 1; b * beat + sh < L; b++) {
+          if (mod(b, 2)) continue;
+          let u = b * beat + glide + g + sh, f = fb(b), kk = mod(b, 4) === 0 ? K : Math.ceil(K / 2);
+          if (u >= 0 && u <= L) for (let k = 0; k < kk; k++) { let v = bot - (k + 0.5) * f; if (v > top) c.pen(2, () => c.circ(u, v, p * 1.05)); }
+        }
+        c.draw([[0, g * 0.3], [L, g * 0.3]]);
+        for (let b = Math.floor(-sh / beat); b * beat + sh <= L; b++) { let u = b * beat + sh; if (u >= 0) c.draw([[u, g * 0.3], [u, g * 0.3 + (mod(b, 4) === 0 ? g * 1.6 : g * 0.9)]]); }
+        return;
+      }
       for (let k = 1; k <= K; k++) {
         let vk = k === 1 ? 2 : k % 3 === 0 ? 3 : 1, seg = [], flush = () => { if (seg.length > 1) c.pen(vk, () => c.draw(seg)); seg = []; };
         for (let u = 0; u <= L; u += du) {
@@ -6031,12 +6141,15 @@ const ComposedLayout = (() => {
       let { L, s, g, p } = c, dh = Math.max(2.4 * g, s / 26), dw = dh * 0.5, adv = dw + g * 1.15, lh = dh + g * 1.5, rows = Math.max(2, Math.floor((s - g) / lh)), v0 = (s - rows * lh + g * 1.5) / 2;
       const RAMP = [-1, 1, 7, 4, 12, 3, 14, 2, 10, 0, 6, 8, -2];
       let nCol = Math.max(4, Math.floor((L - g * 1.5 - 5.4 * adv) / adv)), pat = Math.floor(c.H(1) * 5), P = 10 + Math.floor(c.H(2) * 14), stp = [1, 2, 3, -1, -2][Math.floor(c.H(3) * 5)], jc = (rows - 1) / 2, asp = adv / lh;
+      // in motion the picture plays: its waves, diamonds' two diagonals, beats, chevrons and rings each run
+      // at their own rates (the digits change as it passes through them), and the ripple brightens it
+      let t1 = c.go(c.H(36) < 0.5 ? 1 : -1), t2 = c.go(c.H(37) < 0.5 ? 2 : -1);
       let F = (i, j) => {
-        if (pat === 0) return 0.5 + 0.5 * Math.sin(TAU * (i + j * stp) / P);
-        if (pat === 1) return 1 - Math.abs(frac((i + j * stp) / P) - 0.5) - Math.abs(frac((i - j * stp) / P) - 0.5);
-        if (pat === 2) return 0.5 + 0.25 * (Math.sin(TAU * i / P) + Math.sin(TAU * (i * 0.83 + j * stp) / P));
-        if (pat === 3) return frac((i + Math.abs(j - jc) * stp * 2) / P);
-        let x = (frac(i / (P * 2)) - 0.5) * P * 2 * asp, y = j - jc; return 0.5 + 0.5 * Math.cos(TAU * Math.hypot(x, y) / 3 - TAU * Math.floor(i / (P * 2)) * 0.25);
+        if (pat === 0) return 0.5 + 0.5 * Math.sin(TAU * (i + j * stp) / P - TAU * t1);
+        if (pat === 1) return 1 - Math.abs(frac((i + j * stp) / P - t1) - 0.5) - Math.abs(frac((i - j * stp) / P - t2) - 0.5);
+        if (pat === 2) return 0.5 + 0.25 * (Math.sin(TAU * i / P - TAU * t1) + Math.sin(TAU * (i * 0.83 + j * stp) / P - TAU * t2));
+        if (pat === 3) return frac((i + Math.abs(j - jc) * stp * 2) / P - t1);
+        let x = (frac(i / (P * 2)) - 0.5) * P * 2 * asp, y = j - jc; return 0.5 + 0.5 * Math.cos(TAU * Math.hypot(x, y) / 3 - TAU * Math.floor(i / (P * 2)) * 0.25 - TAU * t1);
       };
       for (let j = 0; j < rows; j++) {
         let v = v0 + j * lh, u = g * 1.5, addr = j * nCol;
@@ -6044,7 +6157,7 @@ const ComposedLayout = (() => {
         c.circ(u + adv * 0.15, v + dh * 0.3, p * 1.2); c.circ(u + adv * 0.15, v + dh * 0.72, p * 1.2); });
         u += adv * 1.4; // the address and its colon advanced u inside the ink group
         for (let i = 0; i < nCol; i++, u += adv) {
-          let ri = Math.max(0, Math.min(RAMP.length - 1, Math.floor(F(i, j) * RAMP.length))), r = RAMP[ri];
+          let ri = Math.max(0, Math.min(RAMP.length - 1, Math.floor((F(i, j) + (c.mo ? 0.35 * c.amt * (c.ripple(u + dw / 2, v + dh / 2) - 0.35) : 0)) * RAMP.length))), r = RAMP[ri];
           c.pen(ri >= 10 ? 2 : 1, () => { if (r === -1) c.circ(u + dw / 2, v + dh / 2, p * 1.1); else if (r === -2) c.solid(u, v, u + dw, v + dh); else segDigit(c, r, u, v, dw, dh); });
         }
       }
@@ -6060,12 +6173,16 @@ const ComposedLayout = (() => {
       let M = 5 + Math.floor(c.H(1) * 6), Ci = 3 + Math.floor(c.H(2) * 3), sg = 1 + Math.floor(c.H(3) * 2), lam = 4 + Math.floor(c.H(4) * 4);
       let C = Math.floor((Math.floor((L - 2 * x) / x) - 69) / 17), u0 = (L - (69 + 17 * C) * x) / 2;
       let barsV = (vo, uu, vv, ws) => { let out; c.pen(vo, () => { out = bars(uu, vv, ws); }); return out; };
+      // in motion the codewords step along each row a word at a time, the rows at their own rates (a canon of
+      // them), while the heavy and light blocks march through at another
+      let PR = [[1, -1], [1, 2, 1, -1], [2, 1], [-1, 1, 2]][Math.floor(c.H(38) * 4)], hs = Math.floor(c.go(c.H(39) < 0.5 ? 1 : -1) * 2 * lam);
       for (let r = 0; r < rows; r++) {
-        let v = v0 + r * rowH, u = barsV(2, u0, v, START);
+        let v = v0 + r * rowH, u = barsV(2, u0, v, START), dsr = Math.floor(c.rate(r, PR) * M);
         u = barsV(2, u, v, word(90000 + r * 3, r % 2 === 0));
         for (let col = 0, dc = 0; col < C; col++) {
           if (col % (Ci + 1) === Ci) { u = barsV(2, u, v, word(90000 + r * 3 + 1, true)); continue; }
-          u = barsV(Math.floor(dc / lam) % 2 ? 3 : 1, u, v, word((((dc + r * sg) % M) + M) % M + (Math.floor(dc / lam) % 2) * 100, Math.floor(dc / lam) % 2 === 0)); dc++;
+          let hb = ((Math.floor((dc + hs) / lam) % 2) + 2) % 2;
+          u = barsV(hb ? 3 : 1, u, v, word((((dc + r * sg - dsr) % M) + M) % M + hb * 100, hb === 0)); dc++;
         }
         u = barsV(2, u, v, word(90000 + r * 3 + 2, r % 2 === 1));
         barsV(2, u, v, STOP);
@@ -6087,8 +6204,13 @@ const ComposedLayout = (() => {
         for (let j = 0; j < R; j++) nxt[j] = (rule >> (cur[(j + R - 1) % R] * 4 + cur[j] * 2 + cur[(j + 1) % R])) & 1;
         cur.set(nxt);
       }
-      if (c.voices) for (let vo of [1, 2, 3]) c.pen(vo, () => c.bitmap((i, j) => grid[i * R + j] && cyc(Math.floor(i / K), [1, 2, 1, 3]) === vo, R, C, u0, v0, cs, cs));
-      else c.bitmap((i, j) => grid[i * R + j], R, C, u0, v0, cs, cs);
+      // in motion each run between feeds turns on the ring like a reel, the runs at their own rates and ways,
+      // so the growth slips apart and comes back together
+      let AR = [[1, -1], [1, -1, 2, 0], [2, 1, -1], [1, 2, 3, 2]][Math.floor(c.H(40) * 4)], rots = [];
+      for (let k = 0; k * K < C; k++) rots.push(Math.floor(c.rate(k, AR) * R));
+      let at = (i, j) => grid[i * R + (c.mo ? (((j + rots[Math.floor(i / K)]) % R) + R) % R : j)];
+      if (c.voices) for (let vo of [1, 2, 3]) c.pen(vo, () => c.bitmap((i, j) => at(i, j) && cyc(Math.floor(i / K), [1, 2, 1, 3]) === vo, R, C, u0, v0, cs, cs));
+      else c.bitmap((i, j) => at(i, j), R, C, u0, v0, cs, cs);
     },
 
     // ---- circuit --------------------------------------------------------------------------------
@@ -6108,12 +6230,16 @@ const ComposedLayout = (() => {
       let off = (s - vs[vs.length - 1] - jog) / 2, ramp = jog * 1.4;
       let prof = u => { let x = ((u % beat) + beat) % beat, a = beat * 0.25, b = beat * 0.75; return x < a ? 0 : x < a + ramp ? (x - a) / ramp : x < b ? 1 : x < b + ramp ? 1 - (x - b) / ramp : 0; };
       let vstep = Math.max(vd * 2.6, beat / Math.max(4, vs.length)), placed = [];
+      // in motion each group's jogs run along at its own rate (some groups against the others), the vias
+      // riding with them, and the ripple flattens the jogs it passes (one envelope a group, so its lanes keep apart)
+      let TR = [[1, -1], [1, 2, -1], [2, 1, 0, -1], [1, 0, 2]][Math.floor(c.H(41) * 4)], gv = {};
+      vs.forEach((v0, li) => { gv[grpOf[li]] = gv[grpOf[li]] === undefined ? off + v0 + jog * 2 : gv[grpOf[li]]; });
       vs.forEach((v0, li) => {
-        let sh = grpOf[li] * sig * beat, pts = [];
-        for (let u = 0; u <= L; u += 0.5) pts.push([u, off + v0 + jog * prof(u - sh)]);
+        let ga = c.rate(grpOf[li], TR) * beat, sh = grpOf[li] * sig * beat + ga, pts = [], gvv = gv[grpOf[li]];
+        for (let u = 0; u <= L; u += 0.5) pts.push([u, off + v0 + jog * prof(u - sh) * (c.mo ? c.lull(0.7, u, gvv) : 1)]);
         let pieces = [rdp(pts, 0.03)];
-        for (let k = -1; k * beat < L + beat; k++) {
-          let bu = k * beat + ((li * vstep) % beat) + beat * 0.03, a = bu - vd * 1.5, b = bu + vd * 1.5, pi = pieces.findIndex(pp => pp[0][0] < a - vd && pp[pp.length - 1][0] > b + vd);
+        for (let k = c.mo ? Math.floor(-ga / beat) - 2 : -1; k * beat + ga < L + beat; k++) {
+          let bu = k * beat + ((li * vstep) % beat) + beat * 0.03 + ga, a = bu - vd * 1.5, b = bu + vd * 1.5, pi = pieces.findIndex(pp => pp[0][0] < a - vd && pp[pp.length - 1][0] > b + vd);
           if (pi < 0) continue;
           let ya = yAtU(pieces[pi], a - vd / 2), yb = yAtU(pieces[pi], b + vd / 2), [A, B] = cutU(pieces[pi], a - vd, b + vd);
           if (A.length < 2 || B.length < 2) continue;
@@ -6129,7 +6255,22 @@ const ComposedLayout = (() => {
     serpentine(c) {
       let { L, s, g, h } = c, q = g * 1.2, K = Math.max(2, Math.round(s / Math.max(6.5 * g, s / 6))), Hc = s / K, amp = Hc - q - g * 2;
       let beat = fit(L, s * (0.85 + 0.4 * h)), sig = [0.125, 0.2, 1 / 6][Math.floor(c.H(1) * 3)], lens = [[3, 5, 7, 5], [4, 6], [2, 4, 6, 8, 6, 4]][Math.floor(c.H(2) * 3)], ws = [q + g * 1.25, q + g * 2];
-      for (let k = 0; k < K; k++) {
+      // in motion each corridor's meanders run along like a belt, the corridors their own ways and rates, and
+      // the ripple presses down the meanders it passes
+      let SR = [[1, -1], [1, 2, -1, -2], [-1, 1, 2], [2, 1]][Math.floor(c.H(42) * 4)];
+      if (c.mo) for (let k = 0; k < K; k++) {
+        let base = k * Hc + Hc - g - q / 2, sh = c.rate(k, SR) * lens.length * beat, b0 = Math.floor(-sh / beat) - 3, pts = [[b0 * beat + sh - beat, base]];
+        for (let b = b0; b * beat + sh < L + beat * 2; b++) {
+          let w = ws[((b % 2) + 2) % 2], nn = Math.min(lens[((b % lens.length) + lens.length) % lens.length], Math.max(1, Math.floor(beat * 0.8 / (2 * w))));
+          let start = b * beat + ((k * sig) % 1) * beat + g * 2 + sh, am = amp * c.lull(0.6, start + nn * w, base - amp / 2), top = base - am, ch = Math.min(w * 0.4, am * 0.25);
+          if (start - ch < pts[pts.length - 1][0] + g) continue;
+          pts.push([start - ch, base], [start, base - ch]);
+          for (let t = 0; t < nn; t++) { let x = start + t * 2 * w; pts.push([x, top + ch], [x + ch, top], [x + w - ch, top], [x + w, top + ch], [x + w, base - ch], [x + w + ch, base]); if (t < nn - 1) pts.push([x + 2 * w - ch, base], [x + 2 * w, base - ch]); }
+        }
+        pts.push([pts[pts.length - 1][0] + beat, base]);
+        c.pen(cyc(k, [2, 1, 3, 1]), () => { c.draw(offsetPolyline(pts, -q / 2)); c.draw(offsetPolyline(pts, q / 2)); });
+      }
+      if (!c.mo) for (let k = 0; k < K; k++) {
         let base = k * Hc + Hc - g - q / 2, top = base - amp, pts = [[0, base]];
         for (let b = -1; b * beat < L + beat; b++) {
           let w = ws[((b % 2) + 2) % 2], nn = Math.min(lens[((b % lens.length) + lens.length) % lens.length], Math.max(1, Math.floor(beat * 0.8 / (2 * w)))), ch = Math.min(w * 0.4, amp * 0.25);
@@ -6159,17 +6300,36 @@ const ComposedLayout = (() => {
         for (let [a, b] of cuts) { if (a > x) c.draw([[x, yb + j * rh], [a, yb + j * rh]]); x = Math.max(x, b); }
         if (uz > x) c.draw([[x, yb + j * rh], [uz, yb + j * rh]]);
       }
-      for (let [ua, ub, ja, jb] of macros) {
+      // in motion the macros' word lines run up or down (a refresh, each macro its own way), and each row of
+      // cells streams along like a belt under them, the rows their own ways and rates
+      macros.forEach(([ua, ub, ja, jb], mi) => {
         let ya = yb + ja * rh, yz = yb + jb * rh, bx = g * 1.35, by = g * 1.5;
         c.pen(3, () => {
           c.draw([[ua, ya], [ua, yz]]); c.draw([[ub, ya], [ub, yz]]);
           for (let x = ua + bx; x < ub - bx * 0.6; x += bx) c.draw([[x, ya], [x, yz]]);
-          for (let y = ya + by; y < yz - by * 0.6; y += by) c.draw([[ua, y], [ub, y]]);
+          if (c.mo) { for (let y = ya + by * frac(c.go(mi % 2 ? 3 : -3)); y < yz - by * 0.6; y += by) if (y > ya + by * 0.6) c.draw([[ua, y], [ub, y]]); }
+          else for (let y = ya + by; y < yz - by * 0.6; y += by) c.draw([[ua, y], [ub, y]]);
         });
-      }
+      });
+      let DRW = [[1, -1], [1, 2, -1], [-1, 1, 0, 2]][Math.floor(c.H(43) * 3)], Lc = 42 * site;
       for (let j = 0; j < nR; j++) {
         let ya = yb + j * rh + rh * 0.24, yy = yb + (j + 1) * rh - rh * 0.24, spans = [[ux, uz]];
         for (let [a, b, ja, jb] of macros) if (j >= ja && j < jb) spans = spans.flatMap(([m, n]) => [[m, Math.min(n, a - site)], [Math.max(m, b + site), n]]).filter(([m, n]) => n - m > site * 2);
+        if (c.mo) {
+          let ofs = (((c.rate(j, DRW) * Lc) % Lc) + Lc) % Lc;
+          for (let [m, n] of spans) {
+            let x = m + site * 0.5 + ofs - Lc * 2, k = j * sg - 24, lo = m + site * 0.5, hi = n - site * 0.5;
+            for (let t = 0; t < 900 && x < hi; t++, k++) {
+              let kk = ((k % 12) + 12) % 12, ns = LIB[kk], cw = ns * site, cx = x + cw / 2;
+              if (x + cw > lo) {
+                if ((kk + j) % 7 === 0) { if (cx > lo + site * 0.7 && cx < hi - site * 0.7) c.pen(2, () => c.circ(cx, (ya + yy) / 2, p * 1.6)); }
+                else for (let q = 1; q < ns; q++) { let xq = x + q * site; if (xq > lo && xq < hi) c.draw([[xq, ya], [xq, yy]]); }
+              }
+              x += cw;
+            }
+          }
+          continue;
+        }
         for (let [m, n] of spans) {
           let x = m + site * 0.5, k = j * sg;
           for (let t = 0; t < 500; t++, k++) {
@@ -6207,6 +6367,36 @@ const ComposedLayout = (() => {
       };
       c.draw([[0, gr], [L, gr]]);
       let SER = ['RRLRCR', 'RCRC', 'LRRL', 'RRRC', 'RLC'][Math.floor(c.H(1) * 5)].split(''), SH = ['CRCDC', 'CCR', 'DCDC', 'RCCR', 'CD'][Math.floor(c.H(2) * 5)].split('');
+      if (c.mo) {
+        // in motion the ladder slides to and fro along its rails, the two halves against each other (a side's
+        // tiers together, since their shunts land on the inner tier's nodes), its parts gliding through the
+        // units' widths; the ripple flattens the parts it passes
+        let wl = wpat.length, nx = xs.length - 1, az0 = az, Uw = k => U0 * wpat[((k % wl) + wl) % wl] * sc;
+        let pos = k => { if (k >= 0 && k <= nx) return xs[k]; let x = k > nx ? xs[nx] : 0; if (k > nx) for (let i = nx; i < k; i++) x += Uw(i); else for (let i = -1; i >= k; i--) x -= Uw(i); return x; };
+        let at = x => { let k = Math.floor(x), f = x - k, a = pos(k); return a + (pos(k + 1) - a) * f; };
+        let mod = (k, m) => ((k % m) + m) % m;
+        for (let side of [-1, 1]) {
+          let ph = side * (0.5 + 0.9 * c.amt) * Math.sin(TAU * c.go(1));
+          for (let t = 1; t <= tiers; t++) {
+            let y = gr + side * t * hT, yIn = gr + side * (t - 1) * hT;
+            for (let k = -3; k <= nx + 3; k++) {
+              let a = at(k + ph), b = at(k + 1 + ph), sk = SER[mod(k + t * 2, SER.length)];
+              if (b < 0 || a > L) continue;
+              az = az0 * c.lull(0.6, (a + b) / 2, y);
+              c.pen(sk === 'L' ? 3 : sk === 'D' ? 2 : 1, () => ser(sk, a, b, y));
+            }
+            for (let k = -3; k <= nx + 3; k++) {
+              let u = at(k + ph), sk = SH[mod(k + t, SH.length)];
+              if (u < g || u > L - g) continue;
+              az = az0 * c.lull(0.6, u, (y + yIn) / 2);
+              c.pen(sk === 'C' ? 3 : sk === 'D' ? 2 : 1, () => shunt(sk, u, y, yIn, Math.min(u - at(k - 1 + ph), at(k + 1 + ph) - u)));
+              c.pen(2, () => c.circ(u, y, p * 2.6));
+            }
+          }
+        }
+        az = az0;
+        return;
+      }
       for (let side of [-1, 1]) for (let t = 1; t <= tiers; t++) {
         let y = gr + side * t * hT, yIn = gr + side * (t - 1) * hT;
         for (let k = 0; k + 1 < xs.length; k++) { let sk = SER[(k + t * 2) % SER.length]; c.pen(sk === 'L' ? 3 : sk === 'D' ? 2 : 1, () => ser(sk, xs[k], xs[k + 1], y)); }
@@ -6220,15 +6410,19 @@ const ComposedLayout = (() => {
     bga(c) {
       let { L, s, g, p } = c, P = Math.max(g * 2.8, s / 13), n = Math.max(4, Math.floor((s - g * 1.2) / P)), m = Math.floor((L - g) / P), u0 = (L - m * P) / 2, v0 = (s - n * P) / 2, bd = P * 0.5, vd = P * 0.28;
       let T = n % 2 ? n + 1 : n, sg = [0, 0.5, 1][Math.floor(c.H(1) * 3)], used = new Set(), cy = (n - 1) / 2, cx = (T - 1) / 2, arm = n * 0.12 + 0.5;
+      // in motion the tiles step along the grid a ball at a time, pairs of rows their own ways and rates, so
+      // the X's shred apart and close up again; the ripple shrinks the balls it passes
+      let BR = [[1, -1], [1, 0, -1, 0], [1, 2], [-1, 1, 0]][Math.floor(c.H(44) * 4)], bsh = [];
+      for (let j = 0; j < n; j++) bsh.push(c.mo ? Math.floor(c.rate(Math.floor(j / 2), BR) * T) : 0);
       for (let j = 0; j < n; j++) for (let i = 0; i < m; i++) {
-        let x = i + j * sg, lx = x - Math.floor(x / T) * T;
+        let x = i + j * sg - bsh[j], lx = x - Math.floor(x / T) * T;
         if ((Math.abs(lx - cx) < 1 && Math.abs(j - cy) < arm) || (Math.abs(j - cy) < 1 && Math.abs(lx - cx) < arm)) continue;
-        let u = u0 + (i + 0.5) * P, v = v0 + (j + 0.5) * P, sx = lx < cx ? -1 : 1, sy = j < cy ? -1 : 1;
-        c.pen(lx < 1 || lx >= T - 1 || j === 0 || j === n - 1 ? 3 : 1, () => c.circ(u, v, bd));
+        let u = u0 + (i + 0.5) * P, v = v0 + (j + 0.5) * P, sx = lx < cx ? -1 : 1, sy = j < cy ? -1 : 1, bdT = c.mo ? bd * c.lull(0.45, u, v) : bd;
+        c.pen(lx < 1 || lx >= T - 1 || j === 0 || j === n - 1 ? 3 : 1, () => c.circ(u, v, bdT));
         let ci = i + (sx > 0 ? 1 : 0), cj = j + (sy > 0 ? 1 : 0), key = ci * 4096 + cj;
         if (ci <= 0 || ci >= m || cj <= 0 || cj >= n || used.has(key)) continue;
         used.add(key);
-        let vu = u + sx * P / 2, vv = v + sy * P / 2, e = bd / 2 / Math.SQRT2, f = vd / 2 / Math.SQRT2;
+        let vu = u + sx * P / 2, vv = v + sy * P / 2, e = bdT / 2 / Math.SQRT2, f = vd / 2 / Math.SQRT2;
         c.pen(2, () => { c.draw([[u + sx * e, v + sy * e], [vu - sx * f, vv - sy * f]]); c.circ(vu, vv, vd); });
       }
     },
@@ -6242,13 +6436,35 @@ const ComposedLayout = (() => {
       // two rows of cones, the lower half a beat on; each row zigzags a little up and down; steep and shallow by turns
       let cen = []; for (let i = -1; i <= nC; i++) for (let r = 0; r < 2; r++) cen.push([(i + 0.5 + r * 0.5) * P, s * (r ? 0.72 : 0.28) + s * 0.06 * (tri01((i + r) / zper) * 2 - 1), (i + r) % 2 ? 0.6 : 1, (((i % 3) + 3) % 3 === 0 ? 0.06 : 0) * s]);
       let f = (u, v) => { let i = Math.floor(u / P) + 1, z = -Infinity; for (let m = Math.max(0, (i - 1) * 2); m <= Math.min(cen.length - 1, (i + 1) * 2 + 1); m++) { let [cu, cv, sl, lift] = cen[m], dd = lift - sl * Math.hypot(u - cu, (v - cv) / ay); z = z === -Infinity ? dd : smax(z, dd, kk); } return z; };
+      if (c.mo) {
+        // in motion the two rows of cones drift past each other, their own ways and rates, so their rings
+        // meet, merge and part; a cone takes its zigzag, steepness and lift from where it stands (they swell
+        // and settle as it travels), and the ripple lifts the cones it passes. The contours keep fixed heights
+        let IR = [[1, -1], [1, -2], [2, -1], [1, 1]][Math.floor(c.H(45) * 4)], rows2 = [0, 1].map(r => {
+          let sh = c.rate(r, IR), out = [], i0 = Math.floor(-3 - sh);
+          for (let i = i0; i <= Math.ceil(nC + 2 - sh); i++) {
+            let xi = i + sh, cu = (xi + 0.5 + r * 0.5) * P, cv = s * (r ? 0.72 : 0.28) + s * 0.06 * (tri01((xi + r) / zper) * 2 - 1);
+            out.push([cu, cv, 0.8 + 0.2 * Math.cos(Math.PI * (xi + r)), 0.06 * s * Math.max(0, Math.cos(TAU * xi / 3)) + 0.12 * s * c.amt * c.ripple(cu, cv)]);
+          }
+          return { sh, out, i0 };
+        });
+        f = (u, v) => {
+          let z = -Infinity;
+          for (let r = 0; r < 2; r++) {
+            let { sh, out, i0 } = rows2[r], ic = Math.floor(u / P - 0.5 - r * 0.5 - sh) - i0;
+            for (let m = Math.max(0, ic - 1); m <= Math.min(out.length - 1, ic + 2); m++) { let [cu, cv, sl, lift] = out[m], dd = lift - sl * Math.hypot(u - cu, (v - cv) / ay); z = z === -Infinity ? dd : smax(z, dd, kk); }
+          }
+          return z;
+        };
+      }
       let nu = Math.ceil(L / (g * 0.5)), nv = Math.ceil(s / (g * 0.5)), du = L / nu, dv = s / nv, K = nv + 1, F = new Float32Array((nu + 1) * K), lo = Infinity, hi = -Infinity, gm = 0;
       for (let i = 0; i <= nu; i++) for (let j = 0; j <= nv; j++) { let z = f(i * du, j * dv); F[i * K + j] = z; lo = Math.min(lo, z); hi = Math.max(hi, z); }
       for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) gm = Math.max(gm, Math.hypot((F[(i + 1) * K + j] - F[i * K + j]) / du, (F[i * K + j + 1] - F[i * K + j]) / dv));
+      if (c.mo) gm = 1 / ay; // the steepest a cone (or a blend of cones) can be: fixed, so the heights stay put
       let step = g * 1.08 * gm, lev, pt = e => { let n2 = e >> 1, i = Math.floor(n2 / K), j = n2 % K, z0 = F[i * K + j]; if (e & 1) { let z1 = F[i * K + j + 1]; return [i * du, (j + (lev - z0) / (z1 - z0)) * dv]; } let z1 = F[(i + 1) * K + j]; return [(i + (lev - z0) / (z1 - z0)) * du, j * dv]; };
       const CASES = { 1: [['L', 'B']], 2: [['B', 'R']], 3: [['L', 'R']], 4: [['T', 'R']], 6: [['T', 'B']], 7: [['L', 'T']], 8: [['L', 'T']], 9: [['T', 'B']], 11: [['T', 'R']], 12: [['L', 'R']], 13: [['B', 'R']], 14: [['L', 'B']] };
-      let li = -1;
-      for (lev = lo + step * 0.5; lev < hi; lev += step) {
+      let li = c.mo ? Math.ceil(lo / step - 0.5) - 1 : -1;
+      for (lev = c.mo ? (li + 1.5) * step : lo + step * 0.5; lev < hi; lev += step) {
         li++;
         let segs = [], adj = new Map(), add = (e, i) => { let a = adj.get(e); if (a) a.push(i); else adj.set(e, [i]); };
         for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) {
@@ -6264,7 +6480,8 @@ const ComposedLayout = (() => {
           used[k0] = 1;
           let ch = [segs[k0][0], segs[k0][1]];
           for (let dir = 0; dir < 2; dir++) { for (;;) { let e = ch[ch.length - 1], nx = (adj.get(e) || []).find(mm => !used[mm]); if (nx === undefined) break; used[nx] = 1; ch.push(segs[nx][0] === e ? segs[nx][1] : segs[nx][0]); } ch.reverse(); }
-          c.pen(li % 5 === 4 ? 2 : li % 5 === 2 ? 3 : 1, () => c.draw(rdp(ch.map(pt), 0.05)));
+          let pe = ((li % 5) + 5) % 5;
+          c.pen(pe === 4 ? 2 : pe === 2 ? 3 : 1, () => c.draw(rdp(ch.map(pt), 0.05)));
         }
       }
     },
@@ -6274,11 +6491,15 @@ const ComposedLayout = (() => {
     honeycomb(c) {
       let { L, s, g, p } = c, rowsN = s > 90 ? 4 : 3, R = s / (Math.sqrt(3) * rowsN), dx = 1.5 * R, dy = Math.sqrt(3) * R, st = g * 1.6, dl = g * 0.5;
       let depths = [[9, 3, 1, 3], [9, 6, 3, 6], [9, 9, 2]][Math.floor(c.H(1) * 3)], tstep = TAU / (6 + Math.floor(c.H(2) * 6));
+      // in motion the rings' lean turns, each row its own way and rate (the swirl spins), the cubes turn
+      // over, and the nesting deepens where the ripple passes
+      let HR = [[1, -1], [1, 2, -1], [2, -1, 1], [1, -2]][Math.floor(c.H(46) * 4)], cr = c.go(c.H(47) < 0.5 ? 1 : -1);
       for (let i = -1; i * dx < L + R; i++) for (let j = -1; j <= rowsN; j++) {
-        let cu = i * dx, cv = (j + 0.5) * dy + (i % 2 ? dy / 2 : 0), th = i * tstep + j * 0.5, dep = depths[(((i + j) % depths.length) + depths.length) % depths.length], cube = (((i % 3) + 3) % 3) === 2, ring = (ox, oy, r) => { let pts = []; for (let a = 0; a <= 6; a++) pts.push([ox + r * Math.cos(a * Math.PI / 3), oy + r * Math.sin(a * Math.PI / 3)]); c.draw(pts); };
+        let cu = i * dx, cv = (j + 0.5) * dy + (i % 2 ? dy / 2 : 0), th = i * tstep + j * 0.5 + TAU * c.rate(j + 1, HR), dep = depths[(((i + j) % depths.length) + depths.length) % depths.length], cube = (((i % 3) + 3) % 3) === 2, ring = (ox, oy, r) => { let pts = []; for (let a = 0; a <= 6; a++) pts.push([ox + r * Math.cos(a * Math.PI / 3), oy + r * Math.sin(a * Math.PI / 3)]); c.draw(pts); };
+        if (c.mo) dep += Math.round(5 * c.amt * c.ripple(cu, cv));
         let k = 0, r = R - g * 0.6, ox = cu, oy = cv;
         for (; r > p * 2.5 && k < (cube ? 2 : dep); k++, r -= st) { ox = cu + Math.cos(th) * dl * k; oy = cv + Math.sin(th) * dl * k; c.pen(cube ? 2 : k === 1 ? 3 : 1, () => ring(ox, oy, r)); }
-        if (cube && k === 2) { let rr = r + st; for (let a = 0; a < 3; a++) { let t = a * 2 * Math.PI / 3 + Math.PI / 3 * (i % 2); c.pen(2, () => c.draw([[ox, oy], [ox + rr * Math.cos(t), oy + rr * Math.sin(t)]])); } }
+        if (cube && k === 2) { let rr = r + st; for (let a = 0; a < 3; a++) { let t = a * 2 * Math.PI / 3 + Math.PI / 3 * (i % 2) + TAU * cr / 3; c.pen(2, () => c.draw([[ox, oy], [ox + rr * Math.cos(t), oy + rr * Math.sin(t)]])); } }
       }
     },
 
@@ -6288,6 +6509,22 @@ const ComposedLayout = (() => {
       let { L, s, g, h } = c, a = g * 2, b = s - g * 2, H = b - a, w = Math.max(g * 2.5, H * (0.14 + 0.1 * c.H(1)));
       let pat = [[1, 0.72, 0.45, 0.72], [1, 1, 0.5], [1, 0.8, 0.6, 0.4, 0.6, 0.8], [0.5, 1, 0.5, 0.25]][Math.floor(c.H(2) * 4)];
       c.rails(a - g * 1.2, b + g * 1.2);
+      if (c.mo) {
+        // in motion the bars march (a whole order of widths a turn), thinning as the ripple passes, while
+        // each hairline swings across its gap, a wave of it travelling along
+        let Pw = 0, mid = (a + b) / 2;
+        for (let k = 0; k < pat.length; k++) Pw += Math.max(g * 1.2, w * pat[k]) + Math.max(g * 3.2, w * 0.8 * pat[(k + 1) % pat.length]);
+        let sh = c.go(c.H(48) < 0.5 ? 1 : -1) * Pw, swing = Math.min(1, c.amt * 1.2), hg = c.go(2);
+        for (let x = -H * 1.2 - Pw * 2 + (((sh % Pw) + Pw) % Pw), k = 0; x < L; k++) {
+          let ww = Math.max(g * 1.2, w * pat[k % pat.length]), gw = Math.max(g * 3.2, w * 0.8 * pat[(k + 1) % pat.length]);
+          let wk = Math.max(g * 1.2, ww * c.lull(0.6, x + ww / 2 + H / 2, mid)), xb = x + (ww - wk) / 2;
+          c.pen(k % pat.length === 0 ? 3 : 1, () => c.solidPoly([[xb, b], [xb + wk, b], [xb + wk + H, a], [xb + H, a]], -Math.PI / 4));
+          let mx = x + ww + gw / 2; mx += Math.max(0, gw / 2 - g * 1.6) * swing * Math.sin(TAU * (hg - mx / Pw * 0.5));
+          c.pen(2, () => c.drawIn([[mx, b], [mx + H, a]], [0, a, L, b]));
+          x += ww + gw;
+        }
+        return;
+      }
       for (let x = -H * 1.2, k = 0; x < L; k++) {
         let ww = Math.max(g * 1.2, w * pat[k % pat.length]), gw = Math.max(g * 3.2, w * 0.8 * pat[(k + 1) % pat.length]);
         c.pen(k % pat.length === 0 ? 3 : 1, () => c.solidPoly([[x, b], [x + ww, b], [x + ww + H, a], [x + H, a]], -Math.PI / 4));
@@ -6300,12 +6537,16 @@ const ComposedLayout = (() => {
     chevrons(c) {
       let { L, s, g } = c, mid = s / 2, H = s / 2 - g * 0.8, du = g * 1.25 * Math.SQRT2;
       let pat = [[5, 3, 1, 3], [4, 2, 4, 6], [3, 3, 5]][Math.floor(c.H(1) * 3)], every = 3 + Math.floor(c.H(2) * 3), turn = c.H(3) < 0.5, flipped = false;
+      let CHR = [[1, 2, 1, 3], [1, 1, 2], [2, 1, 3, 1]][Math.floor(c.H(49) * 3)];
       for (let x = -H - du * 8, k = 0; x < L + H; k++) {
         let nk = pat[k % pat.length], dir = turn && x > L / 2 ? -1 : 1;
         if (dir < 0 && !flipped) { flipped = true; x -= H * 0.5; }
         let V = (x0, t) => dir > 0 ? [[x0, mid - H], [x0 + H, mid], [x0, mid + H], [x0 + t, mid + H], [x0 + t + H, mid], [x0 + t, mid - H]] : [[x0 + H, mid - H], [x0, mid], [x0 + H, mid + H], [x0 + H + t, mid + H], [x0 + t, mid], [x0 + H + t, mid - H]];
         if (k % every === every - 1) { let t = du * nk * 0.75; c.pen(2, () => c.solidPoly(V(x, t), 0)); x += t + du; continue; }
-        c.pen(k % 2 ? 3 : 1, () => { for (let m = 0; m < nk; m++) { let xx = x + m * du; c.draw(dir > 0 ? [[xx, mid - H], [xx + H, mid], [xx, mid + H]] : [[xx + H, mid - H], [xx, mid], [xx + H, mid + H]]); } });
+        // in motion each group's V's march through it toward its point (one leaving at the head as one comes
+        // in at the tail), the groups at their own rates
+        let fl = c.mo && nk > 1 ? c.rate(k, CHR) * nk * dir : 0;
+        c.pen(k % 2 ? 3 : 1, () => { for (let m = 0; m < nk; m++) { let pm = c.mo ? (((m + fl) % nk) + nk) % nk : m; if (pm > nk - 0.5) continue; let xx = x + pm * du; c.draw(dir > 0 ? [[xx, mid - H], [xx + H, mid], [xx, mid + H]] : [[xx + H, mid - H], [xx, mid], [xx + H, mid + H]]); } });
         x += nk * du + du * 0.5;
       }
     },
@@ -6315,6 +6556,37 @@ const ComposedLayout = (() => {
       let { L, s, g } = c, a = g * 2, b = s - g * 2, mid = (a + b) / 2, H = (b - a) / 2, w = Math.max(g * 2.5, H * (0.55 + 0.3 * c.H(1)));
       let pat = [[1, 0.6, 0.35, 0.6], [1, 0.5], [0.4, 0.7, 1, 0.7]][Math.floor(c.H(2) * 3)], N = 6 + Math.floor(c.H(3) * 6), last = 1;
       c.rails(a - g * 1.2, b + g * 1.2);
+      if (c.mo) {
+        // in motion each run is a belt carrying its V's the way they point, so the runs that point at each
+        // other swallow their V's at the seam between them and the runs that point apart give out new ones;
+        // the runs keep the still frame's places, and each moves a whole order of widths a turn
+        let starts = [];
+        for (let x = -H * 2, k = 0, lst = 1; x < L + H * 4; k++) {
+          let dir = Math.floor(k / N) % 2 ? -1 : 1;
+          if (dir !== lst) { x -= H * 0.3; lst = dir; }
+          if (k % N === 0) starts.push(x);
+          x += Math.max(g * 1.4, w * pat[k % pat.length]) + Math.max(g * 3.2, w * 0.7);
+        }
+        let Pw = 0, sp = k => Math.max(g * 1.4, w * pat[((k % pat.length) + pat.length) % pat.length]) + Math.max(g * 3.2, w * 0.7);
+        for (let k = 0; k < pat.length; k++) Pw += sp(k);
+        let VR = [[1, 1, 2], [1, 2], [2, 1, 1, 1]][Math.floor(c.H(50) * 3)];
+        starts.forEach((xs, ri) => {
+          let dir = ri % 2 ? -1 : 1, lo = ri ? xs + H * 0.5 : -H * 3, hi = ri + 1 < starts.length ? starts[ri + 1] + H * 0.5 : L + H * 3;
+          if (hi < 0 || lo > L) return;
+          let sh = dir * c.rate(ri, VR) * Pw, k = ri * N - pat.length * Math.ceil((xs - lo + Pw * 2) / Pw), x = xs - (ri * N - k) / pat.length * Pw + (((sh % Pw) + Pw) % Pw) - Pw;
+          c.within(lo, hi, () => {
+            for (; x < hi + H; k++) {
+              let ww = Math.max(g * 1.4, w * pat[((k % pat.length) + pat.length) % pat.length]), gw = Math.max(g * 3.2, w * 0.7);
+              let V = (x0, t) => dir > 0 ? [[x0, a], [x0 + H, mid], [x0, b], [x0 + t, b], [x0 + t + H, mid], [x0 + t, a]] : [[x0 + H, a], [x0, mid], [x0 + H, b], [x0 + H + t, b], [x0 + t, mid], [x0 + H + t, a]];
+              c.pen(((k % pat.length) + pat.length) % pat.length === 0 ? 2 : 1, () => c.solidPoly(V(x, ww), 0));
+              let hx = x + ww + gw / 2;
+              c.pen(3, () => c.draw(dir > 0 ? [[hx, a], [hx + H, mid], [hx, b]] : [[hx + H, a], [hx, mid], [hx + H, b]]));
+              x += ww + gw;
+            }
+          });
+        });
+        return;
+      }
       for (let x = -H * 2, k = 0; x < L + H; k++) {
         let dir = Math.floor(k / N) % 2 ? -1 : 1, ww = Math.max(g * 1.4, w * pat[k % pat.length]), gw = Math.max(g * 3.2, w * 0.7);
         if (dir !== last) { x -= H * 0.3; last = dir; }
@@ -6332,10 +6604,24 @@ const ComposedLayout = (() => {
       let G = 3 + Math.floor(c.H(3) * 4), d = Math.round((0.04 + 0.05 * c.H(4)) * 500) / 500, every = 4, phs = [0], vs = [0];
       for (let k = 1; k < 400 && vs[k - 1] + 2 * A < s - g; k++) { let dd = Math.floor(k / G) % 2 ? -d : d; phs.push(phs[k - 1] + dd); vs.push(vs[k - 1] + pairGap(W, P, A, dd, cl) + (k % every === 0 || k % every === 1 ? p * 1.0 : 0)); }
       while (vs.length > 1 && vs[vs.length - 1] + 2 * A > s - g) { vs.pop(); phs.pop(); }
-      let off = (s - vs[vs.length - 1]) / 2;
+      let off = (s - vs[vs.length - 1]) / 2, phT = phs, E = null, Qz = null;
+      if (c.mo) {
+        // in motion the step between rows rocks from one way to the other (never more than the rows were
+        // spaced for), a wave of it running down the stack group by group, so the diagonals swing; the
+        // stack runs along as a whole, and the ripple sends a pulse through it (one pulse, every row)
+        let sc = c.go(c.H(51) < 0.5 ? 1 : -1);
+        phT = [phs[0] + sc];
+        for (let k = 1; k < phs.length; k++) {
+          let D = phs[k] - phs[k - 1], Dt = Math.round(D * Math.cos(TAU * (c.go(1) - Math.floor(k / G) * 0.09)) * 500) / 500;
+          if (pairGap(W, P, A, Dt, cl) > pairGap(W, P, A, D, cl) + 1e-6) Dt = D;
+          phT.push(phT[k - 1] + Dt);
+        }
+        let pu = c.pushed(0.7, s / 2, P);
+        if (pu) { E = pu.E; Qz = pu.Q; }
+      }
       vs.forEach((v, k) => {
-        if (k % every === 0) c.pen(2, () => c.solidly(() => { for (let e of [-0.9, 0, 0.9]) c.draw(waveLine(W, P, phs[k], A, off + v + e * p, L)); }));
-        else c.pen(k % every === 2 ? 3 : 1, () => c.draw(waveLine(W, P, phs[k], A, off + v, L)));
+        if (k % every === 0) c.pen(2, () => c.solidly(() => { for (let e of [-0.9, 0, 0.9]) c.draw(waveLine(W, P, phT[k], A, off + v + e * p, L, 1, E, Qz)); }));
+        else c.pen(k % every === 2 ? 3 : 1, () => c.draw(waveLine(W, P, phT[k], A, off + v, L, 1, E, Qz)));
       });
     },
     // Hazard in rows that phase: each row a bar more or fewer over the band than the row above (the counts
@@ -6344,10 +6630,13 @@ const ComposedLayout = (() => {
     stepped(c) {
       let { L, s, g } = c, rows = s > 90 ? 6 : 4, rh = (s - g) / rows, per0 = Math.max(g * 6, rh * (1.1 + 0.6 * c.H(1))), N0 = Math.max(4, Math.round(L / per0));
       let drift = [[0, 2, 4, 2], [0, 1, 2, 3, 2, 1], [0, 3, 0, 3], [0, 2, 0, -2]][Math.floor(c.H(2) * 4)], G = 2 + Math.floor(c.H(3) * 2), sig = [0.25, 1 / 3, 0.5][Math.floor(c.H(4) * 3)];
+      let STR = [[1, 1, 2, -1], [1, -1], [2, 1, -1, 1], [1, 2, 3]][Math.floor(c.H(52) * 4)];
       for (let r = 0; r < rows; r++) {
-        let y = g * 0.5 + r * rh, ya = y + g * 0.9, yb = y + rh - g * 0.9, hh = yb - ya, per = L / (N0 + drift[r % drift.length]), w = per * 0.5, sh = Math.floor(r / G) * sig * per;
+        // in motion each row runs a bar a turn (the rows' bars differ, so they phase in and out of step as
+        // they go), and the ripple widens the bars it passes
+        let y = g * 0.5 + r * rh, ya = y + g * 0.9, yb = y + rh - g * 0.9, hh = yb - ya, per = L / (N0 + drift[r % drift.length]), w = per * 0.5, sh = Math.floor(r / G) * sig * per + c.rate(r, STR) * per;
         if (r) c.draw([[0, y], [L, y]]);
-        c.pen(cyc(Math.floor(r / G), [1, 2, 1, 3]), () => { for (let x = -hh - per * 2 + (sh % per); x < L; x += per) c.solidPoly([[x, yb], [x + w, yb], [x + w + hh, ya], [x + hh, ya]], -Math.PI / 4); });
+        c.pen(cyc(Math.floor(r / G), [1, 2, 1, 3]), () => { for (let x = -hh - per * 2 + (sh % per); x < L; x += per) { let wk = c.mo ? per * (0.5 + 0.2 * c.amt * c.ripple(x + w / 2 + hh / 2, (ya + yb) / 2)) : w, xb = c.mo ? x + (w - wk) / 2 : x; c.solidPoly([[xb, yb], [xb + wk, yb], [xb + wk + hh, ya], [xb + hh, ya]], -Math.PI / 4); } });
       }
       c.rails(g * 0.5, s - g * 0.5);
     },
@@ -6356,8 +6645,11 @@ const ComposedLayout = (() => {
     gradient(c) {
       let { L, s, g, p } = c, a = g * 1.8, b = s - g * 1.8, mid = s / 2, H = (b - a) / 2, t = Math.max(g * 4, H * (0.5 + 0.3 * c.H(1)));
       let levels = [0.9, 1.3, 1.9, 2.8, 4, 2.8, 1.9, 1.3], ph = Math.floor(c.H(2) * levels.length);
-      for (let x = -H - t, k = 0, prevSolid = false; x < L; x += t, k++) {
-        let sp = levels[(k + ph) % levels.length] * p, up = [[x, a], [x + H, mid], [x + t + H, mid], [x + t, a]], lo = [[x + H, mid], [x, b], [x + t, b], [x + t + H, mid]];
+      // in motion the train runs along (a cycle of densities a turn) while the densities step through it the
+      // other way, so the dark rolls against the train; the ripple closes the hatching it passes
+      let gsh = c.go(c.H(53) < 0.5 ? 1 : -1) * levels.length * t, dsh = Math.floor(c.go(c.H(53) < 0.5 ? -1 : 2) * levels.length);
+      for (let x = c.mo ? -H - t - 16 * t + (((gsh % (8 * t)) + 8 * t) % (8 * t)) : -H - t, k = 0, prevSolid = false; x < L; x += t, k++) {
+        let sp = c.mo ? levels[(((k + ph + dsh) % 8) + 8) % 8] * p * c.lull(0.5, x + t / 2 + H / 2, mid) : levels[(k + ph) % levels.length] * p, up = [[x, a], [x + H, mid], [x + t + H, mid], [x + t, a]], lo = [[x + H, mid], [x, b], [x + t, b], [x + t + H, mid]];
         if (sp < p) c.pen(2, () => { c.solidPoly(up, Math.PI / 4); c.solidPoly(lo, -Math.PI / 4); });
         else {
           // the hatch spacing fitted to the band so the lines fall evenly between its edges
@@ -6382,12 +6674,16 @@ const ComposedLayout = (() => {
       let nest = [[3, 2, 4, 2], [4, 3, 2, 3], [2, 2, 4]][Math.floor(c.H(1) * 3)], drift = [[0, 1, 2, 1], [0, 2], [0, 1, 0, -1]][Math.floor(c.H(2) * 3)], sig = [0.25, 0.5, 1 / 3][Math.floor(c.H(3) * 3)];
       for (let r = 0; r < lanes; r++) {
         let ya = r * lh + g * 0.9, yb = (r + 1) * lh - g * 0.9, mid = (ya + yb) / 2, H = (yb - ya) / 2, dir = r % 2 ? -1 : 1;
+        // in motion each lane runs the way its arrows point, a whole order of nestings a turn (the lanes' trains
+        // differ in length, so they drift in and out of step), and the ripple multiplies the arrowheads it passes
         let per0 = H + 4 * du + g * 1.5, N = Math.max(3, Math.round(L / per0) + drift[r % drift.length]), per = L / N, sh = Math.floor(r / 2) * sig * per;
+        let Pk = nest.length % 4 ? nest.length * 4 : 4, ls = c.mo ? dir * c.rate(r, Pk > 4 ? [1] : [1, 2, 1, 3]) * Pk * per : 0, fit = Math.max(1, Math.floor((per - H * 0.2) / du));
         c.draw([[0, mid], [L, mid]]);
         if (r) c.draw([[0, r * lh], [L, r * lh]]);
-        for (let k = -2; k < N + 2; k++) {
-          let x = k * per + sh, n = Math.min(nest[((k % nest.length) + nest.length) % nest.length], Math.max(1, Math.floor((per - H * 0.2) / du)));
-          c.pen(k % 4 === 3 ? 3 : dir < 0 ? 2 : 1, () => { for (let m = 0; m < n; m++) { let xx = x + m * du; c.draw(dir > 0 ? [[xx, ya], [xx + H, mid], [xx, yb]] : [[xx + H, ya], [xx, mid], [xx + H, yb]]); } });
+        for (let k = c.mo ? Math.floor(-(sh + ls) / per) - 2 : -2; c.mo ? k * per + sh + ls < L + per : k < N + 2; k++) {
+          let x = k * per + sh + ls, n = Math.min(nest[((k % nest.length) + nest.length) % nest.length], fit);
+          if (c.mo) n = Math.max(1, Math.min(fit, Math.round(n * (1 + 0.7 * c.amt * (c.ripple(x + H / 2, mid) - 0.3)))));
+          c.pen((c.mo ? ((k % 4) + 4) % 4 : k % 4) === 3 ? 3 : dir < 0 ? 2 : 1, () => { for (let m = 0; m < n; m++) { let xx = x + m * du; c.draw(dir > 0 ? [[xx, ya], [xx + H, mid], [xx, yb]] : [[xx + H, ya], [xx, mid], [xx + H, yb]]); } });
         }
       }
       c.rails(g * 0.3, s - g * 0.3);
@@ -6405,15 +6701,72 @@ const ComposedLayout = (() => {
   const BANDS = Object.assign({ tunnel: BAND_TUNNEL }, BAND_FNS);
   const BAND_KINDS = [].concat(...Object.values(BAND_FAMILIES));
 
+  // ---- motion. On an animation frame every band moves: its parts scroll at their own whole numbers of
+  // turns a loop (so the loop closes on itself), stacks shear inside the spacing they were packed for,
+  // and surges ride a ripple that travels through the whole page from its centre, so a cell and its
+  // mirror image move as mirror images and a surge passes from cell to cell. A still render and the
+  // complete frame have no motion: every term is zero there, and the band draws exactly as before.
+  // The Stillness and Density sliders hold some parts still; Motion Amount scales the surges; Speed
+  // scales the turns (whole turns still, so the loop still closes)
+  const pulse = (x, w) => { let f = frac(x); return f < w ? Math.sin(Math.PI * f / w) ** 2 : 0; };
+  function motion(c, R0, mo) {
+    let A = mo && animCtx ? animCtx : null, spd = A ? A.speedMul || 1 : 1;
+    c.mo = !!A; c.t = A ? A.t : 0; c.amt = A ? Math.max(0, Math.min(1.5, A.motionAmount)) : 0;
+    // n turns a loop at this speed (a whole number, so the loop closes); the phase that makes
+    c.turn = n => !A || !n ? 0 : Math.sign(n) * Math.max(1, Math.round(Math.abs(n) * spd));
+    c.go = n => c.turn(n) * c.t;
+    let still = A ? A.stillnessRatio : 1, zone = A ? still + (1 - still) * A.density : 0;
+    c.moves = k => { if (!A) return false; let hh = c.H(0x5100 + k); return hh >= still && hh < zone; };
+    // part k's phase: its turns from a repeating order of rates, or none if it is held still
+    c.rate = (k, pat) => c.moves(k) ? c.go(cyc(k, pat)) : 0;
+    c.ripple = () => 0;
+    c.lull = () => 1;
+    c.swell = () => 1;
+    c.pushed = () => null;
+    if (!A || !mo.page) return;
+    // the ripple: rings travelling out (or in) from the page's centre, one or more a loop, measured where
+    // a band point lands on the page after its cell's flop
+    let pg = mo.page, cx = pg.x + pg.w / 2, cy = pg.y + pg.h / 2, hx = Math.max(1, pg.w / 2), hy = Math.max(1, pg.h / 2);
+    let fx = (mo.flop || '').includes('x'), fy = (mo.flop || '').includes('y'), rp = mo.rip || { style: 0, q: 1, dir: 1, w: 0.4 };
+    let rho = (x, y) => {
+      let dx = Math.abs(x - cx) / hx, dy = Math.abs(y - cy) / hy;
+      return rp.style === 1 ? (dx + dy) / 2 : rp.style === 2 ? Math.max(dx, dy) : rp.style === 3 ? dx : rp.style === 4 ? dy : Math.hypot(dx, dy) / Math.SQRT2;
+    };
+    c.ripple = (u, v, lag) => {
+      let [x, y] = c.map([u, v]);
+      if (fx) x = 2 * R0.x + R0.w - x;
+      if (fy) y = 2 * R0.y + R0.h - y;
+      return pulse(rp.dir * c.go(1) - rp.q * rho(x, y) - (lag || 0), rp.w);
+    };
+    // multipliers that are whole away from the ripple and dip (a lull) or grow (a swell) by m on it,
+    // times Motion Amount: away from the ripple a band is as it stands still
+    c.lull = (m, u, v, lag) => Math.max(0, 1 - m * c.amt * c.ripple(u, v, lag));
+    c.swell = (m, u, v, lag) => 1 + m * c.amt * c.ripple(u, v, lag);
+    // a compression pulse riding the ripple, for waves: the phase pushed on by up to kap cycles as the ripple
+    // passes (the wave bunches ahead of it and stretches behind), the amplitude eased where it bunches so
+    // its slopes never steepen (a stack spaced for the still waves stays clear). One pulse for a whole
+    // stack (one v), so its lines keep their spacing; kap is held down so the wave never bunches past 1.5
+    // times or stretches past twice. Returns { Q, E }: the phase offset and the amplitude factor along u
+    let rmax = Math.PI * rp.q / (rp.w * Math.min(hx, hy));
+    c.pushed = (kap, v, P) => {
+      let k = Math.min(kap * c.amt, 0.5 / (rmax * P)), dd = Math.max(0.5, P / 40), memo = new Map();
+      let at = u => { let m = memo.get(u); if (m) return m; let dr = (c.ripple(u + dd, v) - c.ripple(u - dd, v)) / (2 * dd); m = [k * c.ripple(u, v), Math.min(1, 1 / Math.max(0.5, 1 + k * dr * P))]; memo.set(u, m); return m; };
+      return { Q: u => at(u)[0], E: u => at(u)[1] };
+    };
+  }
+
   // One band in R0. Bands draw in band coordinates: u along the strip (0..L),
   // v across it (0..s). Parallel runs keep 1.5 pens apart; solids (0.9 pens,
   // fused on purpose) go in a 'band-solid:' group of their own.
-  function drawKind(R0, kind, h, seed) {
+  function drawKind(R0, kind, h, seed, mo) {
     let p = penPx(), horiz = R0.w >= R0.h, L = horiz ? R0.w : R0.h, s = horiz ? R0.h : R0.w;
     let map = ([u, v]) => horiz ? [R0.x + u, R0.y + v] : [R0.x + v, R0.y + u];
     let drawIn = (pts, b) => { for (let q of clipPolylineToRect(pts, b)) if (q.length > 1) svgPolyline(q.map(map)); };
-    let c = { L, s, p, g: p * 1.8, h, horiz, seed, map, drawIn, H: k => _mmHash(seed, k) };
-    c.draw = pts => drawIn(pts, [0, 0, L, s]);
+    let c = { L, s, p, g: p * 1.8, h, horiz, seed, map, drawIn, H: k => _mmHash(seed, k) }, box = [0, 0, L, s];
+    c.draw = pts => drawIn(pts, box);
+    // c.within: draw clipped to a stretch [ua, ub] of the band (a conveyor's run)
+    c.within = (ua, ub, fn) => { let was = box; box = [Math.max(0, ua), 0, Math.min(L, ub), s]; try { fn(); } finally { box = was; } };
+    motion(c, R0, mo);
     c.rails = (a, b) => { c.draw([[0, a], [L, a]]); c.draw([[0, b], [L, b]]); };
     c.circ = (u, v, d) => { let [x, y] = map([u, v]); svgCircle(x, y, d); };
     c.rect = (u0, v0, u1, v1) => c.draw([[u0, v0], [u1, v0], [u1, v1], [u0, v1], [u0, v0]]);
@@ -6452,20 +6805,42 @@ const ComposedLayout = (() => {
   // Thin cells (under 72 px across, or 2.5:1 and longer) take a band, the field never
   const isBandCell = (lay, w, h) => !!lay && lay.role !== 'field' && (Math.min(w, h) < 72 || Math.max(w / h, h / w) >= 2.5);
 
-  // Draw cell i's band: its kind pinned by the cell's editor, or dealt per orbit; returns the kind
-  function drawBand(R, lay, ov) {
+  // Draw cell i's band: its kind pinned by the cell's editor, or dealt per orbit; returns the kind.
+  // mo = { flop, page }: the cell's flop and the page's content rect, for the motion. An animation frame
+  // draws the kind the still frame chose (found once, still, then kept), so a band never swaps mid-loop
+  const _bandMemo = new Map();
+  function drawBand(R, lay, ov, mo) {
     let base = seedNumber(state.seed), cg = svgRec.groupStack[1], k0 = cg ? cg.children.length : 0;
     if (ov && ov.reseed) base = (base ^ Math.imul(ov.reseed, 0x85EBCA6B)) >>> 0;
     let pinned = ov && ov.variant && BANDS[ov.variant] ? ov.variant : null, tried = [], kind = null;
+    let h = _mmHash(base, 0xA80 + lay.orbit), seed = (base ^ Math.imul(lay.orbit + 1, 0x9E3779B1)) >>> 0;
+    let key = [state.seed, base, lay.orbit, pinned, Math.round(R.w), Math.round(R.h)].join('|');
+    if (animCtx && mo && _bandMemo.has(key)) {
+      kind = _bandMemo.get(key);
+      drawKind(R, kind, h, seed, motionOpts(mo));
+      return kind;
+    }
     for (let attempt = 0; attempt < 5; attempt++) {
       let left = BAND_KINDS.filter(k => !tried.includes(k));
       kind = pinned || (attempt === 0 ? BAND_KINDS[Math.floor(_mmHash(base, 0xA00 + lay.orbit) * BAND_KINDS.length)] : left[Math.floor(_mmHash(base, 0xB00 + lay.orbit * 8 + attempt) * left.length)]);
       tried.push(kind);
       if (attempt && cg) dropFrom(cg, k0);
-      drawKind(R, kind, _mmHash(base, 0xA80 + lay.orbit), (base ^ Math.imul(lay.orbit + 1, 0x9E3779B1)) >>> 0);
+      drawKind(R, kind, h, seed);
       if (pinned || !cg || coverage(cg, k0, R) >= BAND_FLOOR) break;
     }
+    if (_bandMemo.size > 4000) _bandMemo.clear();
+    _bandMemo.set(key, kind);
+    if (animCtx && mo) {
+      if (cg) dropFrom(cg, k0);
+      drawKind(R, kind, h, seed, motionOpts(mo));
+    }
     return kind;
+  }
+  // the page's ripple: its shape (rings, diamonds, squares, or bars across or down), how many a loop
+  // spans the page, and whether it travels out or in, dealt per seed
+  function motionOpts(mo) {
+    let b = seedNumber(state.seed);
+    return Object.assign({ rip: { style: Math.floor(_mmHash(b, 0x5200) * 5), q: [1, 1.5, 2][Math.floor(_mmHash(b, 0x5201) * 3)], dir: _mmHash(b, 0x5202) < 0.7 ? 1 : -1, w: 0.3 + 0.2 * _mmHash(b, 0x5203) } }, mo);
   }
 
   // A panel that came out nearly empty is drawn again as another archetype (none if the user pinned
@@ -25499,7 +25874,7 @@ function generate(frameIndex) {
     let flopFrom = svgRec.groupStack[1] ? svgRec.groupStack[1].children.length : 0;
     _cellFlop = flop;
     try {
-      if (archetype === 'band') _cellVariantInfo = ComposedLayout.drawBand(inner, lay || { orbit: i }, _cellOv);
+      if (archetype === 'band') _cellVariantInfo = ComposedLayout.drawBand(inner, lay || { orbit: i }, _cellOv, { flop, page: contentRect });
       else composeArchetypeCell(archetype, selfFramed ? padded : inner, cellScale, cellPrng);
     }
     catch (err) { console.error(`${archetype} failed in cell ${i}:`, err); }
