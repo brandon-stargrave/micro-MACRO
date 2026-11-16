@@ -246,6 +246,25 @@ The global micro-macro slider has a secondary, non-linear effect on the subdivis
 - **Min Cell Size modulation:** `effectiveMinCell = minCellSize * (1.0 + globalSlider * 0.3)`. At macro, minimum cell size grows slightly, preventing tiny cells that would generate micro content in a macro context.
 - The user's explicit parameters always cap these modulations — the slider can reduce subdivision below the user's settings but never exceed them.
 
+**Layout: Random or Composed.** The parameters above belong to the Random layout. Composed lays the page's sections out on purpose instead, and Subdivision Depth and Irregularity give way to its own controls:
+
+| Control | Type | Default | Notes |
+|---|---|---|---|
+| Layout | select | Random | Random (the subdivision above) or Composed. |
+| Scheme | select | Auto | Carpet (a field with a medallion in rings of guards and borders, cornerstones, cartouches), Courthouse Steps (strips in pairs round a field), Log Cabin (strips spiralling in, each turn narrower), Triptych (a centre panel under a lunette, mirrored wings, a predella), Colonnade (columns and bays under an entablature), Pinwheel (four arms turning, nested the other way), Cross (a column crossed by a band, L-strips nesting in each quarter), Nine-Patch (three by three, the centre nesting), Strata (courses in running bond), Canon (a manuscript page by the Van de Graaf proportions). Auto deals one per seed. |
+| Rhythm | select | Auto | How strip and panel widths run: Even, Alternating, Palindrome, Golden, Fibonacci, Euclidean, Harmonic. Auto takes one that suits the scheme. Strips never go under the minimum strip (60 px, Min Cell Size or a fifteenth of the short side) nor past 2.6 times it. |
+| Nesting | range slider | 1 | 0–3: more rings, steps, turns or patches. |
+| Rhyme | checkbox | on | The cells of an orbit share the archetype and variant its first cell drew. |
+| Bands | checkbox | on | Thin cells (under 72 px across, or 2.5:1 and longer; never the field) carry running bands instead of panels. |
+
+Every scheme tiles the content rect exactly, then insets the gutters. Each cell has a role (field, panel, band, guard, corner, column) and an orbit: the cells the scheme's symmetry (left-right, top-bottom, half-turn) maps onto each other, or that its construction pairs (a log cabin's turns, a wall's courses). A cell that is the mirror image of its orbit's first (top-left) cell is drawn flopped, so the two read as reflections even when they hold different panels. Every choice is dealt from hashes of the seed, never the page's stream.
+
+*Bands.* Twenty-eight kinds in five families, each a continuous fabric along the strip with periodic repetition, a step of propagation from row to row and density that cycles: signal (Reich phasing, phase stacks, beats, scope bars, eye diagram, logic timing, waterfall), data (Data Matrix, LED meters, spectrogram, hex-dump ASCII art, PDF417, cellular automaton), circuit (trace bus, tuned differential pairs, die, ladder schematic, ball grid), geometry (tunnels, contours, nested honeycomb) and hazard (stripes, nested chevrons, V-stripes, zigzags, stepped rows, density gradient, conveyors). An orbit's bands share a kind; parallel runs keep 1.5 pens apart, solids fuse at 0.9 pens in a `band-solid:` group. A band's kind can be picked in its cell's editor (Variant), cycled by double-click, and Regen keeps the kind with new content.
+
+*Fill.* A composed page's shapes are ones the random layout rarely makes, and some panels draw next to nothing in a small corner. A panel whose ink covers under 2.5% of its cell (line length × pen ÷ area) is drawn again as another archetype, a band under 5% as another kind; the replacement is chosen per orbit, so rhymed and mirrored cells stay alike, and animation frames reuse the still frame's choice. A cell whose editor pins an archetype is left as the user set it.
+
+**Flop.** Each cell's editor has Flop H and Flop V: the cell's drawing mirrored left-right or top-bottom (both together on both axes), its type turned back to read forwards in its mirrored place (touching runs move as one, so a number keeps its unit after it). A composed page's mirrored cells start flopped; the buttons show the flop as drawn and toggle it. A page with no flopped cell draws exactly as it did before the feature.
+
 ---
 
 ### 3.4 Borders
@@ -656,8 +675,12 @@ const state = {
     minCellSize: 60,
     cellPadding: 4,
     cellGap: 2,
-    scaleBias: 0.0
+    scaleBias: 0.0,
+    layout: 'random',  // 'random' | 'composed'
+    composed: { scheme: 'auto', rhythm: 'auto', depth: 1, rhyme: true, bands: true }
   },
+  // cellOverrides[i] may also carry flop: 'x' | 'y' | 'xy' (the cell's editor), and archetype 'band'
+  // with a band kind as its variant
 
   // Borders
   bordersEnabled: false,

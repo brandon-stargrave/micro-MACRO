@@ -258,6 +258,7 @@
     #cell-tooltip .ce-play { color: #ffcc66; font-size: 9px; letter-spacing: 0.04em; }
     #cell-tooltip .ce-actions button { flex: 1; background: #0d0a18; border: 1px solid #1a1a2e; color: #88ffcc; font-family: monospace; font-size: 9px; padding: 3px 6px; cursor: pointer; }
     #cell-tooltip .ce-actions button:hover { border-color: #00ff88; background: #111022; }
+    #cell-tooltip .ce-actions button.on { border-color: #00ff88; color: #0a0a12; background: #00ff88; }
     .edit-mode-btn { width: 100%; margin-top: 6px !important; transition: border-color 0.15s, color 0.15s; }
     .edit-mode-btn.active { border-color: #00ff88 !important; color: #00ff88 !important; background: #0a1a12 !important; }
     details.collapsible { margin-top: 10px; }
@@ -750,6 +751,62 @@
       </div>
       <div id="panel-multi" class="mode-panel">
         <div class="control-group">
+          <label data-tip="Random splits the page into cells by chance. Composed lays its sections out on purpose, by a scheme with a symmetry, a rhythm of widths and a nesting.">Layout</label>
+          <select id="multi-layout" onchange="updateState('multi.layout', this.value); syncLayoutMode()">
+            <option value="random">Random</option>
+            <option value="composed">Composed</option>
+          </select>
+        </div>
+        <div id="composed-params" style="display:none">
+          <div class="row">
+            <div class="control-group">
+              <label data-tip="The plan of the page. Carpet: a field in rings of borders. Courthouse Steps: strips in pairs round a field. Log Cabin: strips spiralling in. Triptych: a centre panel and two wings. Colonnade: columns and bays. Pinwheel: four arms turning. Cross: a column crossed by a band. Nine-Patch: three by three, nested. Strata: courses in running bond. Canon: a manuscript page. Auto deals one per seed.">Scheme</label>
+              <select id="composed-scheme" onchange="updateState('multi.composed.scheme', this.value)">
+                <option value="auto">Auto</option>
+                <option value="carpet">Carpet</option>
+                <option value="courthouse">Courthouse Steps</option>
+                <option value="logcabin">Log Cabin</option>
+                <option value="triptych">Triptych</option>
+                <option value="colonnade">Colonnade</option>
+                <option value="pinwheel">Pinwheel</option>
+                <option value="cross">Cross</option>
+                <option value="ninepatch">Nine-Patch</option>
+                <option value="strata">Strata</option>
+                <option value="canon">Canon</option>
+              </select>
+            </div>
+            <div class="control-group">
+              <label data-tip="How the widths of strips and panels run. Even; Alternating, wide and narrow by turns; Palindrome, mirrored about the middle; Golden, each the last times phi; Fibonacci; Euclidean, wide ones spread as evenly as they go; Harmonic, the ratios of musical intervals. Auto takes one that suits the scheme.">Rhythm</label>
+              <select id="composed-rhythm" onchange="updateState('multi.composed.rhythm', this.value)">
+                <option value="auto">Auto</option>
+                <option value="even">Even</option>
+                <option value="alt">Alternating</option>
+                <option value="pal">Palindrome</option>
+                <option value="golden">Golden</option>
+                <option value="fib">Fibonacci</option>
+                <option value="euclid">Euclidean</option>
+                <option value="harmonic">Harmonic</option>
+              </select>
+            </div>
+          </div>
+          <div class="control-group">
+            <label data-tip="How many times the scheme nests inside itself: more rings, steps, turns or patches.">Nesting</label>
+            <div class="slider-row">
+              <input type="range" id="composed-depth" min="0" max="3" step="1" value="1"
+                oninput="updateState('multi.composed.depth', +this.value); syncVal(this, 'composed-depth-val')">
+              <span class="slider-val" id="composed-depth-val">1</span>
+            </div>
+          </div>
+          <div class="check-row" data-tip="Cells the layout pairs (mirror images, a log cabin's turns, a wall's courses) share one archetype and variant.">
+            <input type="checkbox" id="composed-rhyme" checked onchange="updateState('multi.composed.rhyme', this.checked)">
+            <label for="composed-rhyme">Rhyme</label>
+          </div>
+          <div class="check-row" data-tip="Thin cells carry running bands (waveforms, data, circuitry, geometry, hazard patterns) instead of panels. A band's kind can be picked in its cell's editor.">
+            <input type="checkbox" id="composed-bands" checked onchange="updateState('multi.composed.bands', this.checked)">
+            <label for="composed-bands">Bands</label>
+          </div>
+        </div>
+        <div class="control-group random-only">
           <label data-tip="How many times the canvas is recursively split into cells. Higher = more, smaller cells.">Subdivision Depth</label>
           <div class="slider-row">
             <input type="range" id="multi-depth" min="1" max="6" step="1" value="3"
@@ -757,7 +814,7 @@
             <span class="slider-val" id="multi-depth-val">3</span>
           </div>
         </div>
-        <div class="control-group">
+        <div class="control-group random-only">
           <label data-tip="How asymmetric cell splits are. 0 = even grid, 1 = wildly uneven.">Irregularity</label>
           <div class="slider-row">
             <input type="range" id="multi-irreg" min="0" max="1" step="0.01" value="0.5"
@@ -2158,6 +2215,7 @@ let _undoStack = [];
 let _redoStack = [];
 let _cellClipboard = null;  // { archetype, variant, scale }
 let _cellTextLog = [];     // Tracks text draw positions within current cell for treatment effects
+let _cellFlop = '';        // the cell's flop while it is composed ('', 'x', 'y', 'xy'): type drawn as outlines groups itself as 'hero-word' so the flop keeps it readable
 
 // Build composition bus (called once in generate() before cell loop)
 function buildCompBus(cells, contentRect, prng) {
@@ -3002,6 +3060,74 @@ function knockoutCellLabels(cellGroup, cellRect) {
 
 // Repaint a cell's rect on the canvas from its SVG record, so the screen
 // shows exactly what knockouts left (and what will plot).
+// A cell's flop (its editor's Flop H / Flop V): the drawing its composer made,
+// from record index k0 of the cell group on, reflected about the cell's middle
+// (x left to right, y top to bottom, xy both). Type stays readable: each
+// cluster of touching text is turned back about its own middle, so it sits
+// where the mirror puts it and still reads forwards (a number keeps its unit
+// after it). The text log moves with it, and the cell is repainted from the
+// record so screen = plot.
+const _FLOP_TEXT_IDS = new Set(['micro-text', 'font-text', 'otf-text', 'rotated-text', 'hero-word']);
+// Group outline type (a hero word, its index) as type, only on a flopping cell: other pages stay byte-identical
+function _flopTypeBegin() { if (_cellFlop) svgRec.beginGroup('hero-word'); }
+function _flopTypeEnd() { if (_cellFlop) svgRec.endGroup(); }
+// affine maps as SVG's matrix(a b c d e f): x' = a x + c y + e, y' = b x + d y + f
+function _affMul(M, N) { return [M[0] * N[0] + M[2] * N[1], M[1] * N[0] + M[3] * N[1], M[0] * N[2] + M[2] * N[3], M[1] * N[2] + M[3] * N[3], M[0] * N[4] + M[2] * N[5] + M[4], M[1] * N[4] + M[3] * N[5] + M[5]]; }
+function _affInv(M) { let det = M[0] * M[3] - M[1] * M[2], a = M[3] / det, b = -M[1] / det, c = -M[2] / det, d = M[0] / det; return [a, b, c, d, -(a * M[4] + c * M[5]), -(b * M[4] + d * M[5])]; }
+function _affStr(M) { return 'matrix(' + M.map(v => +v.toFixed(4)).join(',') + ')'; }
+// the box of a record subtree's ink under M
+function _recInkBox(node, M) {
+  let box = [Infinity, Infinity, -Infinity, -Infinity];
+  const walk = (n, T) => {
+    if (n.children) { let T2 = n.transform ? _affMul(T, parseTransformMatrix(n.transform)) : T; for (let k of n.children) walk(k, T2); }
+    else if (n.d) for (let poly of parsePathToPolylines(n.d)) for (let [x, y] of poly) {
+      let X = T[0] * x + T[2] * y + T[4], Y = T[1] * x + T[3] * y + T[5];
+      box[0] = Math.min(box[0], X); box[1] = Math.min(box[1], Y); box[2] = Math.max(box[2], X); box[3] = Math.max(box[3], Y);
+    }
+  };
+  walk(node, M);
+  return box;
+}
+function flopCellDrawing(cell, k0, flip, moveTextLog) {
+  let cg = svgRec.groupStack[1];
+  if (!cg || !flip) return;
+  while (svgRec.groupStack.length > 2) svgRec.endGroup(); // groups a composer left open
+  let cx = cell.x + cell.w / 2, cy = cell.y + cell.h / 2;
+  let F = flip === 'x' ? [-1, 0, 0, 1, 2 * cx, 0] : flip === 'y' ? [1, 0, 0, -1, 0, 2 * cy] : [-1, 0, 0, -1, 2 * cx, 2 * cy];
+  let kids = cg.children.splice(k0);
+  if (!kids.length) return;
+  let wrap = { id: '', children: kids, transform: _affStr(F) };
+  cg.children.push(wrap);
+  // every text block, with the map down to it; touching blocks move as one
+  let texts = [];
+  const find = (node, A) => node.children.forEach((n, i) => {
+    if (!n.children) return;
+    if (_FLOP_TEXT_IDS.has(n.id)) { let bx = _recInkBox(n, A); if (isFinite(bx[0])) texts.push({ parent: node, i, n, A, bx }); return; }
+    find(n, n.transform ? _affMul(A, parseTransformMatrix(n.transform)) : A);
+  });
+  find(wrap, [1, 0, 0, 1, 0, 0]);
+  let par = texts.map((_, i) => i), root = i => par[i] === i ? i : (par[i] = root(par[i]));
+  texts.forEach((t, i) => texts.forEach((o, j) => {
+    if (j <= i) return;
+    let m = 1.1 * Math.max(t.bx[3] - t.bx[1], o.bx[3] - o.bx[1]);
+    if (t.bx[0] - m < o.bx[2] && o.bx[0] - m < t.bx[2] && t.bx[1] - m < o.bx[3] && o.bx[1] - m < t.bx[3]) par[root(i)] = root(j);
+  }));
+  let groups = {};
+  texts.forEach((t, i) => (groups[root(i)] = groups[root(i)] || []).push(t));
+  for (let mem of Object.values(groups)) {
+    let bx = [Math.min(...mem.map(t => t.bx[0])), Math.min(...mem.map(t => t.bx[1])), Math.max(...mem.map(t => t.bx[2])), Math.max(...mem.map(t => t.bx[3]))];
+    let p = [(bx[0] + bx[2]) / 2, (bx[1] + bx[3]) / 2], q = [F[0] * p[0] + F[2] * p[1] + F[4], F[1] * p[0] + F[3] * p[1] + F[5]], Tr = [1, 0, 0, 1, q[0] - p[0], q[1] - p[1]];
+    // under the flop a block lands mirrored; this map, inside it, turns it back about the block's own middle
+    for (let t of mem) t.parent.children[t.i] = { id: '', children: [t.n], transform: _affStr(_affMul(_affMul(_affInv(t.A), F), _affMul(Tr, t.A))) };
+  }
+  // the treatments read text positions from the log: each run's box mirrored, its baseline kept under it
+  if (moveTextLog && _cellTextLog) for (let t of _cellTextLog) {
+    if (flip !== 'y') t.x = 2 * cx - t.x - _txW(t.str, t.fontSize);
+    if (flip !== 'x') t.y = 2 * cy - t.y + t.fontSize * 0.75;
+  }
+  redrawCellFromRecord(cg, cell);
+}
+
 function redrawCellFromRecord(cellGroup, rect) {
   let ctx = drawingContext;
   push();
@@ -4961,7 +5087,8 @@ const state = {
   bgColor: '#0a0612', fgColor: '#d0d8e8',
   scale: 0.0,
   mode: 'single',
-  multi: { depth: 3, irregularity: 0.5, minCellSize: 60, cellPadding: 4, cellGap: 2, scaleBias: 0.0 },
+  multi: { depth: 3, irregularity: 0.5, minCellSize: 60, cellPadding: 4, cellGap: 2, scaleBias: 0.0,
+           layout: 'random', composed: { scheme: 'auto', rhythm: 'auto', depth: 1, rhyme: true, bands: true } },
   bordersEnabled: false,
   border: { style: 'auto', weight: 1.0, padding: 6 },
   seed: generateSeed(),
@@ -5171,6 +5298,1149 @@ function subdivideRect(rect, depth, irregularity, minSize, gap, prng, grid) {
 // split - a full-width/height band, or a corner block with an L-shaped
 // remainder - and the rest is subdivided around it on the same grid. Without
 // it the largest cell was only 36-44% of the page, so pages read as collages.
+// ===== Composed layouts =====
+// Multi mode's second layout: the page's sections laid out on purpose by a
+// scheme (carpet, courthouse steps, log cabin, triptych, colonnade, pinwheel,
+// cross, nine-patch, strata, canon), each with a symmetry, a rhythm of widths
+// and a nesting depth, instead of a random subdivision. Every cell has a role
+// (field, panel, band, guard, corner, column) and an orbit: the cells the
+// scheme's mirrors map onto each other, or that its construction pairs. A cell
+// that is a mirror image of its orbit's first member is drawn flopped; with
+// Rhyme on, an orbit shares one archetype and variant; thin cells carry bands
+// (signal, data, circuit, geometry and hazard patterns), and a cell that comes
+// out nearly empty is drawn again. Everything is dealt from hashes of the
+// seed, never the page's stream.
+const ComposedLayout = (() => {
+  const PHI = (1 + Math.sqrt(5)) / 2;
+  const rc = (x, y, w, h, role, orbit) => ({ x, y, w, h, role: role || 'panel', orbit });
+  const sum = a => a.reduce((s, v) => s + v, 0);
+  const segs = (o, len, ws) => { let t = sum(ws), out = []; for (let w of ws) { let s = len * w / t; out.push([o, s]); o += s; } return out; };
+  const odd = n => Math.max(1, n % 2 ? n : n - 1);
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+  // ---- rhythms: weights along an axis
+  // Bjorklund by Bresenham: k onsets as evenly as possible over m steps
+  const euclid = (k, m) => { let on = []; for (let i = 0; i < k; i++) on.push(Math.floor(i * m / k)); return on.map((v, i) => (i + 1 < k ? on[i + 1] : m) - v); };
+  function rhythmW(kind, n, P) {
+    switch (kind) {
+      case 'even': return Array(n).fill(1);
+      case 'alt': return Array.from({ length: n }, (_, i) => i % 2 ? 1 : PHI);
+      case 'golden': return Array.from({ length: n }, (_, i) => Math.pow(PHI, i));
+      case 'fib': { let a = [1, 2]; while (a.length < n) a.push(a[a.length - 1] + a[a.length - 2]); return a.slice(0, n); }
+      case 'euclid': return euclid(n, n + Math.max(1, Math.round(n * (0.4 + 0.5 * P.nextFloat()))));
+      case 'harmonic': { let r = [1, 4 / 3, 3 / 2, 2]; return Array.from({ length: n }, () => r[Math.floor(P.nextFloat() * r.length)]); }
+      default: return Array.from({ length: n }, () => [1, PHI, PHI * PHI][Math.floor(P.nextFloat() * 3)]); // 'free'
+    }
+  }
+  // strip widths: the minimum strip times the rhythm's weights (the least is 1, the most 2.6)
+  const stripW = (kind, n, P, ms) => { let ws = rhythmW(kind, n, P), m = Math.min(...ws); return ws.map(w => ms * Math.min(2.6, w / m)); };
+  const pick = (P, a) => a[Math.floor(P.nextFloat() * a.length)];
+  // the same, made palindromic (the half grows toward the middle)
+  function symRhythm(kind, n, P) {
+    let h = Math.ceil(n / 2), half = rhythmW(kind, h, P);
+    return Array.from({ length: n }, (_, i) => half[Math.min(i, n - 1 - i)]);
+  }
+
+  // ---- the schemes: each returns { cells, group } on the content rect R
+  const SCHEMES = {
+    // CARPET: a field with a medallion, framed by rings: guard, main border
+    // (cornerstones and cartouches), guard. Two mirrors.
+    carpet(R, P, o) {
+      let cells = [], u = Math.min(R.w, R.h);
+      let g = Math.max(o.ms * 0.85, u * 0.05), b = Math.max(o.ms * 1.7, u * (0.13 + 0.05 * P.nextFloat()));
+      let rings = o.depth >= 2 ? [g, b, g, b * 0.7] : o.depth >= 1 ? [g, b, g] : [b];
+      let x0 = R.x, y0 = R.y, x1 = R.x + R.w, y1 = R.y + R.h;
+      for (let t of rings) {
+        if (x1 - x0 < t * 5 || y1 - y0 < t * 5) break;
+        if (t > o.ms * 1.3) {
+          for (let [x, y] of [[x0, y0], [x1 - t, y0], [x0, y1 - t], [x1 - t, y1 - t]]) cells.push(rc(x, y, t, t, 'corner'));
+          let nH = odd(clamp(Math.round((x1 - x0 - 2 * t) / (t * (1.3 + P.nextFloat()))), 1, 9)), wsH = symRhythm(o.rhythm, nH, P);
+          let nV = odd(clamp(Math.round((y1 - y0 - 2 * t) / (t * (1.3 + P.nextFloat()))), 1, 11)), wsV = symRhythm(o.rhythm, nV, P);
+          for (let [a, l] of segs(x0 + t, x1 - x0 - 2 * t, wsH)) cells.push(rc(a, y0, l, t, 'band'), rc(a, y1 - t, l, t, 'band'));
+          for (let [a, l] of segs(y0 + t, y1 - y0 - 2 * t, wsV)) cells.push(rc(x0, a, t, l, 'band'), rc(x1 - t, a, t, l, 'band'));
+        } else {
+          cells.push(rc(x0, y0, x1 - x0, t, 'guard'), rc(x0, y1 - t, x1 - x0, t, 'guard'), rc(x0, y0 + t, t, y1 - y0 - 2 * t, 'guard'), rc(x1 - t, y0 + t, t, y1 - y0 - 2 * t, 'guard'));
+        }
+        x0 += t; y0 += t; x1 -= t; y1 -= t;
+      }
+      // the field: a medallion and its spandrels (a nine-patch)
+      let fw = x1 - x0, fh = y1 - y0, k = 1.6 + 0.9 * P.nextFloat();
+      if (Math.min(fw, fh) > o.ms * 5) {
+        let xs = segs(x0, fw, [1, k, 1]), ys = segs(y0, fh, [1, k * fh / fw > 4 ? 4 : k * Math.max(1, fh / fw), 1]);
+        for (let j = 0; j < 3; j++) for (let i = 0; i < 3; i++) cells.push(rc(xs[i][0], ys[j][0], xs[i][1], ys[j][1], i === 1 && j === 1 ? 'field' : i === 1 || j === 1 ? 'panel' : 'corner'));
+      } else cells.push(rc(x0, y0, fw, fh, 'field'));
+      return { cells, group: ['mx', 'my'] };
+    },
+
+    // COURTHOUSE STEPS: strips peeled in pairs, top and bottom then left and
+    // right, nesting in toward a field; each strip split along its length.
+    courthouse(R, P, o) {
+      let cells = [], u = Math.min(R.w, R.h), x0 = R.x, y0 = R.y, x1 = R.x + R.w, y1 = R.y + R.h;
+      let steps = 2 + 2 * o.depth, ts = stripW(o.rhythm, steps, P, o.ms);
+      for (let k = 0; k < steps; k++) {
+        let horiz = k % 2 === 0, t = ts[k];
+        if ((horiz ? y1 - y0 : x1 - x0) - 2 * t < u * 0.3) break;
+        let L = horiz ? x1 - x0 : y1 - y0, n = odd(clamp(Math.round(L / (t * (2 + 1.5 * P.nextFloat()))), 1, 7)), ws = symRhythm(o.rhythm, n, P);
+        for (let [a, l] of segs(horiz ? x0 : y0, L, ws)) {
+          if (horiz) cells.push(rc(a, y0, l, t, 'band'), rc(a, y1 - t, l, t, 'band'));
+          else cells.push(rc(x0, a, t, l, 'band'), rc(x1 - t, a, t, l, 'band'));
+        }
+        if (horiz) { y0 += t; y1 -= t; } else { x0 += t; x1 -= t; }
+      }
+      cells.push(rc(x0, y0, x1 - x0, y1 - y0, 'field'));
+      return { cells, group: ['mx', 'my'] };
+    },
+
+    // LOG CABIN: strips peeled round the block in turn (top, right, bottom,
+    // left), each narrower than the last, spiralling in to a hearth. The
+    // turns rhyme in halves, light and dark, as the quilt does.
+    logcabin(R, P, o) {
+      let cells = [], u = Math.min(R.w, R.h), x0 = R.x, y0 = R.y, x1 = R.x + R.w, y1 = R.y + R.h;
+      let n = 4 * (2 + o.depth), start = Math.floor(P.nextFloat() * 4), top = 1.8 + 0.8 * P.nextFloat(), r = Math.pow(1 / top, 1 / (n - 1));
+      for (let k = 0; k < n; k++) {
+        let side = (k + start) % 4, t = o.ms * top * Math.pow(r, k), turn = Math.floor(k / 4), half = (k % 4) < 2 ? 'a' : 'b';
+        if (x1 - x0 < t * 3 || y1 - y0 < t * 3) break;
+        let ob = 'turn' + turn + half;
+        if (side === 0) { cells.push(rc(x0, y0, x1 - x0, t, 'band', ob)); y0 += t; }
+        else if (side === 1) { cells.push(rc(x1 - t, y0, t, y1 - y0, 'band', ob)); x1 -= t; }
+        else if (side === 2) { cells.push(rc(x0, y1 - t, x1 - x0, t, 'band', ob)); y1 -= t; }
+        else { cells.push(rc(x0, y0, t, y1 - y0, 'band', ob)); x0 += t; }
+      }
+      cells.push(rc(x0, y0, x1 - x0, y1 - y0, 'field', 'hearth'));
+      return { cells, group: [] };
+    },
+
+    // TRIPTYCH: a central panel under a lunette, wings of stacked panels that
+    // mirror each other, and a predella of small panels along the foot.
+    triptych(R, P, o) {
+      let cells = [], pred = R.h * (0.1 + 0.04 * P.nextFloat()), mh = R.h - pred;
+      let cols = segs(R.x, R.w, [1, 1.6 + 0.6 * P.nextFloat(), 1]), [cx, cw] = cols[1], lun = mh * (0.14 + 0.06 * P.nextFloat());
+      cells.push(rc(cx, R.y, cw, lun, 'band'), rc(cx, R.y + lun, cw, mh - lun, 'field'));
+      let n = 2 + Math.floor(P.nextFloat() * (2 + o.depth)), ws = rhythmW(o.rhythm, n, P);
+      for (let s of [0, 2]) for (let [a, l] of segs(R.y, mh, ws)) cells.push(rc(cols[s][0], a, cols[s][1], l, 'panel'));
+      let m = odd(clamp(Math.round(R.w / (pred * 1.5)), 3, 9));
+      for (let [a, l] of segs(R.x, R.w, symRhythm(o.rhythm, m, P))) cells.push(rc(a, R.y + mh, l, pred, 'band'));
+      return { cells, group: ['mx'] };
+    },
+
+    // COLONNADE: columns and bays (the middle bay wider), an entablature of
+    // triglyphs over the columns and metopes over the bays, a stylobate.
+    // One mirror, and every bay repeats.
+    colonnade(R, P, o) {
+      let cells = [], ent = R.h * (0.1 + 0.04 * P.nextFloat()), base = R.h * 0.07, bays = [3, 5][Math.floor(P.nextFloat() * 2)];
+      let col = Math.max(o.ms, R.w * 0.055), wB = Array.from({ length: bays }, (_, i) => i === (bays - 1) / 2 ? 1.5 : 1), unit = (R.w - (bays + 1) * col) / sum(wB);
+      let xs = [], x = R.x;
+      for (let i = 0; i < bays; i++) { xs.push(['col', x, col]); x += col; xs.push(['bay', x, unit * wB[i]]); x += unit * wB[i]; }
+      xs.push(['col', x, col]);
+      let y0 = R.y + ent, y1 = R.y + R.h - base, bayWs = rhythmW(o.rhythm, 1 + Math.min(3, 1 + o.depth), P).sort((a, b) => a - b);
+      for (let [k, x2, w] of xs) {
+        cells.push(rc(x2, R.y, w, ent, k === 'col' ? 'guard' : 'band'));
+        if (k === 'col') cells.push(rc(x2, y0, w, y1 - y0, 'column'));
+        else for (let [a, l] of segs(y0, y1 - y0, bayWs)) cells.push(rc(x2, a, w, l, 'panel'));
+      }
+      cells.push(rc(R.x, y1, R.w, base, 'band'));
+      return { cells, group: ['mx'] };
+    },
+
+    // PINWHEEL: four arms turning round a centre, which turns again the
+    // other way (nesting). Half-turn symmetry.
+    pinwheel(R, P, o) {
+      let cells = [];
+      let go = (Q, d, flip) => {
+        let a = 0.3 + 0.12 * P.nextFloat(), X = Q.x + Q.w, Y = Q.y + Q.h;
+        let x1 = Q.x + Q.w * a, x2 = Q.x + Q.w * (1 - a), y1 = Q.y + Q.h * a, y2 = Q.y + Q.h * (1 - a);
+        let arms = flip
+          ? [rc(Q.x, Q.y, x1 - Q.x, y2 - Q.y), rc(x1, Q.y, X - x1, y1 - Q.y), rc(x2, y1, X - x2, Y - y1), rc(Q.x, y2, x2 - Q.x, Y - y2)]
+          : [rc(Q.x, Q.y, x2 - Q.x, y1 - Q.y), rc(x2, Q.y, X - x2, y2 - Q.y), rc(x1, y2, X - x1, Y - y2), rc(Q.x, y1, x1 - Q.x, Y - y1)];
+        arms.forEach(c => { c.role = d ? 'panel' : 'band'; }); // the arms pair across the centre (half-turn)
+        cells.push(...arms);
+        let C = { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+        if (d < o.depth && Math.min(C.w, C.h) > o.ms * 4) go(C, d + 1, !flip); else cells.push(rc(C.x, C.y, C.w, C.h, 'field', 'core'));
+      };
+      go(R, 0, P.nextFloat() < 0.5);
+      return { cells, group: ['r180'] };
+    },
+
+    // CROSS: a central column (capped by stacked strips) crossed by a middle
+    // band of side panels; each quarter nests L-shaped strips in toward the
+    // centre. Two mirrors (the shape of the reference).
+    cross(R, P, o) {
+      let cw = R.w * pick(P, [0.28, 0.33, 0.38, 0.42, 0.46]), mh = R.h * pick(P, [0.12, 0.16, 0.2, 0.25]);
+      let through = P.nextFloat() < 0.5, inward = P.nextFloat() < 0.6, cx0 = R.x + (R.w - cw) / 2, my0 = R.y + (R.h - mh) / 2, cyMid = R.y + R.h / 2;
+      let tl = [], top = R.y, nCap = Math.floor(P.nextFloat() * (2 + o.depth)), capWs = stripW(o.rhythm, Math.max(1, nCap), P, o.ms * 0.9);
+      // the column: a cap of stacked strips, then one field the column's
+      // length, or (when the band runs through) a field each side of a crossing
+      for (let k = 0; k < nCap; k++) { tl.push(rc(cx0, top, cw / 2, capWs[k], 'band')); top += capWs[k]; }
+      if (through) tl.push(rc(cx0, top, cw / 2, my0 - top, 'field'), rc(cx0, my0, cw / 2, mh / 2, 'panel'));
+      else tl.push(rc(cx0, top, cw / 2, cyMid - top, 'field'));
+      tl.push(rc(R.x, my0, cx0 - R.x, mh / 2, 'panel'));
+      // the quarter: L-shaped strips nesting in toward the centre, or out from it
+      let qx0 = R.x, qy0 = R.y, qx1 = cx0, qy1 = my0, nest = 1 + Math.floor(P.nextFloat() * (2 + o.depth)), ts = stripW(o.rhythm, nest * 2, P, o.ms);
+      for (let k = 0; k < nest * 2; k++) {
+        let t = ts[k];
+        if (qx1 - qx0 < t * 2.2 || qy1 - qy0 < t * 2.2) break;
+        if (inward) { if (k % 2 === 0) { tl.push(rc(qx0, qy0, qx1 - qx0, t, 'band')); qy0 += t; } else { tl.push(rc(qx0, qy0, t, qy1 - qy0, 'band')); qx0 += t; } }
+        else { if (k % 2 === 0) { tl.push(rc(qx0, qy1 - t, qx1 - qx0, t, 'band')); qy1 -= t; } else { tl.push(rc(qx1 - t, qy0, t, qy1 - qy0, 'band')); qx1 -= t; } }
+      }
+      tl.push(rc(qx0, qy0, qx1 - qx0, qy1 - qy0, 'panel'));
+      // merge the halves that meet on an axis (the field and the caps span it)
+      let mx = c => rc(2 * R.x + R.w - c.x - c.w, c.y, c.w, c.h, c.role), my = c => rc(c.x, 2 * R.y + R.h - c.y - c.h, c.w, c.h, c.role);
+      let all = [...tl, ...tl.map(mx), ...tl.map(my), ...tl.map(c => mx(my(c)))];
+      return { cells: mergeOnAxes(all, R), group: ['mx', 'my'] };
+    },
+
+    // NINE-PATCH: three by three, the middle larger; the centre holds the
+    // next nine-patch (nesting). Two mirrors.
+    ninepatch(R, P, o) {
+      let cells = [];
+      let go = (Q, d) => {
+        let k = 1.5 + 1.1 * P.nextFloat(), xs = segs(Q.x, Q.w, [1, k, 1]), ys = segs(Q.y, Q.h, [1, k, 1]);
+        for (let j = 0; j < 3; j++) for (let i = 0; i < 3; i++) {
+          let c = rc(xs[i][0], ys[j][0], xs[i][1], ys[j][1], i === 1 && j === 1 ? 'field' : i === 1 || j === 1 ? 'panel' : 'corner');
+          if (c.role === 'field' && d < o.depth && Math.min(c.w, c.h) > o.ms * 4.5) go(c, d + 1); else cells.push(c);
+        }
+      };
+      go(R, 0);
+      return { cells, group: ['mx', 'my'] };
+    },
+
+    // STRATA: courses of bricks in running bond (each course set half a brick
+    // over), thin courses left whole as bands. Glide symmetry: courses rhyme
+    // with the courses two away.
+    strata(R, P, o) {
+      let cells = [], nRows = 4 + o.depth + Math.floor(P.nextFloat() * 3), hs = rhythmW(o.rhythm, nRows, P), unit = R.w / (2.5 + Math.floor(P.nextFloat() * 3));
+      segs(R.y, R.h, hs).forEach(([y, h], r) => {
+        if (h < o.ms * 1.6) { cells.push(rc(R.x, y, R.w, h, 'band', 'mortar')); return; }
+        let cuts = [R.x];
+        for (let c = R.x + (r % 2 ? unit / 2 : unit); c < R.x + R.w - unit * 0.3; c += unit) cuts.push(c);
+        cuts.push(R.x + R.w);
+        for (let k = 0; k + 1 < cuts.length; k++) cells.push(rc(cuts[k], y, cuts[k + 1] - cuts[k], h, 'panel', 'course' + (r % 2) + '-' + k));
+      });
+      return { cells, group: [] };
+    },
+
+    // CANON: the manuscript page (Van de Graaf): a text block of six ninths,
+    // margins of one, one, two and two ninths: a gutter strip, a running
+    // head, glosses down the outer margin, notes and a folio at the foot.
+    canon(R, P, o) {
+      let cells = [], recto = P.nextFloat() < 0.5, W9 = R.w / 9, H9 = R.h / 9;
+      let bx = R.x + (recto ? W9 : 2 * W9), by = R.y + H9, bw = 6 * W9, bh = 6 * H9;
+      cells.push(rc(R.x, R.y, R.w, H9, 'band'));                                   // the head margin
+      cells.push(rc(recto ? R.x : bx + bw, by, recto ? W9 : W9, bh, 'guard'));        // the gutter
+      let mx = recto ? bx + bw : R.x, glosses = rhythmW(o.rhythm, 2 + o.depth + Math.floor(P.nextFloat() * 2), P);
+      for (let [a, l] of segs(by, bh, glosses)) cells.push(rc(mx, a, 2 * W9, l, 'band'));
+      // the text block: a running head over two columns
+      let head = bh * 0.07;
+      cells.push(rc(bx, by, bw, head, 'band'));
+      let colWs = rhythmW(o.rhythm, 1 + Math.min(2, o.depth), P);
+      for (let [a, l] of segs(bx, bw, [1, 1])) for (let [b2, m] of segs(by + head, bh - head, colWs)) cells.push(rc(a, b2, l, m, 'panel'));
+      // the foot: notes under the block, the folio in the outer corner
+      let fy = by + bh, fh = R.y + R.h - fy;
+      cells.push(rc(recto ? R.x : bx, fy, recto ? W9 + bw : bw + W9, fh, 'panel'), rc(recto ? bx + bw : R.x, fy, 2 * W9, fh, 'corner'));
+      return { cells, group: [] };
+    }
+  };
+  SCHEMES.carpet.rhythms = ['pal', 'alt', 'even'];
+  SCHEMES.courthouse.rhythms = ['pal', 'alt', 'euclid'];
+  SCHEMES.logcabin.rhythms = ['golden'];
+  SCHEMES.triptych.rhythms = ['golden', 'fib', 'harmonic', 'even'];
+  SCHEMES.colonnade.rhythms = ['golden', 'harmonic', 'fib'];
+  SCHEMES.pinwheel.rhythms = ['even'];
+  SCHEMES.cross.rhythms = ['alt', 'golden', 'fib'];
+  SCHEMES.ninepatch.rhythms = ['even'];
+  SCHEMES.strata.rhythms = ['euclid', 'alt', 'fib', 'harmonic'];
+  SCHEMES.canon.rhythms = ['golden', 'fib', 'euclid'];
+
+  // Cells that meet on a mirror axis and are each other's image join into one
+  // (a field or a cap that spans the axis)
+  function mergeOnAxes(cells, R) {
+    let cx = R.x + R.w / 2, cy = R.y + R.h / 2, near = (a, b) => Math.abs(a - b) < 0.5;
+    for (let again = true; again;) {
+      again = false;
+      outer: for (let i = 0; i < cells.length; i++) for (let j = i + 1; j < cells.length; j++) {
+        let a = cells[i], b = cells[j], m = null;
+        if (near(a.y, b.y) && near(a.h, b.h) && (near(a.x + a.w, b.x) || near(b.x + b.w, a.x)) && near(Math.min(a.x, b.x) + (a.w + b.w) / 2, cx)) m = rc(Math.min(a.x, b.x), a.y, a.w + b.w, a.h, a.role);
+        else if (near(a.x, b.x) && near(a.w, b.w) && (near(a.y + a.h, b.y) || near(b.y + b.h, a.y)) && near(Math.min(a.y, b.y) + (a.h + b.h) / 2, cy)) m = rc(a.x, Math.min(a.y, b.y), a.w, a.h + b.h, a.role);
+        if (m) { cells = cells.filter((_, k) => k !== i && k !== j).concat([m]); again = true; break outer; }
+      }
+    }
+    return cells;
+  }
+
+  // Orbits: union the cells that the symmetry maps onto each other, and the
+  // cells a construction labels alike
+  function orbits(cells, R, group) {
+    let par = cells.map((_, i) => i), find = i => par[i] === i ? i : (par[i] = find(par[i])), join = (a, b) => { par[find(a)] = find(b); };
+    let T = [];
+    if (group.includes('mx')) T.push(c => [2 * R.x + R.w - c.x - c.w, c.y]);
+    if (group.includes('my')) T.push(c => [c.x, 2 * R.y + R.h - c.y - c.h]);
+    if (group.includes('r180') || (group.includes('mx') && group.includes('my'))) T.push(c => [2 * R.x + R.w - c.x - c.w, 2 * R.y + R.h - c.y - c.h]);
+    cells.forEach((c, i) => {
+      for (let t of T) {
+        let [x, y] = t(c), j = cells.findIndex(d => Math.abs(d.x - x) < 1 && Math.abs(d.y - y) < 1 && Math.abs(d.w - c.w) < 1 && Math.abs(d.h - c.h) < 1);
+        if (j >= 0) join(i, j);
+      }
+    });
+    let byLabel = {};
+    cells.forEach((c, i) => { if (c.orbit == null) return; if (c.orbit in byLabel) join(i, byLabel[c.orbit]); else byLabel[c.orbit] = i; });
+    let ids = {}, n = 0;
+    cells.forEach((c, i) => { let r = find(i); if (!(r in ids)) ids[r] = n++; c.orbitId = ids[r]; });
+    // the flop: a cell that is a mirror image of its orbit's top-left member is drawn reflected (left-right,
+    // top-bottom or both), so its layout reflects its counterpart's even when the two aren't copies
+    let lead = {}, same = (d, x, y) => Math.abs(d.x - x) < 1 && Math.abs(d.y - y) < 1;
+    cells.forEach(c => { let l = lead[c.orbitId]; if (!l || c.y < l.y - 0.5 || (Math.abs(c.y - l.y) < 0.5 && c.x < l.x)) lead[c.orbitId] = c; });
+    cells.forEach(c => {
+      let l = lead[c.orbitId], mx = 2 * R.x + R.w - l.x - l.w, my = 2 * R.y + R.h - l.y - l.h;
+      c.flip = c === l || Math.abs(c.w - l.w) > 1 || Math.abs(c.h - l.h) > 1 ? '' : same(c, mx, l.y) && (group.includes('mx') || group.includes('r180')) ? 'x' : same(c, l.x, my) && group.includes('my') ? 'y' : same(c, mx, my) ? 'xy' : '';
+    });
+    return n;
+  }
+
+  // ---- band helpers
+  const fit = (L, P) => L / Math.max(1, Math.round(L / P)); // a period that repeats a whole number of times
+  // seven-segment digits: segments as separate strokes, slanted a little
+  const SEG7 = ['abcdef', 'bc', 'abdeg', 'abcdg', 'bcfg', 'acdfg', 'acdefg', 'abc', 'abcdefg', 'abcdfg', 'abcefg', 'cdefg', 'adef', 'bcdeg', 'adefg', 'aefg'];
+  function segDigit(c, n, u, v, w, hgt) {
+    let k = hgt * 0.06, sl = 0.1, P = (x, y) => [u + x * w + (1 - y) * hgt * sl, v + y * hgt];
+    let S = { a: [[0, 0], [1, 0]], b: [[1, 0], [1, 0.5]], c: [[1, 0.5], [1, 1]], d: [[0, 1], [1, 1]], e: [[0, 0.5], [0, 1]], f: [[0, 0], [0, 0.5]], g: [[0, 0.5], [1, 0.5]] };
+    for (let ch of SEG7[n % 16]) {
+      let [[x0, y0], [x1, y1]] = S[ch], horiz = y0 === y1, A = P(x0, y0), B = P(x1, y1), t = k / Math.hypot(B[0] - A[0], B[1] - A[1]);
+      c.draw([[A[0] + (B[0] - A[0]) * t, A[1] + (B[1] - A[1]) * t], [B[0] - (B[0] - A[0]) * t, B[1] - (B[1] - A[1]) * t]]);
+    }
+  }
+  const TAU = Math.PI * 2, frac = x => x - Math.floor(x), lerp = (a, b, t) => a + (b - a) * t;
+  // Ramer-Douglas-Peucker: a finely sampled curve, thinned
+  function rdp(pts, eps) {
+    if (pts.length < 3) return pts;
+    let keep = new Uint8Array(pts.length), st = [[0, pts.length - 1]];
+    keep[0] = keep[pts.length - 1] = 1;
+    while (st.length) {
+      let [a, b] = st.pop(), ax = pts[a][0], ay = pts[a][1], dx = pts[b][0] - ax, dy = pts[b][1] - ay, l2 = dx * dx + dy * dy || 1e-12, best = -1, bi = -1;
+      for (let i = a + 1; i < b; i++) {
+        let t = Math.max(0, Math.min(1, ((pts[i][0] - ax) * dx + (pts[i][1] - ay) * dy) / l2)), d = Math.hypot(pts[i][0] - ax - dx * t, pts[i][1] - ay - dy * t);
+        if (d > best) { best = d; bi = i; }
+      }
+      if (best > eps) { keep[bi] = 1; st.push([a, bi], [bi, b]); }
+    }
+    return pts.filter((_, i) => keep[i]);
+  }
+  // waveforms: x in cycles, out in -1..1, per their period in cycles. The
+  // edges slope a little, so a stack never draws one edge on another
+  const WAVES = {
+    sine: { f: x => Math.sin(TAU * x), per: 1 },
+    tri: { f: x => 1 - 4 * Math.abs(frac(x + 0.25) - 0.5), per: 1 },
+    saw: { f: x => { let t = frac(x); return t < 0.86 ? -1 + 2 * t / 0.86 : 1 - 2 * (t - 0.86) / 0.14; }, per: 1 },
+    square: { f: x => { let t = frac(x); return t < 0.08 ? -1 + 2 * t / 0.08 : t < 0.5 ? 1 : t < 0.58 ? 1 - 2 * (t - 0.5) / 0.08 : -1; }, per: 1 },
+    pulse: { f: x => { let t = frac(x); return t < 0.06 ? -1 + 2 * t / 0.06 : t < 0.26 ? 1 : t < 0.32 ? 1 - 2 * (t - 0.26) / 0.06 : -1; }, per: 1 },
+    rect: { f: x => 2 * Math.abs(Math.sin(Math.PI * x)) - 1, per: 1 },
+    ring: { f: x => { let t = frac(x); return t < 0.05 ? lerp(0.02, 1, t / 0.05) : Math.exp(-4 * (t - 0.05) / 0.95) * Math.cos(TAU * 3 * (t - 0.05) / 0.95); }, per: 1 },
+    fm: { f: x => Math.sin(TAU * x + 1.4 * Math.sin(TAU * x / 2)), per: 2 }
+  };
+  const STEEP = new Set(['saw', 'square', 'pulse', 'ring']);
+  // one wave line across the band: v = vb + A W(u / P * f + ph)
+  const waveLine = (W, P, ph, A, vb, L, f) => { let du = Math.min(P / 90, 0.45), n = Math.ceil(L / du), pts = []; for (let i = 0; i <= n; i++) { let u = L * i / n; pts.push([u, vb + A * W.f(u / P * (f || 1) + ph)]); } return rdp(pts, 0.05); };
+  // how long two curves, sampled at the same steps of u, run within c of
+  // each other at under 15 degrees (the clash audit's test: a crossing does not count)
+  function fusedLen(A, B, c, w) {
+    let tot = 0;
+    for (let i = 1; i < A.length; i++) {
+      let ax = (A[i][0] + A[i - 1][0]) / 2, ay = (A[i][1] + A[i - 1][1]) / 2, tx = A[i][0] - A[i - 1][0], ty = A[i][1] - A[i - 1][1], tl = Math.hypot(tx, ty) || 1e-9, best = Infinity, bx = 0, by = 0;
+      for (let j = Math.max(1, i - w); j < Math.min(B.length, i + w + 1); j++) {
+        let px = B[j - 1][0], py = B[j - 1][1], qx = B[j][0] - px, qy = B[j][1] - py, q2 = qx * qx + qy * qy || 1e-12, t = Math.max(0, Math.min(1, ((ax - px) * qx + (ay - py) * qy) / q2)), d = Math.hypot(ax - px - qx * t, ay - py - qy * t);
+        if (d < best) { best = d; bx = qx; by = qy; }
+      }
+      if (best < c && Math.abs(tx * bx + ty * by) / (tl * (Math.hypot(bx, by) || 1e-9)) > 0.966) tot += tl;
+    }
+    return tot;
+  }
+  // The least drop dv from a wave line to the next, D cycles further on in
+  // phase, at which the two never cross and never run within c of each
+  // other at under 15 degrees. A stack built pair by pair this way packs as
+  // close as the pen allows and never crosses itself
+  const _gapCache = new Map();
+  function pairGap(W, P, A, D, c) {
+    let key = [W.f.toString().length, W.per, P.toFixed(3), A.toFixed(3), D.toFixed(5), c.toFixed(3)].join('|');
+    if (_gapCache.has(key)) return _gapCache.get(key);
+    let per = W.per * P, du = Math.min(P / 200, 0.2), n = Math.ceil(per / du), w = Math.ceil(c / du) + 2, a = [], lo = 0, out = null;
+    for (let i = -w; i <= n + w; i++) { let u = i * du; a.push([u, A * W.f(u / P)]); lo = Math.max(lo, A * (W.f(u / P) - W.f(u / P + D))); }
+    for (let dv = lo + c * 0.5; dv < lo + 2 * A + 4 * c && out === null; dv += c * 0.04) if (fusedLen(a, a.map(([u]) => [u, dv + A * W.f(u / P + D)]), c, w) < c * 0.3) out = dv;
+    out = out === null ? lo + 2 * A + 4 * c : out;
+    _gapCache.set(key, out);
+    return out;
+  }
+  // For waves with flat runs and steep edges (square, pulse, saw, ring): an
+  // even spacing at which the lines may cross but never run fused, with the
+  // amplitude tied to the spacing (2A = (j + 1/2) dv), so a line's flat runs
+  // fall halfway between its neighbours'. Returns { dv, A }
+  function solveWeave(W, P, j, ph, Q, c, lo, hi) {
+    for (let dv = lo; dv <= hi; dv += 0.05 * c) {
+      let A = (j + 0.5) * dv / 2, per = W.per * P, du = Math.min(P / 160, 0.25), n = Math.ceil(per / du), w = Math.ceil(c / du) + 2, ok = true;
+      let line = (phase, vb) => { let pts = []; for (let i = -w; i <= n + w; i++) { let u = i * du; pts.push([u, vb + A * W.f(u / P + phase)]); } return pts; };
+      for (let k = 0; k < Q && ok; k++) { let a = line(ph(k), 0); for (let m = 1; m * dv < 2 * A + c && ok; m++) if (fusedLen(a, line(ph(k + m), m * dv), c, w) > c * 0.5) ok = false; }
+      if (ok) return { dv, A };
+    }
+    return null;
+  }
+  // a polyline moved sideways by d (left of its direction), mitred at the corners
+  function offsetPolyline(pts, d) {
+    let q = pts.filter((pt, i) => i === 0 || Math.hypot(pt[0] - pts[i - 1][0], pt[1] - pts[i - 1][1]) > 1e-6), out = [];
+    let nrm = (a, b) => { let dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy); return [-dy / l, dx / l]; };
+    for (let i = 0; i < q.length; i++) {
+      let n1 = i > 0 ? nrm(q[i - 1], q[i]) : null, n2 = i < q.length - 1 ? nrm(q[i], q[i + 1]) : null, m;
+      if (!n1) m = n2; else if (!n2) m = n1; else { let k = 1 + n1[0] * n2[0] + n1[1] * n2[1]; m = [(n1[0] + n2[0]) / k, (n1[1] + n2[1]) / k]; }
+      out.push([q[i][0] + d * m[0], q[i][1] + d * m[1]]);
+    }
+    return out;
+  }
+  // a polyline running left to right, with the stretch from u = a to u = b taken out
+  function cutU(pts, a, b) {
+    let A = [], B = [], at = (p0, p1, u) => [u, p0[1] + (p1[1] - p0[1]) * (u - p0[0]) / (p1[0] - p0[0])];
+    for (let i = 0; i < pts.length; i++) {
+      let pt = pts[i];
+      if (pt[0] <= a) A.push(pt);
+      if (i > 0) { let pr = pts[i - 1]; if (pr[0] < a && pt[0] > a) A.push(at(pr, pt, a)); if (pr[0] < b && pt[0] > b) B.push(at(pr, pt, b)); }
+      if (pt[0] >= b) B.push(pt);
+    }
+    return [A, B];
+  }
+  const yAtU = (pts, u) => { for (let i = 1; i < pts.length; i++) if (pts[i][0] >= u) { let a = pts[i - 1], b = pts[i]; return a[1] + (b[1] - a[1]) * (u - a[0]) / ((b[0] - a[0]) || 1e-9); } return pts[pts.length - 1][1]; };
+  const smax = (a, b, k) => { let m = Math.max(a, b); return m + Math.log(Math.exp((a - m) * k) + Math.exp((b - m) * k)) / k; };
+
+  const tri01 = x => 1 - 2 * Math.abs(frac(x) - 0.5);
+  const onsetsOf = (k, m) => { let out = new Set(), acc = 0; for (let x of euclid(k, m)) { out.add(acc); acc += x; } return out; };
+  const divisors = (n, lo, hi) => { let out = []; for (let d = lo; d <= Math.min(hi, n); d++) if (n % d === 0) out.push(d); return out; };
+  // lines at angle th through a polygon, d apart. With y0 (a line's offset in the lines' own frame)
+  // they fall on y0 + k d for k >= 1, short of the far edge by lo: hatch that keeps clear of the
+  // polygon's own edges. Without it, a lattice from 0 (for solids)
+  function hatchPoly(c, poly, th, d, y0, lo) {
+    let ca = Math.cos(th), sa = Math.sin(th), rot = ([x, y]) => [x * ca + y * sa, -x * sa + y * ca], inv = ([x, y]) => [x * ca - y * sa, x * sa + y * ca];
+    let P = poly.map(rot), ymin = Math.min(...P.map(q => q[1])), ymax = Math.max(...P.map(q => q[1]));
+    let start = y0 === undefined ? Math.ceil(ymin / d) * d : y0 + d * Math.max(1, Math.ceil((ymin - y0) / d));
+    for (let y = start; y <= ymax - (lo || 0); y += d) {
+      let xs = [];
+      for (let i = 0; i < P.length; i++) { let a = P[i], b = P[(i + 1) % P.length]; if ((a[1] <= y) !== (b[1] <= y)) xs.push(a[0] + (b[0] - a[0]) * (y - a[1]) / (b[1] - a[1])); }
+      xs.sort((m, n) => m - n);
+      for (let i = 0; i + 1 < xs.length; i += 2) if (xs[i + 1] - xs[i] > 0.3) c.draw([inv([xs[i], y]), inv([xs[i + 1], y])]);
+    }
+  }
+  const lineFrameY = (th, [x, y]) => -x * Math.sin(th) + y * Math.cos(th);
+
+    // Tunnels side by side, sharing their walls: frames shrinking toward a
+    // vanishing point that travels along the band and swings up and down;
+    // rays from the corners and along each side, each stopped before it crowds
+  const BAND_TUNNEL = function (c) {
+      let { L, s, g, h } = c, T = fit(L, s * (0.95 + 0.45 * h)), n = Math.round(L / T), r = 0.87, v0 = g * 0.5, v1 = s - g * 0.5;
+      c.rails(v0, v1);
+      for (let k = 0; k <= n; k++) c.draw([[k * T, v0], [k * T, v1]]);
+      for (let k = 0; k < n; k++) {
+        let u0 = k * T, u1 = (k + 1) * T, t = (k + 0.5) / n, vp = [u0 + (u1 - u0) * (0.2 + 0.6 * t), s / 2 + (s / 2 - g * 4) * 0.3 * Math.sin(TAU * t * 1.5)];
+        let dn = Math.min(vp[0] - u0, u1 - vp[0], vp[1] - v0, v1 - vp[1]), df = g * 1.2 / dn, fl = 1;
+        for (let f = 1 - df; f > 0.1; f -= df) { c.rect(vp[0] + (u0 - vp[0]) * f, vp[1] + (v0 - vp[1]) * f, vp[0] + (u1 - vp[0]) * f, vp[1] + (v1 - vp[1]) * f); fl = f; }
+        let ray = (x, y, sp) => { let f = Math.max(fl, Math.min(1, g * 1.25 / sp)); c.draw([[x, y], [vp[0] + (x - vp[0]) * f, vp[1] + (y - vp[1]) * f]]); };
+        for (let i = 0; i <= 4; i++) { let x = u0 + (u1 - u0) * i / 4, sp = i === 0 || i === 4 ? Infinity : (u1 - u0) / 4; ray(x, v0, sp); ray(x, v1, sp); }
+        ray(u0, (v0 + v1) / 2, (v1 - v0) / 2); ray(u1, (v0 + v1) / 2, (v1 - v0) / 2);
+      }
+  };
+  const BAND_FNS = {
+    // ---- signal -------------------------------------------------------------------------------
+    // Two voices of one wave in ribbons of 2-4 lines (sizes in a repeating order). The second voice runs
+    // R cycles ahead over the band, so the weave comes round R times; each ribbon starts a step further
+    // on than the one above, so the knots climb the band in diagonals
+    reich(c) {
+      let { L, s, g, p } = c, P = fit(L, s * (0.45 + 0.25 * c.H(1))), N = Math.round(L / P), A = s * 0.085, wn = ['sine', 'tri', 'rect', 'sine', 'fm'][Math.floor(c.H(2) * 5)], W = WAVES[wn], cl = p * 1.55;
+      let sizes = [[2, 3, 4, 3], [3, 3, 2], [4, 2], [2, 2, 3]][Math.floor(c.H(3) * 4)], d = 0.01 + 0.015 * c.H(4), sig = [0.125, 0.0625, 0.1875][Math.floor(c.H(6) * 3)], R = 2 + Math.floor(c.H(5) * 3);
+      let lines = [];
+      for (let gi = 0; lines.length < 400; gi++) for (let j = 0; j < sizes[gi % sizes.length]; j++) lines.push([gi, j]);
+      let ph = k => Math.round((lines[k][1] * d + lines[k][0] * sig) * 500) / 500, vs = [0];
+      for (let k = 1; k < 400 && vs[k - 1] + 2 * A < s - g; k++) vs.push(vs[k - 1] + pairGap(W, P, A, ph(k) - ph(k - 1), cl));
+      while (vs.length > 1 && vs[vs.length - 1] + 2 * A > s - g) vs.pop();
+      let off = (s - vs[vs.length - 1]) / 2;
+      vs.forEach((v, k) => c.draw(waveLine(W, P, ph(k), A, off + v, L, lines[k][0] % 2 ? 1 + R / N : 1)));
+    },
+    // One wave, each line as close under the last as the pen allows (never crossing). The phase steps
+    // make the pattern: 'steps' shears each group a little and jumps between groups, 'mirror' shears
+    // one way then back (chevrons), 'chain' jumps half a cycle (lenses), 'euclid' spreads its jumps
+    // by a Euclidean rhythm. The step also swells and eases every K lines, so the stack bunches and
+    // opens in bands, and along the band the wave quickens and slows (fm) or swells and flattens (am).
+    // Waves with flat runs and steep edges weave instead, crossing square on
+    phasestack(c) {
+      let { L, s, g, p } = c, types = ['tri', 'saw', 'square', 'rect', 'sine', 'pulse', 'ring', 'fm'], wn = types[Math.floor(c.H(1) * types.length)], W = WAVES[wn], cl = p * 1.55, steep = STEEP.has(wn);
+      let P = fit(L, s * (0.4 + 0.3 * c.H(2))), A = s * (steep ? 0.035 + 0.02 * c.H(3) : 0.07 + 0.05 * c.H(3)), mode = ['steps', 'mirror', 'chain', 'euclid'][Math.floor(c.H(7) * 4)];
+      let G = 2 + Math.floor(c.H(4) * 4), d = Math.max(0.012 + 0.02 * c.H(5), steep ? cl * 1.3 / P : 0), J = mode === 'chain' ? 0.5 : d * (3 + Math.floor(c.H(6) * 4));
+      let m8 = 8 + Math.floor(c.H(9) * 5), ons = onsetsOf(3 + Math.floor(c.H(8) * 3), m8);
+      let K = 6 + Math.floor(c.H(12) * 8), mu = 0.8 + 1.6 * c.H(13), sw = k => 1 + mu * (0.5 - 0.5 * Math.cos(TAU * k / K));
+      let inc = k => { let base = mode === 'euclid' ? (ons.has(k % m8) ? J : d * 0.25) : k % G === 0 ? (mode === 'mirror' ? 0 : J) : (mode === 'mirror' && Math.floor(k / G) % 2 ? -d : d); return Math.round(base * (mode === 'chain' && k % G === 0 ? 1 : sw(k)) * 500) / 500; };
+      let lam = P * (4 + Math.floor(c.H(14) * 5)), mod = ['flat', 'fm', 'am'][Math.floor(c.H(15) * 3)], beta = 0.35, Pg = mod === 'fm' ? P / (1 + beta) : P;
+      let X = u => mod === 'fm' ? u / P + beta * lam / (P * TAU) * Math.sin(TAU * u / lam) : u / P, E = u => mod === 'am' ? 0.5 + 0.5 * Math.cos(TAU * u / lam) : 1;
+      let line = (ph, vb, Aa) => { let du = Math.min(Pg / 90, 0.45), n = Math.ceil(L / du), pts = []; for (let i = 0; i <= n; i++) { let u = L * i / n; pts.push([u, vb + Aa * E(u) * W.f(X(u) + ph)]); } return rdp(pts, 0.05); };
+      let phs = [0], vs = [0];
+      for (let k = 1; k < 400 && vs[k - 1] + 2 * A < s - g; k++) { phs.push(phs[k - 1] + inc(k)); vs.push(vs[k - 1] + pairGap(W, Pg, A, phs[k] - phs[k - 1], cl)); }
+      while (vs.length > 1 && vs[vs.length - 1] + 2 * A > s - g) { vs.pop(); phs.pop(); }
+      if (steep) {
+        let jj = 2 + Math.floor(c.H(10) * 3), JJ = [0.5, 0.3, 0.62][Math.floor(c.H(11) * 3)], dd = Math.max(d, cl * 2.8 / P), ph = k => (k % G) * dd + Math.floor(k / G) * JJ;
+        let wv = solveWeave(W, P, jj, ph, G, cl, cl * 2, g * 6);
+        if (wv) {
+          let n2 = Math.max(3, Math.floor((s - 2 * wv.A - g) / wv.dv) + 1), v0 = (s - (n2 - 1) * wv.dv) / 2;
+          if (n2 > vs.length) { for (let k = 0; k < n2; k++) c.draw(waveLine(W, P, ph(k), wv.A, v0 + k * wv.dv, L)); return; }
+        }
+      }
+      let off = (s - vs[vs.length - 1]) / 2;
+      vs.forEach((v, k) => c.draw(line(phs[k], off + v, A)));
+    },
+    // Lanes of a carrier under a beating envelope, each lane's envelope a step behind the lane above (the
+    // still points run down the band in diagonals); the carriers' rates in a repeating order, so the lanes
+    // go dense and open in bands
+    beats(c) {
+      let { L, s, g } = c, lanes = Math.max(3, Math.floor(s / Math.max(3.8 * g, s / 15))), lh = s / lanes, a = (lh - g * 1.25) / 2;
+      let wn = ['sine', 'tri', 'square', 'saw'][Math.floor(c.H(1) * 4)], Wc = WAVES[wn], Pc0 = Math.max(2.6 * g, a * 1.5);
+      let Pb = fit(L, s * (0.8 + 0.5 * c.H(2))), sig = [0.125, 0.25, 1 / 6, 1 / 3][Math.floor(c.H(3) * 4)], rates = [[1, 1.25, 1.5, 1.25], [1, 1, 1.6], [1.5, 1, 1, 1.5, 2]][Math.floor(c.H(4) * 3)];
+      for (let k = 0; k < lanes; k++) {
+        let Pc = Pc0 * rates[k % rates.length], vb = (k + 0.5) * lh, du = Math.min(Pc / 24, 0.4), n = Math.ceil(L / du), pts = [];
+        for (let i = 0; i <= n; i++) { let u = L * i / n; pts.push([u, vb + a * Math.cos(Math.PI * (u / Pb - k * sig)) * Wc.f(u / Pc)]); }
+        c.draw(rdp(pts, 0.04));
+      }
+    },
+    // A sequencer's pattern as a waveform overview: 16 steps, hits on a Euclidean rhythm, some accented,
+    // each dying over a step or two, so the same shapes come round every 16 steps. Three copies on
+    // interleaved slots (solid bars, dashed bars, dots), each a step behind the last: a canon
+    scopebars(c) {
+      let { L, s, g, p } = c, q = g * 1.1, mid = s / 2, Am = s / 2 - g * 0.8;
+      let st = fit(L, s * (0.28 + 0.14 * c.H(1))), hits = onsetsOf(5 + Math.floor(c.H(2) * 4), 16), acc = onsetsOf(3, 16), f1 = 1 / (g * (2.2 + 1.6 * c.H(3)));
+      let hit = n => { n = ((n % 16) + 16) % 16; return hits.has(n) ? (acc.has(n) ? 1 : 0.62) : 0; };
+      let sig = u => { let n = Math.floor(u / st), t = (u - n * st) / st, a = 0; for (let b = 0; b < 3; b++) { let hv = hit(n - b); if (hv) a = Math.max(a, hv * Math.exp(-(t + b) * 2)); } return Math.max(a, 0.16) * (0.72 + 0.28 * Math.abs(Math.sin(TAU * f1 * u))); };
+      let dash = g * 1.5, gap = g * 1.05, dot = g * 1.55;
+      for (let i = 0, u = q / 2; u < L; u += q, i++) {
+        let k = i % 3, a = Math.min(Am, sig(u - k * st) * Am * [1, 0.88, 0.76][k]);
+        if (k === 0) { a = Math.max(g * 0.6, a); c.draw([[u, mid - a], [u, mid + a]]); }
+        else if (k === 1) { for (let v = g * 0.5; v < a - g * 0.3; v += dash + gap) { let e = Math.min(a, v + dash); c.draw([[u, mid - e], [u, mid - v]]); c.draw([[u, mid + v], [u, mid + e]]); } }
+        else { for (let v = dot / 2; v < a; v += dot) { c.circ(u, mid - v, p * 1.05); c.circ(u, mid + v, p * 1.05); } }
+      }
+    },
+    // An eye diagram: one bit pattern of M bits for all the traces, each trace a step further along it,
+    // so the crossings walk through the bundle in diagonals and the whole repeats every M bits
+    eye(c) {
+      let { L, s, g } = c, b = g * 1.05, a = g * 1.2, N = Math.max(3, Math.min(14, Math.floor(s * 0.3 / b)));
+      let vt = g * 0.7, vl = s - g * 0.7 - (N - 1) * b, sw = vl - vt, T = fit(L, Math.max(s * 0.55, sw * 0.9 + a * (N - 1))), n = Math.round(L / T);
+      let lam = Math.max(g * 3, Math.min(T * 0.5, sw * 0.7, T - a * (N - 1) - g * 2));
+      let M = [8, 12, 10, 6][Math.floor(c.H(1) * 4)], sg = 1 + Math.floor(c.H(2) * 3), base = [];
+      for (let i = 0; i < M; i++) base.push(c.H(300 + i) < 0.5);
+      base[0] = true; base[Math.floor(M / 2)] = false;
+      for (let j = 0; j < N; j++) {
+        let bit = k => base[(((k + j * sg) % M) + M) % M], lvl = k => (bit(k) ? vt : vl) + j * b, pts = [[0, lvl(0)]];
+        for (let k = 1; k < n; k++) {
+          if (bit(k) === bit(k - 1)) continue;
+          let u0 = k * T + (bit(k) ? 1 : -1) * a * (j - (N - 1) / 2) - lam / 2, y0 = lvl(k - 1), y1 = lvl(k);
+          for (let t = 0; t <= 20; t++) { let x = t / 20; pts.push([u0 + lam * x, y0 + (y1 - y0) * (1 - Math.cos(Math.PI * x)) / 2]); }
+        }
+        pts.push([L, lvl(n - 1)]);
+        c.draw(pts);
+      }
+    },
+    // A shift register on a logic analyser: a word of M bits clocked in, every data lane the lane above a
+    // clock or two later, so the word walks down the lanes in diagonals. The clock runs in bursts (on,
+    // then idle), so the band goes dense and quiet on a beat; a divider every sixth lane
+    timing(c) {
+      let { L, s, g } = c, lp = Math.max(3.1 * g, s / 18), n = Math.max(3, Math.floor((s - g) / lp)), sw = lp - 1.5 * g, top = (s - n * lp) / 2 + 0.75 * g;
+      let half = fit(L, Math.max(2.1 * g, s * 0.025)), nh = Math.round(L / half), sl = Math.min(g * 0.45, half * 0.15);
+      let M = 12 + Math.floor(c.H(1) * 9), word = [], on = 16 + 8 * Math.floor(c.H(2) * 3), off = 4 + 4 * Math.floor(c.H(3) * 2), sg = 1 + Math.floor(c.H(4) * 2);
+      for (let i = 0; i < M; i++) word.push(c.H(400 + i) < 0.5 ? 1 : 0);
+      word[0] = 1; word[1] = 0;
+      let live = ck => ((ck % (on + off)) + on + off) % (on + off) < on, cnt = [];
+      for (let ck = 0, k = 0; ck <= nh / 2 + 2; ck++) { cnt.push(k); if (live(ck)) k++; }
+      for (let k = 0; k < n; k++) {
+        let y1 = top + k * lp, y0 = y1 + sw, kind = k === 0 ? 'clk' : k % 6 === 5 ? 'q' : 'd', di = k - 1 - Math.floor(k / 6), bits;
+        if (kind === 'clk') bits = i => (live(Math.floor(i / 2)) ? 1 - (i % 2) : 0);
+        else if (kind === 'q') bits = i => Math.floor(cnt[Math.floor(i / 2)] / (1 << (Math.floor(k / 6) % 3))) % 2;
+        else bits = i => word[(((cnt[Math.floor(i / 2)] - di * sg) % M) + M) % M];
+        let pts = [[0, bits(0) ? y1 : y0]];
+        for (let i = 1; i < nh; i++) if (bits(i) !== bits(i - 1)) { let u = i * half; pts.push([u - sl / 2, bits(i - 1) ? y1 : y0], [u + sl / 2, bits(i) ? y1 : y0]); }
+        pts.push([L, bits(nh - 1) ? y1 : y0]);
+        c.draw(pts);
+      }
+      for (let b = 1; b * (on + off) * 2 * half < L; b++) { let u = (b * (on + off) * 2 - 0.5) * half; for (let v = top - g * 0.5; v < top + n * lp - g; v += g * 2.2) c.draw([[u, v], [u, v + g * 1.1]]); }
+    },
+    // A waterfall of a harmonic tone: the comb a step along on each trace, so its ridges run up the stack
+    // in diagonals; the partials swelling in turn R times down the stack; every fourth trace struck harder
+    waterfall(c) {
+      let { L, s, g } = c, n = Math.max(8, Math.floor(s * 0.6 / (g * 1.45))), dv = s * 0.6 / n, du = 0.6, N = Math.ceil(L / du), env = new Float32Array(N + 1).fill(1e9);
+      let H = [8, 11, 14][Math.floor(c.H(1) * 3)], f0 = L / (H + 1), hp = [1, 0.5, 0.75], pw = Math.max(g * 1.6, f0 * 0.09), ds = f0 * (0.05 + 0.06 * c.H(2)) * (c.H(3) < 0.5 ? -1 : 1), R = 2 + Math.floor(c.H(4) * 2);
+      for (let k = 0; k < n; k++) {
+        let base = s * 0.975 - k * dv, run = [], t = k / n, pk = [], acc = k % 4 === 0 ? 1.25 : 1;
+        for (let m = 0; m <= H; m++) { let pu = (((m * f0 + k * ds) % L) + L) % L; pk.push([pu, s * 0.26 * hp[m % 3] * acc * (0.3 + 0.7 * Math.pow(0.5 + 0.5 * Math.cos(TAU * (t * R + (m % 3) * 0.33)), 2)), pw]); }
+        let prev = null, front = env.slice();
+        for (let i = 0; i <= N; i++) {
+          let u = i * du, v = base - s * 0.015 * c.noise(u / (s * 0.05), k);
+          for (let [pu, ph, w] of pk) for (let wrap of [-L, 0, L]) v -= ph * Math.exp(-(((u - pu - wrap) / w) ** 2));
+          let se = i > 0 && i < N && front[i - 1] < 1e8 && front[i + 1] < 1e8 ? (front[i + 1] - front[i - 1]) / (2 * du) : 0, m = g * Math.sqrt(1 + Math.min(16, se * se));
+          prev = v;
+          if (v < env[i] - m) run.push([u, v]); else { if (run.length > 1) c.draw(rdp(run, 0.05)); run = []; }
+          env[i] = Math.min(env[i], v);
+        }
+        if (run.length > 1) c.draw(rdp(run, 0.05));
+      }
+    },
+
+    // ---- data -----------------------------------------------------------------------------------
+    // One Data Matrix the band's length: data regions side by side, each with its finder L and clock
+    // track. The data is one short row repeating, each row stepped on a few modules (diagonals through
+    // the whole matrix), its fill swelling and thinning over a few regions
+    datamatrix(c) {
+      let { L, s, g, p } = c, cs = Math.max(p * 2.2, s / 34), R = Math.floor((s - g) / cs), rr = R > 22 ? Math.floor(R / 2) : R, nV = Math.floor(R / rr), cc = rr + 2 * Math.floor(c.H(1) * 3);
+      let C = Math.floor((L - cs) / cs), u0 = (L - C * cs) / 2, v0 = (s - nV * rr * cs) / 2, NR = nV * rr;
+      let M = 7 + Math.floor(c.H(2) * 9), stp = 1 + Math.floor(c.H(3) * 3), lam = cc * (2 + Math.floor(c.H(4) * 3)), grid = new Uint8Array(C * NR);
+      for (let i = 0; i < C; i++) for (let jj = 0; jj < NR; jj++) {
+        let ri = i % cc, rj = jj % rr, on;
+        if (ri === 0 || rj === rr - 1) on = 1;
+        else if (rj === 0) on = ri % 2 === 0 ? 1 : 0;
+        else if (ri === cc - 1) on = rj % 2;
+        else on = c.H(7000 + ((((i + jj * stp) % M) + M) % M) * 31 + (jj % 3)) < 0.5 + 0.28 * Math.sin(TAU * i / lam) ? 1 : 0;
+        grid[i * NR + jj] = on;
+      }
+      c.bitmap((i, j) => grid[i * NR + j], NR, C, u0, v0, cs, cs);
+    },
+    // A meter bridge in one run: the level a hit that dies over K channels and comes again, its strength
+    // swelling over a longer period; the lower half the upper D channels later; peaks held, falling a
+    // segment a channel. Unlit segments a dot
+    ledmeter(c) {
+      let { L, s, g, p } = c, bw = g * 1.6, cg = g * 1.15, segH = g * 1.15, segG = g * 1.05, sp = segH + segG, rows = Math.max(3, Math.floor((s / 2 - g * 0.6) / sp));
+      let n = Math.floor((L + cg) / (bw + cg)), u0 = (L - n * (bw + cg) + cg) / 2;
+      let K = 8 + Math.floor(c.H(1) * 9), lam = K * (3 + Math.floor(c.H(2) * 3)), D = Math.floor(K / 2) + Math.floor(c.H(3) * 3);
+      let lev = ch => { let t = (((ch % K) + K) % K) / K; return 0.12 + 0.88 * Math.exp(-t * 3) * (0.55 + 0.45 * Math.cos(TAU * ch / lam)); };
+      for (let i = 0; i < n; i++) for (let side = 0; side < 2; side++) {
+        let ch = i - side * D, lit = Math.max(1, Math.round(lev(ch) * rows)), held = 0;
+        for (let m = 1; m <= 5; m++) held = Math.max(held, Math.round(lev(ch - m) * rows) - m);
+        let peak = held > lit ? Math.min(rows - 1, held) : -1, u = u0 + i * (bw + cg), dir = side ? 1 : -1;
+        for (let r = 0; r < rows; r++) {
+          let va = s / 2 + dir * (g * 0.6 + r * sp), vb = va + dir * segH, lo = Math.min(va, vb), hi = Math.max(va, vb);
+          if (r < lit || r === peak) c.solid(u, lo, u + bw, hi); else c.circ(u + bw / 2, (lo + hi) / 2, p * 1.05);
+        }
+      }
+    },
+    // A spectrogram drawn as lines: an 8-note riff on a beat, each harmonic a stepped line following it at
+    // its own multiple. A formant (a band of loud partials) sweeps up and down the stack every 8 beats;
+    // sustained notes take a vibrato that grows up the harmonics; a line runs solid, dashed, dotted as it
+    // fades, and a sparse trail after; percussion dots between the lines on the accented beats
+    spectrogram(c) {
+      let { L, s, g, p } = c, beat = fit(L, s * (0.4 + 0.2 * c.H(1))), nb = Math.round(L / beat), riff = [0, 3, 5, 3, 7, 5, 3, 2].map((x, i) => x + Math.floor(c.H(10 + i) * 2));
+      let top = g * 2.4, bot = s - g * 0.8, f0 = Math.max(g * 1.7, (bot - top) / 15), st = f0 * 0.085, fb = b => f0 + riff[((b % 8) + 8) % 8] * st, glide = Math.min(beat * 0.2, g * 3), du = 0.5;
+      let fAt = u => { let b = Math.floor(u / beat), t = u - b * beat; if (t < glide && b > 0) { let x = t / glide; return fb(b - 1) + (fb(b) - fb(b - 1)) * x * x * (3 - 2 * x); } return fb(b); };
+      let K = Math.floor((bot - top) / f0), va = f0 * 0.16, vibP = Math.max(g * 3, beat / 4), fw = Math.max(1.5, K / 5), fc = u => 1 + (K - 1) * tri01(u / (beat * 8));
+      for (let k = 1; k <= K; k++) {
+        let seg = [], flush = () => { if (seg.length > 1) c.draw(seg); seg = []; };
+        for (let u = 0; u <= L; u += du) {
+          let b = Math.floor(u / beat), t = (u - b * beat) / beat, v = bot - k * fAt(u);
+          if (v < top) { flush(); continue; }
+          let amp = (b % 4 === 0 ? 1 : b % 2 ? 0.75 : 0.88) * Math.exp(-t * (0.7 + k * 0.08)) * (0.12 + 0.88 * Math.exp(-(((k - fc(u)) / fw) ** 2)));
+          if (amp > 0.42) seg.push([u, v]);
+          else if (amp > 0.18) { if (u % (g * 3.2) < g * 2) seg.push([u, v]); else flush(); }
+          else { flush(); if (u % (g * (amp > 0.07 ? 1.6 : 3.2)) < du) c.circ(u, v, p * 1.05); }
+        }
+        flush();
+      }
+      for (let b = 0; b < nb; b++) { if (b % 2) continue; let u = b * beat + glide + g, f = fb(b), kk = b % 4 === 0 ? K : Math.ceil(K / 2); for (let k = 0; k < kk; k++) { let v = bot - (k + 0.5) * f; if (v > top) c.circ(u, v, p * 1.05); } }
+      c.draw([[0, g * 0.3], [L, g * 0.3]]);
+      for (let b = 0; b <= nb; b++) { let u = Math.min(L - 0.5, b * beat); c.draw([[u, g * 0.3], [u, g * 0.3 + (b % 4 === 0 ? g * 1.6 : g * 0.9)]]); }
+    },
+    // A hex dump as ASCII art: the digits chosen by their ink, faintest to boldest (a dot, then 1 7 4
+    // C 3 E 2 A 0 6 8, then a solid cell), to draw a field that repeats along the band and steps on row
+    // by row: waves, diamonds, beats, chevrons or rings. The address heads each row
+    hexdump(c) {
+      let { L, s, g, p } = c, dh = Math.max(2.4 * g, s / 26), dw = dh * 0.5, adv = dw + g * 1.15, lh = dh + g * 1.5, rows = Math.max(2, Math.floor((s - g) / lh)), v0 = (s - rows * lh + g * 1.5) / 2;
+      const RAMP = [-1, 1, 7, 4, 12, 3, 14, 2, 10, 0, 6, 8, -2];
+      let nCol = Math.max(4, Math.floor((L - g * 1.5 - 5.4 * adv) / adv)), pat = Math.floor(c.H(1) * 5), P = 10 + Math.floor(c.H(2) * 14), stp = [1, 2, 3, -1, -2][Math.floor(c.H(3) * 5)], jc = (rows - 1) / 2, asp = adv / lh;
+      let F = (i, j) => {
+        if (pat === 0) return 0.5 + 0.5 * Math.sin(TAU * (i + j * stp) / P);
+        if (pat === 1) return 1 - Math.abs(frac((i + j * stp) / P) - 0.5) - Math.abs(frac((i - j * stp) / P) - 0.5);
+        if (pat === 2) return 0.5 + 0.25 * (Math.sin(TAU * i / P) + Math.sin(TAU * (i * 0.83 + j * stp) / P));
+        if (pat === 3) return frac((i + Math.abs(j - jc) * stp * 2) / P);
+        let x = (frac(i / (P * 2)) - 0.5) * P * 2 * asp, y = j - jc; return 0.5 + 0.5 * Math.cos(TAU * Math.hypot(x, y) / 3 - TAU * Math.floor(i / (P * 2)) * 0.25);
+      };
+      for (let j = 0; j < rows; j++) {
+        let v = v0 + j * lh, u = g * 1.5, addr = j * nCol;
+        for (let a = 3; a >= 0; a--) { segDigit(c, (addr >> (a * 4)) & 15, u, v, dw, dh); u += adv; }
+        c.circ(u + adv * 0.15, v + dh * 0.3, p * 1.2); c.circ(u + adv * 0.15, v + dh * 0.72, p * 1.2); u += adv * 1.4;
+        for (let i = 0; i < nCol; i++, u += adv) {
+          let r = RAMP[Math.max(0, Math.min(RAMP.length - 1, Math.floor(F(i, j) * RAMP.length)))];
+          if (r === -1) c.circ(u + dw / 2, v + dh / 2, p * 1.1); else if (r === -2) c.solid(u, v, u + dw, v + dh); else segDigit(c, r, u, v, dw, dh);
+        }
+      }
+    },
+    // One PDF417 symbol the band's length: start and stop at the ends, a row indicator every Ci data
+    // columns (they line up down the rows). The data is a run of M codewords repeating, each row a step
+    // further along it (diagonals), the codewords heavy (wide bars) and light by turns every few columns
+    pdf417(c) {
+      let { L, s, g, p } = c, x = p * 1.05, rowH = Math.max(3 * x, g * 1.7), rows = Math.max(3, Math.floor((s - g) / rowH)), v0 = (s - rows * rowH) / 2;
+      const START = [8, 1, 1, 1, 1, 1, 1, 3], STOP = [7, 1, 1, 3, 1, 1, 1, 2, 1];
+      let word = (k, heavy) => { let w = [1, 1, 1, 1, 1, 1, 1, 1]; for (let e = 0, left = 9; left > 0 && e < 400; e++) { let i = Math.floor(c.H(k * 37 + e) * 8); if ((i % 2 === 0) !== heavy && c.H(k * 41 + e + 7) < 0.75) continue; if (w[i] < 6) { w[i]++; left--; } } return w; };
+      let bars = (u, v, ws) => { let bar = true; for (let w of ws) { if (bar) { if (w === 1) c.draw([[u + x / 2, v], [u + x / 2, v + rowH]]); else c.solid(u + p / 2, v, u + w * x - p / 2, v + rowH, 'v'); } u += w * x; bar = !bar; } return u; };
+      let M = 5 + Math.floor(c.H(1) * 6), Ci = 3 + Math.floor(c.H(2) * 3), sg = 1 + Math.floor(c.H(3) * 2), lam = 4 + Math.floor(c.H(4) * 4);
+      let C = Math.floor((Math.floor((L - 2 * x) / x) - 69) / 17), u0 = (L - (69 + 17 * C) * x) / 2;
+      for (let r = 0; r < rows; r++) {
+        let v = v0 + r * rowH, u = bars(u0, v, START);
+        u = bars(u, v, word(90000 + r * 3, r % 2 === 0));
+        for (let col = 0, dc = 0; col < C; col++) {
+          if (col % (Ci + 1) === Ci) { u = bars(u, v, word(90000 + r * 3 + 1, true)); continue; }
+          u = bars(u, v, word((((dc + r * sg) % M) + M) % M + (Math.floor(dc / lam) % 2) * 100, Math.floor(dc / lam) % 2 === 0)); dc++;
+        }
+        u = bars(u, v, word(90000 + r * 3 + 2, r % 2 === 1));
+        bars(u, v, STOP);
+      }
+    },
+    // An elementary cellular automaton along the band: seeds every q cells (the ring a whole number of
+    // q), fed in again every K generations, each time half a spacing further round, so the growth
+    // repeats down the band and steps across it
+    automaton(c) {
+      let { L, s, g, p } = c, cs = Math.max(p * 2, g * 1.1), R = Math.floor((s - g) / cs), C = Math.floor(L / cs), v0 = (s - R * cs) / 2, u0 = (L - C * cs) / 2;
+      const RULES = [90, 150, 105, 60, 102, 30, 110, 126, 22, 54];
+      let rule = RULES[Math.floor(c.H(1) * RULES.length)], qs = divisors(R, 4, Math.floor(R / 2)), q = qs.length ? qs[Math.floor(c.H(3) * qs.length)] : R, K = Math.round(R * (1 + c.H(2) * 1.5)), sh = Math.max(1, Math.floor(q / 2));
+      let cur = new Uint8Array(R), nxt = new Uint8Array(R), grid = new Uint8Array(C * R);
+      let seed = m => { for (let j = 0; j < R; j++) if ((((j - m * sh) % q) + q) % q === 0) cur[j] ^= 1; };
+      seed(0);
+      for (let i = 0; i < C; i++) {
+        if (i && i % K === 0) seed(i / K);
+        grid.set(cur, i * R);
+        for (let j = 0; j < R; j++) nxt[j] = (rule >> (cur[(j + R - 1) % R] * 4 + cur[j] * 2 + cur[(j + 1) % R])) & 1;
+        cur.set(nxt);
+      }
+      c.bitmap((i, j) => grid[i * R + j], R, C, u0, v0, cs, cs);
+    },
+
+    // ---- circuit --------------------------------------------------------------------------------
+    // Lanes in groups of four, tight and open by turns; each group jogs down and back on the beat, a step
+    // after the group above (a canon); every lane breaks for a pair of vias once a beat, a step along
+    // from the lane above (the vias run in diagonals)
+    traces(c) {
+      let { L, s, g, p } = c, jog = g * 1.4, pitches = [g * 1.5, g * 1.95], grp = 4, gapG = jog + g * 2.3, vd = p * 2.2;
+      let beat = fit(L, s * (0.75 + 0.4 * c.H(1))), sig = [0.125, 0.2, 0.25][Math.floor(c.H(2) * 3)], vs = [], grpOf = [];
+      for (let gi = 0, v = 0; gi < 40; gi++) {
+        let pt = pitches[gi % 2], last = v + (grp - 1) * pt;
+        if (last > s - g - jog) break;
+        for (let j = 0; j < grp; j++) { vs.push(v + j * pt); grpOf.push(gi); }
+        v = last + gapG;
+      }
+      if (!vs.length) return;
+      let off = (s - vs[vs.length - 1] - jog) / 2, ramp = jog * 1.4;
+      let prof = u => { let x = ((u % beat) + beat) % beat, a = beat * 0.25, b = beat * 0.75; return x < a ? 0 : x < a + ramp ? (x - a) / ramp : x < b ? 1 : x < b + ramp ? 1 - (x - b) / ramp : 0; };
+      let vstep = Math.max(vd * 2.6, beat / Math.max(4, vs.length)), placed = [];
+      vs.forEach((v0, li) => {
+        let sh = grpOf[li] * sig * beat, pts = [];
+        for (let u = 0; u <= L; u += 0.5) pts.push([u, off + v0 + jog * prof(u - sh)]);
+        let pieces = [rdp(pts, 0.03)];
+        for (let k = -1; k * beat < L + beat; k++) {
+          let bu = k * beat + ((li * vstep) % beat) + beat * 0.03, a = bu - vd * 1.5, b = bu + vd * 1.5, pi = pieces.findIndex(pp => pp[0][0] < a - vd && pp[pp.length - 1][0] > b + vd);
+          if (pi < 0) continue;
+          let ya = yAtU(pieces[pi], a - vd / 2), yb = yAtU(pieces[pi], b + vd / 2), [A, B] = cutU(pieces[pi], a - vd, b + vd);
+          if (A.length < 2 || B.length < 2) continue;
+          pieces.splice(pi, 1, A, B); placed.push([a - vd / 2, ya], [b + vd / 2, yb]);
+        }
+        pieces.forEach(pp => c.draw(pp));
+      });
+      placed.forEach(([x, y]) => c.circ(x, y, vd));
+    },
+    // Differential pairs, each in its corridor, tuned with chamfered meanders on a beat: each corridor's
+    // runs a step after the one above (a canon), their lengths in a repeating order, their turns tight
+    // and open by turns
+    serpentine(c) {
+      let { L, s, g, h } = c, q = g * 1.2, K = Math.max(2, Math.round(s / Math.max(6.5 * g, s / 6))), Hc = s / K, amp = Hc - q - g * 2;
+      let beat = fit(L, s * (0.85 + 0.4 * h)), sig = [0.125, 0.2, 1 / 6][Math.floor(c.H(1) * 3)], lens = [[3, 5, 7, 5], [4, 6], [2, 4, 6, 8, 6, 4]][Math.floor(c.H(2) * 3)], ws = [q + g * 1.25, q + g * 2];
+      for (let k = 0; k < K; k++) {
+        let base = k * Hc + Hc - g - q / 2, top = base - amp, pts = [[0, base]];
+        for (let b = -1; b * beat < L + beat; b++) {
+          let w = ws[((b % 2) + 2) % 2], nn = Math.min(lens[((b % lens.length) + lens.length) % lens.length], Math.max(1, Math.floor(beat * 0.8 / (2 * w)))), ch = Math.min(w * 0.4, amp * 0.25);
+          let start = b * beat + ((k * sig) % 1) * beat + g * 2;
+          if (start - ch < pts[pts.length - 1][0] + g || start + (2 * nn - 1) * w + ch > L - g * 2) continue;
+          pts.push([start - ch, base], [start, base - ch]);
+          for (let t = 0; t < nn; t++) { let x = start + t * 2 * w; pts.push([x, top + ch], [x + ch, top], [x + w - ch, top], [x + w, top + ch], [x + w, base - ch], [x + w + ch, base]); if (t < nn - 1) pts.push([x + 2 * w - ch, base], [x + 2 * w, base - ch]); }
+        }
+        pts.push([L, base]);
+        c.draw(offsetPolyline(pts, -q / 2)); c.draw(offsetPolyline(pts, q / 2));
+      }
+    },
+    // A die as one fabric: bond pads along both edges, the pad ring's rails, and rows of standard cells
+    // the band's length. SRAM macros on a beat, by turns in the upper and lower rows; each row deals the
+    // same run of cells a cell or more later than the row above (diagonals), fill cells on a diagonal too
+    die(c) {
+      let { L, s, g, p } = c, ps = Math.max(g * 2, s * 0.05), pp = ps + g * 1.2, nP = Math.floor((L - g) / pp), pu0 = (L - nP * pp + g * 1.2) / 2;
+      for (let k = 0; k < nP; k++) { let u = pu0 + k * pp; c.solid(u, g * 0.5, u + ps, g * 0.5 + ps); c.solid(u, s - g * 0.5 - ps, u + ps, s - g * 0.5); }
+      let r0 = g * 0.5 + ps + g * 1.2, r1 = s - r0; c.rails(r0, r1); c.rails(r0 + g * 1.1, r1 - g * 1.1);
+      let y0 = r0 + g * 2.4, y1 = r1 - g * 2.4, rh = g * 3.4, nR = Math.max(2, Math.floor((y1 - y0) / rh)), yb = y0 + ((y1 - y0) - nR * rh) / 2, site = g * 1.05;
+      let LIB = [2, 3, 2, 4, 6, 2, 3, 8, 3, 2, 5, 2], beat = fit(L, s * (1.3 + 0.6 * c.H(1))), mw = beat * (0.3 + 0.1 * c.H(2)), half = Math.max(1, Math.floor(nR / 2)), sg = 1 + Math.floor(c.H(3) * 3), ux = g, uz = L - g;
+      let macros = [];
+      for (let k = 0; (k + 0.5) * beat < L; k++) { let cu = (k + 0.5) * beat, upper = k % 2 === 0; macros.push([Math.max(ux, cu - mw / 2), Math.min(uz, cu + mw / 2), upper ? 0 : nR - half, upper ? half : nR]); }
+      // the rails between rows, broken where a macro spans them
+      for (let j = 0; j <= nR; j++) {
+        let cuts = macros.filter(([, , ja, jb]) => j > ja && j < jb).map(([a, b]) => [a, b]).sort((m, n) => m[0] - n[0]), x = ux;
+        for (let [a, b] of cuts) { if (a > x) c.draw([[x, yb + j * rh], [a, yb + j * rh]]); x = Math.max(x, b); }
+        if (uz > x) c.draw([[x, yb + j * rh], [uz, yb + j * rh]]);
+      }
+      for (let [ua, ub, ja, jb] of macros) {
+        let ya = yb + ja * rh, yz = yb + jb * rh, bx = g * 1.35, by = g * 1.5;
+        c.draw([[ua, ya], [ua, yz]]); c.draw([[ub, ya], [ub, yz]]);
+        for (let x = ua + bx; x < ub - bx * 0.6; x += bx) c.draw([[x, ya], [x, yz]]);
+        for (let y = ya + by; y < yz - by * 0.6; y += by) c.draw([[ua, y], [ub, y]]);
+      }
+      for (let j = 0; j < nR; j++) {
+        let ya = yb + j * rh + rh * 0.24, yy = yb + (j + 1) * rh - rh * 0.24, spans = [[ux, uz]];
+        for (let [a, b, ja, jb] of macros) if (j >= ja && j < jb) spans = spans.flatMap(([m, n]) => [[m, Math.min(n, a - site)], [Math.max(m, b + site), n]]).filter(([m, n]) => n - m > site * 2);
+        for (let [m, n] of spans) {
+          let x = m + site * 0.5, k = j * sg;
+          for (let t = 0; t < 500; t++, k++) {
+            let ns = LIB[k % LIB.length], cw = ns * site;
+            if (x + cw > n - site * 0.5) break;
+            if ((k + j) % 7 === 0) c.circ(x + cw / 2, (ya + yy) / 2, p * 1.6); else for (let q = 1; q < ns; q++) c.draw([[x + q * site, ya], [x + q * site, yy]]);
+            x += cw;
+          }
+        }
+      }
+    },
+    // A ladder network, mirrored about the ground rail: series parts along each rail and a shunt from
+    // every node inward. The units' widths in a repeating order (the ladder tightens and opens); each
+    // tier's cycle of parts a step on from the tier inside it (a canon)
+    schematic(c) {
+      let { L, s, g, p } = c, tiers = s > 90 ? 2 : 1, gr = s / 2, hT = (s / 2 - g * 1.4) / tiers, U0 = Math.max(g * 9, hT * (1.05 + 0.45 * c.H(3)));
+      let wpat = [[1, 1, 0.8, 1.3], [1, 0.8, 1.25], [1.25, 1, 0.8, 1]][Math.floor(c.H(4) * 3)], xs = [0];
+      while (xs[xs.length - 1] < L) xs.push(xs[xs.length - 1] + U0 * wpat[(xs.length - 1) % wpat.length]);
+      let sc = L / xs[xs.length - 1]; xs = xs.map(x => x * sc);
+      let le0 = U0 * 0.5, az = Math.min(hT * 0.16, g * 1.3);
+      let ser = (kind, ua, ub, y) => {
+        let cu = (ua + ub) / 2, le = Math.min((ub - ua) * 0.5, g * 7, le0 * 1.3), a = cu - le / 2, b = cu + le / 2;
+        if (kind === 'C') { let qq = g * 0.6, pl = Math.min(hT * 0.3, g * 2); c.draw([[ua, y], [cu - qq, y]]); c.draw([[cu + qq, y], [ub, y]]); c.draw([[cu - qq, y - pl], [cu - qq, y + pl]]); c.draw([[cu + qq, y - pl], [cu + qq, y + pl]]); return; }
+        c.draw([[ua, y], [a, y]]); c.draw([[b, y], [ub, y]]);
+        if (kind === 'R') { let pts = [[a, y]]; for (let i = 1; i < 8; i++) pts.push([a + le * i / 8, y + (i % 2 ? -az : az)]); pts.push([b, y]); c.draw(pts); }
+        else if (kind === 'L') { let pts = []; for (let i = 0; i <= 64; i++) { let x = i / 64; pts.push([a + le * x, y - az * 1.4 * Math.abs(Math.sin(x * 4 * Math.PI))]); } c.draw(pts); }
+        else { let tw = Math.min(le * 0.45, az * 2.4), x0 = cu - tw / 2, k = az * 1.3; c.draw([[a, y], [b, y]]); c.draw([[x0, y - k], [x0, y + k], [x0 + tw, y], [x0, y - k]]); c.draw([[x0 + tw, y - k], [x0 + tw, y + k]]); }
+      };
+      let shunt = (kind, u, ya, yb2, Uw) => {
+        let cm = (ya + yb2) / 2, dir = Math.sign(yb2 - ya), ln = Math.min(Math.abs(yb2 - ya) * 0.5, g * 6), a = cm - dir * ln / 2, b = cm + dir * ln / 2;
+        if (kind === 'C') { let qq = g * 0.6, pl = Math.min(Uw * 0.18, g * 1.8); c.draw([[u, ya], [u, cm - dir * qq]]); c.draw([[u, cm + dir * qq], [u, yb2]]); c.draw([[u - pl, cm - dir * qq], [u + pl, cm - dir * qq]]); c.draw([[u - pl, cm + dir * qq], [u + pl, cm + dir * qq]]); return; }
+        c.draw([[u, ya], [u, a]]); c.draw([[u, b], [u, yb2]]);
+        if (kind === 'R') { let pts = [[u, a]]; for (let i = 1; i < 8; i++) pts.push([u + (i % 2 ? -az : az), a + (b - a) * i / 8]); pts.push([u, b]); c.draw(pts); }
+        else { let t = Math.min(ln * 0.45, az * 2.4), x0 = cm - dir * t / 2, k = az * 1.3; c.draw([[u, a], [u, b]]); c.draw([[u - k, x0], [u + k, x0], [u, x0 + dir * t], [u - k, x0]]); c.draw([[u - k, x0 + dir * t], [u + k, x0 + dir * t]]); }
+      };
+      c.draw([[0, gr], [L, gr]]);
+      let SER = ['RRLRCR', 'RCRC', 'LRRL', 'RRRC', 'RLC'][Math.floor(c.H(1) * 5)].split(''), SH = ['CRCDC', 'CCR', 'DCDC', 'RCCR', 'CD'][Math.floor(c.H(2) * 5)].split('');
+      for (let side of [-1, 1]) for (let t = 1; t <= tiers; t++) {
+        let y = gr + side * t * hT, yIn = gr + side * (t - 1) * hT;
+        for (let k = 0; k + 1 < xs.length; k++) ser(SER[(k + t * 2) % SER.length], xs[k], xs[k + 1], y);
+        for (let k = 1; k + 1 < xs.length; k++) { shunt(SH[(k + t) % SH.length], xs[k], y, yIn, Math.min(xs[k] - xs[k - 1], xs[k + 1] - xs[k])); c.circ(xs[k], y, p * 2.6); }
+      }
+    },
+    // One ball grid the band's length, cut into tiles n balls wide only by its fan-out: each ball
+    // dog-boned to the via on the diagonal away from its tile's middle, so the quadrants' X repeats along
+    // the band, each row's tiles a step along from the row above (the X shears); a cross of power balls
+    // left out of each tile's middle. Where two balls want one via, the second goes without
+    bga(c) {
+      let { L, s, g, p } = c, P = Math.max(g * 2.8, s / 13), n = Math.max(4, Math.floor((s - g * 1.2) / P)), m = Math.floor((L - g) / P), u0 = (L - m * P) / 2, v0 = (s - n * P) / 2, bd = P * 0.5, vd = P * 0.28;
+      let T = n % 2 ? n + 1 : n, sg = [0, 0.5, 1][Math.floor(c.H(1) * 3)], used = new Set(), cy = (n - 1) / 2, cx = (T - 1) / 2, arm = n * 0.12 + 0.5;
+      for (let j = 0; j < n; j++) for (let i = 0; i < m; i++) {
+        let x = i + j * sg, lx = x - Math.floor(x / T) * T;
+        if ((Math.abs(lx - cx) < 1 && Math.abs(j - cy) < arm) || (Math.abs(j - cy) < 1 && Math.abs(lx - cx) < arm)) continue;
+        let u = u0 + (i + 0.5) * P, v = v0 + (j + 0.5) * P, sx = lx < cx ? -1 : 1, sy = j < cy ? -1 : 1;
+        c.circ(u, v, bd);
+        let ci = i + (sx > 0 ? 1 : 0), cj = j + (sy > 0 ? 1 : 0), key = ci * 4096 + cj;
+        if (ci <= 0 || ci >= m || cj <= 0 || cj >= n || used.has(key)) continue;
+        used.add(key);
+        let vu = u + sx * P / 2, vv = v + sy * P / 2, e = bd / 2 / Math.SQRT2, f = vd / 2 / Math.SQRT2;
+        c.draw([[u + sx * e, v + sy * e], [vu - sx * f, vv - sy * f]]); c.circ(vu, vv, vd);
+      }
+    },
+
+    // ---- geometry -------------------------------------------------------------------------------
+    // Contours of a field of cones on a beat: the cones zigzag up and down the band a step at a time,
+    // steep and shallow by turns (their rings close and open), every third lifted; a ripple runs
+    // diagonally through the whole field
+    isolines(c) {
+      let { L, s, g, h } = c, P = fit(L, s * (0.75 + 0.4 * h)), nC = Math.round(L / P), ay = 0.8, kk = 0.35, zper = [4, 6, 3][Math.floor(c.H(1) * 3)];
+      // two rows of cones, the lower half a beat on; each row zigzags a little up and down; steep and shallow by turns
+      let cen = []; for (let i = -1; i <= nC; i++) for (let r = 0; r < 2; r++) cen.push([(i + 0.5 + r * 0.5) * P, s * (r ? 0.72 : 0.28) + s * 0.06 * (tri01((i + r) / zper) * 2 - 1), (i + r) % 2 ? 0.6 : 1, (((i % 3) + 3) % 3 === 0 ? 0.06 : 0) * s]);
+      let f = (u, v) => { let i = Math.floor(u / P) + 1, z = -Infinity; for (let m = Math.max(0, (i - 1) * 2); m <= Math.min(cen.length - 1, (i + 1) * 2 + 1); m++) { let [cu, cv, sl, lift] = cen[m], dd = lift - sl * Math.hypot(u - cu, (v - cv) / ay); z = z === -Infinity ? dd : smax(z, dd, kk); } return z; };
+      let nu = Math.ceil(L / (g * 0.5)), nv = Math.ceil(s / (g * 0.5)), du = L / nu, dv = s / nv, K = nv + 1, F = new Float32Array((nu + 1) * K), lo = Infinity, hi = -Infinity, gm = 0;
+      for (let i = 0; i <= nu; i++) for (let j = 0; j <= nv; j++) { let z = f(i * du, j * dv); F[i * K + j] = z; lo = Math.min(lo, z); hi = Math.max(hi, z); }
+      for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) gm = Math.max(gm, Math.hypot((F[(i + 1) * K + j] - F[i * K + j]) / du, (F[i * K + j + 1] - F[i * K + j]) / dv));
+      let step = g * 1.08 * gm, lev, pt = e => { let n2 = e >> 1, i = Math.floor(n2 / K), j = n2 % K, z0 = F[i * K + j]; if (e & 1) { let z1 = F[i * K + j + 1]; return [i * du, (j + (lev - z0) / (z1 - z0)) * dv]; } let z1 = F[(i + 1) * K + j]; return [(i + (lev - z0) / (z1 - z0)) * du, j * dv]; };
+      const CASES = { 1: [['L', 'B']], 2: [['B', 'R']], 3: [['L', 'R']], 4: [['T', 'R']], 6: [['T', 'B']], 7: [['L', 'T']], 8: [['L', 'T']], 9: [['T', 'B']], 11: [['T', 'R']], 12: [['L', 'R']], 13: [['B', 'R']], 14: [['L', 'B']] };
+      for (lev = lo + step * 0.5; lev < hi; lev += step) {
+        let segs = [], adj = new Map(), add = (e, i) => { let a = adj.get(e); if (a) a.push(i); else adj.set(e, [i]); };
+        for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) {
+          let a = F[i * K + j], b = F[(i + 1) * K + j], cc = F[(i + 1) * K + j + 1], d4 = F[i * K + j + 1], code = (a > lev ? 8 : 0) | (b > lev ? 4 : 0) | (cc > lev ? 2 : 0) | (d4 > lev ? 1 : 0);
+          if (code === 0 || code === 15) continue;
+          let E = { T: (i * K + j) * 2, R: ((i + 1) * K + j) * 2 + 1, B: (i * K + j + 1) * 2, L: (i * K + j) * 2 + 1 }, ctr = (a + b + cc + d4) / 4 > lev;
+          let pairs = code === 5 ? (ctr ? [['L', 'T'], ['B', 'R']] : [['T', 'R'], ['L', 'B']]) : code === 10 ? (ctr ? [['T', 'R'], ['L', 'B']] : [['L', 'T'], ['B', 'R']]) : CASES[code];
+          for (let [x, y] of pairs) { add(E[x], segs.length); add(E[y], segs.length); segs.push([E[x], E[y]]); }
+        }
+        let used = new Uint8Array(segs.length);
+        for (let k0 = 0; k0 < segs.length; k0++) {
+          if (used[k0]) continue;
+          used[k0] = 1;
+          let ch = [segs[k0][0], segs[k0][1]];
+          for (let dir = 0; dir < 2; dir++) { for (;;) { let e = ch[ch.length - 1], nx = (adj.get(e) || []).find(mm => !used[mm]); if (nx === undefined) break; used[nx] = 1; ch.push(segs[nx][0] === e ? segs[nx][1] : segs[nx][0]); } ch.reverse(); }
+          c.draw(rdp(ch.map(pt), 0.05));
+        }
+      }
+    },
+    // A honeycomb, every cell nested, its rings sliding off-centre toward a direction that turns a step a
+    // column (a swirl down the band); the nesting deep and shallow in a repeating order; every third
+    // column a cube (three spokes) inside two rings
+    honeycomb(c) {
+      let { L, s, g, p } = c, rowsN = s > 90 ? 4 : 3, R = s / (Math.sqrt(3) * rowsN), dx = 1.5 * R, dy = Math.sqrt(3) * R, st = g * 1.6, dl = g * 0.5;
+      let depths = [[9, 3, 1, 3], [9, 6, 3, 6], [9, 9, 2]][Math.floor(c.H(1) * 3)], tstep = TAU / (6 + Math.floor(c.H(2) * 6));
+      for (let i = -1; i * dx < L + R; i++) for (let j = -1; j <= rowsN; j++) {
+        let cu = i * dx, cv = (j + 0.5) * dy + (i % 2 ? dy / 2 : 0), th = i * tstep + j * 0.5, dep = depths[(((i + j) % depths.length) + depths.length) % depths.length], cube = (((i % 3) + 3) % 3) === 2, ring = (ox, oy, r) => { let pts = []; for (let a = 0; a <= 6; a++) pts.push([ox + r * Math.cos(a * Math.PI / 3), oy + r * Math.sin(a * Math.PI / 3)]); c.draw(pts); };
+        let k = 0, r = R - g * 0.6, ox = cu, oy = cv;
+        for (; r > p * 2.5 && k < (cube ? 2 : dep); k++, r -= st) { ox = cu + Math.cos(th) * dl * k; oy = cv + Math.sin(th) * dl * k; ring(ox, oy, r); }
+        if (cube && k === 2) { let rr = r + st; for (let a = 0; a < 3; a++) { let t = a * 2 * Math.PI / 3 + Math.PI / 3 * (i % 2); c.draw([[ox, oy], [ox + rr * Math.cos(t), oy + rr * Math.sin(t)]]); } }
+      }
+    },
+
+    // ---- hazard: chevrons and stripes ----------------------------------------------------------
+    // Diagonal bars whose widths swell and thin in a repeating order, a hairline down every gap
+    hazard(c) {
+      let { L, s, g, h } = c, a = g * 2, b = s - g * 2, H = b - a, w = Math.max(g * 2.5, H * (0.14 + 0.1 * c.H(1)));
+      let pat = [[1, 0.72, 0.45, 0.72], [1, 1, 0.5], [1, 0.8, 0.6, 0.4, 0.6, 0.8], [0.5, 1, 0.5, 0.25]][Math.floor(c.H(2) * 4)];
+      c.rails(a - g * 1.2, b + g * 1.2);
+      for (let x = -H * 1.2, k = 0; x < L; k++) {
+        let ww = Math.max(g * 1.2, w * pat[k % pat.length]), gw = Math.max(g * 3.2, w * 0.8 * pat[(k + 1) % pat.length]);
+        c.solidPoly([[x, b], [x + ww, b], [x + ww + H, a], [x + H, a]], -Math.PI / 4);
+        let mx = x + ww + gw / 2; c.drawIn([[mx, b], [mx + H, a]], [0, a, L, b]);
+        x += ww + gw;
+      }
+    },
+    // Nested chevrons marching: V's in groups, the groups' depths in a repeating order (deep, then
+    // shallow), every few groups a solid one; the train turns about at the band's middle
+    chevrons(c) {
+      let { L, s, g } = c, mid = s / 2, H = s / 2 - g * 0.8, du = g * 1.25 * Math.SQRT2;
+      let pat = [[5, 3, 1, 3], [4, 2, 4, 6], [3, 3, 5]][Math.floor(c.H(1) * 3)], every = 3 + Math.floor(c.H(2) * 3), turn = c.H(3) < 0.5, flipped = false;
+      for (let x = -H - du * 8, k = 0; x < L + H; k++) {
+        let nk = pat[k % pat.length], dir = turn && x > L / 2 ? -1 : 1;
+        if (dir < 0 && !flipped) { flipped = true; x -= H * 0.5; }
+        let V = (x0, t) => dir > 0 ? [[x0, mid - H], [x0 + H, mid], [x0, mid + H], [x0 + t, mid + H], [x0 + t + H, mid], [x0 + t, mid - H]] : [[x0 + H, mid - H], [x0, mid], [x0 + H, mid + H], [x0 + H + t, mid + H], [x0 + t, mid], [x0 + H + t, mid - H]];
+        if (k % every === every - 1) { let t = du * nk * 0.75; c.solidPoly(V(x, t), 0); x += t + du; continue; }
+        for (let m = 0; m < nk; m++) { let xx = x + m * du; c.draw(dir > 0 ? [[xx, mid - H], [xx + H, mid], [xx, mid + H]] : [[xx + H, mid - H], [xx, mid], [xx + H, mid + H]]); }
+        x += nk * du + du * 0.5;
+      }
+    },
+    // V-shaped hazard: solid chevrons with widths in a repeating order, a hairline chevron in every gap;
+    // every N they turn about (arrowheads meeting)
+    vstripe(c) {
+      let { L, s, g } = c, a = g * 2, b = s - g * 2, mid = (a + b) / 2, H = (b - a) / 2, w = Math.max(g * 2.5, H * (0.55 + 0.3 * c.H(1)));
+      let pat = [[1, 0.6, 0.35, 0.6], [1, 0.5], [0.4, 0.7, 1, 0.7]][Math.floor(c.H(2) * 3)], N = 6 + Math.floor(c.H(3) * 6), last = 1;
+      c.rails(a - g * 1.2, b + g * 1.2);
+      for (let x = -H * 2, k = 0; x < L + H; k++) {
+        let dir = Math.floor(k / N) % 2 ? -1 : 1, ww = Math.max(g * 1.4, w * pat[k % pat.length]), gw = Math.max(g * 3.2, w * 0.7);
+        if (dir !== last) { x -= H * 0.3; last = dir; }
+        let V = (x0, t) => dir > 0 ? [[x0, a], [x0 + H, mid], [x0, b], [x0 + t, b], [x0 + t + H, mid], [x0 + t, a]] : [[x0 + H, a], [x0, mid], [x0 + H, b], [x0 + H + t, b], [x0 + t, mid], [x0 + H + t, a]];
+        c.solidPoly(V(x, ww), 0);
+        let hx = x + ww + gw / 2, nextDir = Math.floor((k + 1) / N) % 2 ? -1 : 1;
+        if (nextDir === dir) c.draw(dir > 0 ? [[hx, a], [hx + H, mid], [hx, b]] : [[hx + H, a], [hx, mid], [hx + H, b]]);
+        x += ww + gw;
+      }
+    },
+    // Zigzags stacked, each a step along from the one above (the peaks run in diagonals), the step
+    // turning back every few rows (the diagonals zigzag too); every fourth zigzag a solid band
+    zigzag(c) {
+      let { L, s, g, p } = c, P = fit(L, s * (0.35 + 0.25 * c.H(1))), A = s * (0.05 + 0.04 * c.H(2)), W = WAVES.tri, cl = p * 1.55;
+      let G = 3 + Math.floor(c.H(3) * 4), d = Math.round((0.04 + 0.05 * c.H(4)) * 500) / 500, every = 4, phs = [0], vs = [0];
+      for (let k = 1; k < 400 && vs[k - 1] + 2 * A < s - g; k++) { let dd = Math.floor(k / G) % 2 ? -d : d; phs.push(phs[k - 1] + dd); vs.push(vs[k - 1] + pairGap(W, P, A, dd, cl) + (k % every === 0 || k % every === 1 ? p * 1.0 : 0)); }
+      while (vs.length > 1 && vs[vs.length - 1] + 2 * A > s - g) { vs.pop(); phs.pop(); }
+      let off = (s - vs[vs.length - 1]) / 2;
+      vs.forEach((v, k) => {
+        if (k % every === 0) c.solidly(() => { for (let e of [-0.9, 0, 0.9]) c.draw(waveLine(W, P, phs[k], A, off + v + e * p, L)); });
+        else c.draw(waveLine(W, P, phs[k], A, off + v, L));
+      });
+    },
+    // Hazard in rows that phase: each row a bar more or fewer over the band than the row above (the counts
+    // in a repeating order out and back), so the rows fall in and out of step, in step at the ends; the rows
+    // in groups whose bars start a step along from the group above; thin rails between the rows
+    stepped(c) {
+      let { L, s, g } = c, rows = s > 90 ? 6 : 4, rh = (s - g) / rows, per0 = Math.max(g * 6, rh * (1.1 + 0.6 * c.H(1))), N0 = Math.max(4, Math.round(L / per0));
+      let drift = [[0, 2, 4, 2], [0, 1, 2, 3, 2, 1], [0, 3, 0, 3], [0, 2, 0, -2]][Math.floor(c.H(2) * 4)], G = 2 + Math.floor(c.H(3) * 2), sig = [0.25, 1 / 3, 0.5][Math.floor(c.H(4) * 3)];
+      for (let r = 0; r < rows; r++) {
+        let y = g * 0.5 + r * rh, ya = y + g * 0.9, yb = y + rh - g * 0.9, hh = yb - ya, per = L / (N0 + drift[r % drift.length]), w = per * 0.5, sh = Math.floor(r / G) * sig * per;
+        if (r) c.draw([[0, y], [L, y]]);
+        for (let x = -hh - per * 2 + (sh % per); x < L; x += per) c.solidPoly([[x, yb], [x + w, yb], [x + w + hh, ya], [x + hh, ya]], -Math.PI / 4);
+      }
+      c.rails(g * 0.5, s - g * 0.5);
+    },
+    // Chevron bands side by side, no gaps, each hatched along its arms at a spacing that runs solid,
+    // close, open, sparse and back: the density goes round in a cycle down the band
+    gradient(c) {
+      let { L, s, g, p } = c, a = g * 1.8, b = s - g * 1.8, mid = s / 2, H = (b - a) / 2, t = Math.max(g * 4, H * (0.5 + 0.3 * c.H(1)));
+      let levels = [0.9, 1.3, 1.9, 2.8, 4, 2.8, 1.9, 1.3], ph = Math.floor(c.H(2) * levels.length);
+      for (let x = -H - t, k = 0, prevSolid = false; x < L; x += t, k++) {
+        let sp = levels[(k + ph) % levels.length] * p, up = [[x, a], [x + H, mid], [x + t + H, mid], [x + t, a]], lo = [[x + H, mid], [x, b], [x + t, b], [x + t + H, mid]];
+        if (sp < p) { c.solidPoly(up, Math.PI / 4); c.solidPoly(lo, -Math.PI / 4); }
+        else {
+          // the hatch spacing fitted to the band so the lines fall evenly between its edges
+          let wd = t * Math.SQRT1_2, n = Math.max(1, Math.round(wd / sp)), sp2 = wd / n;
+          hatchPoly(c, up, Math.PI / 4, sp2, lineFrameY(Math.PI / 4, [x + t, a]), sp2 * 0.5);
+          hatchPoly(c, lo, -Math.PI / 4, sp2, lineFrameY(-Math.PI / 4, [x, b]), sp2 * 0.5);
+        }
+        // the edge between two bands, unless a solid's own outline already draws it
+        if (sp >= p && !prevSolid) c.draw([[x, a], [x + H, mid], [x, b]]);
+        prevSolid = sp < p;
+      }
+      c.rails(a - g * 0.95, b + g * 0.95);
+    },
+    // Conveyors that phase: each lane a train of nested arrowheads on a shaft, the lanes running opposite
+    // ways; each lane a train or two more or fewer over the band than the next (in step at the ends,
+    // drifting apart between); the arrowheads' nesting in a repeating order along each train; the lanes in
+    // groups, each group starting a step along from the one above
+    arrows(c) {
+      let { L, s, g } = c, lanes = s > 90 ? 4 : 2, lh = s / lanes, du = g * 1.25 * Math.SQRT2;
+      let nest = [[3, 2, 4, 2], [4, 3, 2, 3], [2, 2, 4]][Math.floor(c.H(1) * 3)], drift = [[0, 1, 2, 1], [0, 2], [0, 1, 0, -1]][Math.floor(c.H(2) * 3)], sig = [0.25, 0.5, 1 / 3][Math.floor(c.H(3) * 3)];
+      for (let r = 0; r < lanes; r++) {
+        let ya = r * lh + g * 0.9, yb = (r + 1) * lh - g * 0.9, mid = (ya + yb) / 2, H = (yb - ya) / 2, dir = r % 2 ? -1 : 1;
+        let per0 = H + 4 * du + g * 1.5, N = Math.max(3, Math.round(L / per0) + drift[r % drift.length]), per = L / N, sh = Math.floor(r / 2) * sig * per;
+        c.draw([[0, mid], [L, mid]]);
+        if (r) c.draw([[0, r * lh], [L, r * lh]]);
+        for (let k = -2; k < N + 2; k++) {
+          let x = k * per + sh, n = Math.min(nest[((k % nest.length) + nest.length) % nest.length], Math.max(1, Math.floor((per - H * 0.2) / du)));
+          for (let m = 0; m < n; m++) { let xx = x + m * du; c.draw(dir > 0 ? [[xx, ya], [xx + H, mid], [xx, yb]] : [[xx + H, ya], [xx, mid], [xx + H, yb]]); }
+        }
+      }
+      c.rails(g * 0.3, s - g * 0.3);
+    },
+  };
+
+  // ---- the bands: a composed page's thin cells carry a running band instead of a panel
+  const BAND_FAMILIES = {
+    signal: ['reich', 'phasestack', 'beats', 'scopebars', 'eye', 'timing', 'waterfall'],
+    data: ['datamatrix', 'ledmeter', 'spectrogram', 'hexdump', 'pdf417', 'automaton'],
+    circuit: ['traces', 'serpentine', 'die', 'schematic', 'bga'],
+    geometry: ['tunnel', 'isolines', 'honeycomb'],
+    hazard: ['hazard', 'chevrons', 'vstripe', 'zigzag', 'stepped', 'gradient', 'arrows']
+  };
+  const BANDS = Object.assign({ tunnel: BAND_TUNNEL }, BAND_FNS);
+  const BAND_KINDS = [].concat(...Object.values(BAND_FAMILIES));
+
+  // One band in R0. Bands draw in band coordinates: u along the strip (0..L),
+  // v across it (0..s). Parallel runs keep 1.5 pens apart; solids (0.9 pens,
+  // fused on purpose) go in a 'band-solid:' group of their own.
+  function drawKind(R0, kind, h, seed) {
+    let p = penPx(), horiz = R0.w >= R0.h, L = horiz ? R0.w : R0.h, s = horiz ? R0.h : R0.w;
+    let map = ([u, v]) => horiz ? [R0.x + u, R0.y + v] : [R0.x + v, R0.y + u];
+    let drawIn = (pts, b) => { for (let q of clipPolylineToRect(pts, b)) if (q.length > 1) svgPolyline(q.map(map)); };
+    let c = { L, s, p, g: p * 1.8, h, horiz, seed, map, drawIn, H: k => _mmHash(seed, k) };
+    c.draw = pts => drawIn(pts, [0, 0, L, s]);
+    c.rails = (a, b) => { c.draw([[0, a], [L, a]]); c.draw([[0, b], [L, b]]); };
+    c.circ = (u, v, d) => { let [x, y] = map([u, v]); svgCircle(x, y, d); };
+    c.rect = (u0, v0, u1, v1) => c.draw([[u0, v0], [u1, v0], [u1, v1], [u0, v1], [u0, v0]]);
+    let solidly = fn => { svgRec.beginGroup('band-solid:' + kind); try { fn(); } finally { svgRec.endGroup(); } };
+    c.solidly = solidly;
+    // a solid polygon: hatched 0.9 pens apart at angle th, outlined
+    c.solidPoly = (poly, th) => solidly(() => { hatchPoly(c, poly, th || 0, p * 0.9); c.draw([...poly, poly[0]]); });
+    // a solid box: lines 0.9 pens apart (along the band, or across it with 'v')
+    c.solid = (u0, v0, u1, v1, dir) => solidly(() => { let st = p * 0.9; if (dir === 'v') for (let u = u0 + st / 2; u < u1; u += st) c.draw([[u, v0], [u, v1]]); else for (let v = v0 + st / 2; v < v1; v += st) c.draw([[u0, v], [u1, v]]); c.rect(u0, v0, u1, v1); });
+    // a bitmap of cells, solid where on: rows of strokes a pen or less apart, one stroke per run of on cells
+    c.bitmap = (get, R, C, u0, v0, cw, ch) => solidly(() => {
+      let m = Math.max(2, Math.ceil((ch - p) / (p * 0.9)) + 1);
+      for (let j = 0; j < R; j++) for (let t = 0; t < m; t++) {
+        let v = v0 + j * ch + p / 2 + (ch - p) * t / (m - 1), run = -1;
+        for (let i = 0; i <= C; i++) { let on = i < C && get(i, j); if (on && run < 0) run = i; if (!on && run >= 0) { c.draw([[u0 + run * cw + p / 2, v], [u0 + i * cw - p / 2, v]]); run = -1; } }
+      }
+    });
+    c.noise = (x, k) => { let i = Math.floor(x), f = x - i, t = f * f * (3 - 2 * f), a = c.H((k || 0) * 7919 + i + 4096), b = c.H((k || 0) * 7919 + i + 4097); return a + (b - a) * t; };
+    svgRec.beginGroup('band-' + kind);
+    try { (BANDS[kind] || BANDS.reich)(c); } finally { svgRec.endGroup(); }
+  }
+
+  // ---- filling the cells: a composed page's cells are shapes the random layout rarely makes (thin
+  // guards, small corners), and some panels draw next to nothing in them. A panel whose ink covers too
+  // little of its cell is drawn again as another archetype, a band as another kind, chosen per orbit,
+  // so rhymed and mirrored cells stay alike
+  const PANEL_FLOOR = 0.025, BAND_FLOOR = 0.05;
+  const inkLen = n => { let t = 0; if (n.children) { for (let k of n.children) t += inkLen(k); } else if (n.d) for (let poly of parsePathToPolylines(n.d)) for (let j = 1; j < poly.length; j++) t += Math.hypot(poly[j][0] - poly[j - 1][0], poly[j][1] - poly[j - 1][1]); return t; };
+  const coverage = (cg, k0, R) => { let t = 0; for (let k = k0; k < cg.children.length; k++) t += inkLen(cg.children[k]); return t * penPx() / Math.max(1, R.w * R.h); };
+  const dropFrom = (cg, k0) => { while (svgRec.groupStack.length > 2) svgRec.endGroup(); cg.children.splice(k0); };
+
+  // Thin cells (under 72 px across, or 2.5:1 and longer) take a band, the field never
+  const isBandCell = (lay, w, h) => !!lay && lay.role !== 'field' && (Math.min(w, h) < 72 || Math.max(w / h, h / w) >= 2.5);
+
+  // Draw cell i's band: its kind pinned by the cell's editor, or dealt per orbit; returns the kind
+  function drawBand(R, lay, ov) {
+    let base = seedNumber(state.seed), cg = svgRec.groupStack[1], k0 = cg ? cg.children.length : 0;
+    if (ov && ov.reseed) base = (base ^ Math.imul(ov.reseed, 0x85EBCA6B)) >>> 0;
+    let pinned = ov && ov.variant && BANDS[ov.variant] ? ov.variant : null, tried = [], kind = null;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      let left = BAND_KINDS.filter(k => !tried.includes(k));
+      kind = pinned || (attempt === 0 ? BAND_KINDS[Math.floor(_mmHash(base, 0xA00 + lay.orbit) * BAND_KINDS.length)] : left[Math.floor(_mmHash(base, 0xB00 + lay.orbit * 8 + attempt) * left.length)]);
+      tried.push(kind);
+      if (attempt && cg) dropFrom(cg, k0);
+      drawKind(R, kind, _mmHash(base, 0xA80 + lay.orbit), (base ^ Math.imul(lay.orbit + 1, 0x9E3779B1)) >>> 0);
+      if (pinned || !cg || coverage(cg, k0, R) >= BAND_FLOOR) break;
+    }
+    return kind;
+  }
+
+  // A panel that came out nearly empty is drawn again as another archetype (none if the user pinned
+  // one). Animation frames reuse the still frame's decision, so a cell never swaps mid-loop.
+  const _fillMemo = new Map();
+  function refillPanel(archetype, padded, inner, sc, lay, i, k0) {
+    let cg = svgRec.groupStack[1];
+    if (!cg) return null;
+    let key = [state.seed, i, archetype, _cellVariantInfo, Math.round(inner.w), Math.round(inner.h), sc.toFixed(3)].join('|');
+    let R = SELF_FRAMED_ARCHETYPES.has(archetype) ? padded : inner, alt = null;
+    if (animCtx && _fillMemo.has(key)) alt = _fillMemo.get(key);
+    else {
+      let cov = coverage(cg, k0, R);
+      if (cov >= PANEL_FLOOR) { _fillMemo.set(key, null); return null; }
+      let base = seedNumber(state.seed), types = _composedTypes || state.archetypes, tried = [archetype];
+      for (let attempt = 0; attempt < 5; attempt++) {
+        let pool = Object.keys(ARCHETYPE_DEFS).filter(a => types[a] && types[a].enabled && !tried.includes(a) && a !== 'heroText' && isAspectRatioCompatible(a, inner.w, inner.h));
+        if (!pool.length) break;
+        let pick = pool[Math.floor(_mmHash(base, 0xF00 + lay.orbit * 8 + attempt) * pool.length)];
+        tried.push(pick);
+        alt = { arch: pick, attempt };
+        if (fillWith(alt, padded, inner, sc, lay, cg, k0) >= PANEL_FLOOR) break;
+      }
+      if (_fillMemo.size > 4000) _fillMemo.clear();
+      _fillMemo.set(key, alt);
+      return alt && alt.arch;
+    }
+    if (!alt) return null;
+    fillWith(alt, padded, inner, sc, lay, cg, k0);
+    return alt.arch;
+  }
+  function fillWith(alt, padded, inner, sc, lay, cg, k0) {
+    dropFrom(cg, k0);
+    _cellTextLog = [];
+    _cellVariantInfo = ''; _cellOverrideVariant = null;
+    let R = SELF_FRAMED_ARCHETYPES.has(alt.arch) ? padded : inner, base = seedNumber(state.seed), saved = _drawingSuppressed;
+    try { composeArchetypeCell(alt.arch, R, sc, new PRNG((base ^ Math.imul(lay.orbit + 1, 0x85EBCA6B) ^ (alt.attempt + 1) * 0x27D4EB2F) >>> 0)); }
+    catch (err) { console.error(`${alt.arch} failed filling cell ${_cellIndex}:`, err); }
+    finally { _drawingSuppressed = saved; }
+    return coverage(cg, k0, R);
+  }
+
+  // ---- the page: lay the cells out by a scheme, find the orbits, inset the gutters
+  const SCHEME_NAMES = Object.keys(SCHEMES);
+  function compose(rect, gap, opt) {
+    let seed = String(state.seed);
+    let scheme = SCHEMES[opt.scheme] ? opt.scheme : SCHEME_NAMES[Math.floor(new PRNG(seed + '#layscheme').nextFloat() * SCHEME_NAMES.length)];
+    let P = new PRNG(seed + '#lay#' + scheme), S = SCHEMES[scheme];
+    let o = { depth: Math.max(0, Math.min(3, opt.depth | 0)), ms: Math.max(60, opt.minCell, Math.min(rect.w, rect.h) / 15) };
+    let rhythmRoll = P.nextFloat();
+    o.rhythm = opt.rhythm && opt.rhythm !== 'auto' ? opt.rhythm : S.rhythms[Math.floor(rhythmRoll * S.rhythms.length)];
+    let { cells, group } = S(rect, P, o);
+    cells = cells.filter(c => c.w > 1 && c.h > 1);
+    let n = orbits(cells, rect, group);
+    let g2 = gap / 2, out = cells.map(c => {
+      let x0 = c.x + (c.x > rect.x + 0.5 ? g2 : 0), y0 = c.y + (c.y > rect.y + 0.5 ? g2 : 0);
+      let x1 = c.x + c.w - (c.x + c.w < rect.x + rect.w - 0.5 ? g2 : 0), y1 = c.y + c.h - (c.y + c.h < rect.y + rect.h - 0.5 ? g2 : 0);
+      return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+    });
+    let info = { scheme, rhythm: o.rhythm, depth: o.depth, group, orbits: n, cells: cells.map(c => ({ role: c.role, orbit: c.orbitId, flip: c.flip || '' })) };
+    return { cells: out, info };
+  }
+
+  return { compose, drawBand, isBandCell, refillPanel, BAND_KINDS, BAND_FAMILIES, SCHEME_NAMES, RHYTHMS: ['even', 'alt', 'pal', 'golden', 'fib', 'euclid', 'harmonic'] };
+})();
+// Band cells take their kinds as variants (the editor's Variant menu, double-click cycling, Regen)
+VARIANT_DEFS.band = ComposedLayout.BAND_KINDS;
+let _layInfo = null;   // the composed layout of the page being drawn (null on a random layout)
+// Two flops compose: an axis flopped twice is back where it started
+function flopXor(a, b) { let x = (a || '').includes('x') !== (b || '').includes('x'), y = (a || '').includes('y') !== (b || '').includes('y'); return (x ? 'x' : '') + (y ? 'y' : ''); }
+
 function layoutPage(rect, depth, irregularity, minSize, gap, prng) {
   let rHero = prng.nextFloat(), rKind = prng.nextFloat(), rFrac = prng.nextFloat(), rSide = prng.nextFloat(), rSide2 = prng.nextFloat();
   let grid = { rect, ux: rect.w / 12, uy: rect.h / 12 };
@@ -11057,8 +12327,10 @@ function composeHeroText(rect, s, prng) {
     if (font) {
       let ib = font.otFont.getPath(indexNum, 0, 0, iSize).getBoundingBox();
       let ishape = _heroOutline(font, indexNum, ix - ib.x1, iy - ib.y1, iSize);
+      _flopTypeBegin();
       _heroTrace(ishape, 0, 0);
       if (treat === 'lined' || treat === 'shadow') { kitWeight('fine'); _heroFill(ishape, 0, 0, null, 0, 0, 0, Math.max(pen * 1.6, iSize / 14)); }
+      _flopTypeEnd();
       ny = iy - ib.y1;
       indexW = ib.x2 - ib.x1;
     } else {
@@ -11100,6 +12372,7 @@ function composeHeroText(rect, s, prng) {
 
   // ---- The word ----
   let step = Math.max(1.2, size / 160);
+  _flopTypeBegin();
   if (shape) {
     let contours = shape.map(c => c.pts);
     let mainHidden = (qx, qy) => _heroInside(shape, qx, qy, 0, 0);
@@ -11168,6 +12441,7 @@ function composeHeroText(rect, s, prng) {
     kitWeight('heavy');
     drawFallbackText(display, heroOriginX, baseY, size);
   }
+  _flopTypeEnd();
 
   // ---- Field: repeated word / Swiss arcs / modular grid in the free band ----
   if (fieldKind) {
@@ -11188,10 +12462,12 @@ function composeHeroText(rect, s, prng) {
           let band = above ? [t1 - wordH * keep, t1 + 1] : [t0 - 1, t0 + wordH * keep];
           if (band[0] < F.y - 1 || band[1] > F.y + F.h + 1) break;
           kitWeight(j === 1 ? 'secondary' : 'fine');
+          _flopTypeBegin();
           _heroTrace(shape, 0, dy, null, step, band);
           kitWeight('fine');
           let cutY = above ? band[0] : band[1];
           for (let sp of _heroSpans(shape.map(c => c.pts), cutY - dy)) svgLine(sp[0], cutY, sp[1], cutY);
+          _flopTypeEnd();
           if (gut > micro * 2) kitText('R' + String(j).padStart(2, '0'), ix + iw, (above ? t1 : t0 + micro), micro, 'right');
         }
       } else if (fieldKind === 'arcs') {
@@ -23784,7 +25060,15 @@ function generate(frameIndex) {
     effectiveDepth = Math.max(1, Math.min(state.multi.depth + 2, effectiveDepth));
     let effectiveMinCell = state.multi.minCellSize * (1.0 + state.scale * 0.8);
 
-    generatedCells = layoutPage(contentRect, effectiveDepth, state.multi.irregularity, effectiveMinCell, state.multi.cellGap, prng);
+    if (state.multi.layout === 'composed') {
+      let cm = state.multi.composed || {};
+      let lay = ComposedLayout.compose(contentRect, state.multi.cellGap, { scheme: cm.scheme, rhythm: cm.rhythm, depth: cm.depth == null ? 1 : cm.depth, minCell: state.multi.minCellSize });
+      generatedCells = lay.cells;
+      _layInfo = lay.info;
+    } else {
+      generatedCells = layoutPage(contentRect, effectiveDepth, state.multi.irregularity, effectiveMinCell, state.multi.cellGap, prng);
+      _layInfo = null;
+    }
     computeCellScales(generatedCells, state.scale, state.multi.scaleBias);
     // Use manual layout if available and cell count matches.
     // Archetype selection always uses generatedCells (original dims/scales) so that
@@ -23798,7 +25082,10 @@ function generate(frameIndex) {
   } else {
     generatedCells = [{ x: contentRect.x, y: contentRect.y, w: contentRect.w, h: contentRect.h, scale: state.scale }];
     cells = generatedCells;
+    _layInfo = null;
   }
+  // On a composed page: the first archetype and variant drawn in each orbit (Rhyme)
+  let orbitPick = {}, composedOpt = state.multi.composed || {};
 
   // Visual diversity tracking — group archetypes by visual similarity
   const VISUAL_GROUPS = {
@@ -23890,9 +25177,18 @@ function generate(frameIndex) {
     svgSetStrokeWeight(state.geometry.strokeWeight);
     svgNoFill();
 
+    // On a composed page: the cell's role, orbit and mirror; thin cells carry a band
+    // (unless its editor pins an archetype), and a cell pinned to Band is one whatever its shape
+    let lay = _layInfo && _layInfo.cells[i], ovHere = state.cellOverrides[String(i)];
+    let bandCell = !!lay && ((ovHere && ovHere.archetype === 'band') ||
+      (composedOpt.bands !== false && !(ovHere && ovHere.archetype) && ComposedLayout.isBandCell(lay, origPadded.w, origPadded.h)));
+    let flop = flopXor(lay ? lay.flip : '', ovHere && ovHere.flop);
+
     // Very small cells: fill with texture pattern instead of full archetype
-    if (cells.length > 1 && (origPadded.w < 50 || origPadded.h < 50) && cellPrng.nextFloat() < 0.6) {
+    if (!bandCell && cells.length > 1 && (origPadded.w < 50 || origPadded.h < 50) && cellPrng.nextFloat() < 0.6) {
+      let flopFrom = svgRec.groupStack[1] ? svgRec.groupStack[1].children.length : 0;
       drawTextureGreeble(inner.x + 2, inner.y + 2, inner.w - 4, inner.h - 4, cellScale, cellPrng);
+      if (flop && !_drawingSuppressed) flopCellDrawing(cell, flopFrom, flop, false);
       if (state.bordersEnabled) {
         generateBorder(inner, cellScale, state.border.style, state.border.weight, bp, cellPrng);
       }
@@ -23977,6 +25273,8 @@ function generate(frameIndex) {
       weights.push(w);
     }
 
+    if (bandCell) { eligible = ['band']; weights = [1]; }
+
     if (eligible.length === 0) {
       for (let [key, def] of Object.entries(ARCHETYPE_DEFS)) {
         let a = types[key];
@@ -24001,12 +25299,16 @@ function generate(frameIndex) {
     // Apply per-cell archetype override (PRNG already consumed above)
     let _cellOv = state.cellOverrides[String(i)];
     if (_cellOv && _cellOv.archetype) archetype = _cellOv.archetype;
+    // Rhyme: a cell takes the archetype and variant its orbit drew first (its own editor still wins)
+    let rhyme = !bandCell && lay && composedOpt.rhyme !== false && orbitPick[lay.orbit];
+    if (rhyme && !(_cellOv && _cellOv.archetype)) archetype = rhyme.archetype;
     // A cell's Regen / Randomize mixes its own reseed into its stream from here
     // on, after the original pick, so its neighbours' diversity weights hold
     if (_cellOv && _cellOv.reseed) { cellPrng = new PRNG(((cellSeed ^ Math.imul(_cellOv.reseed, 0x9E3779B1)) >>> 0) & 0x7FFFFFFF); _cellPRNG = cellPrng; }
     cell._archetype = origArchetype; // use ORIGINAL for neighbor/diversity checks (stability)
     _cellVariantInfo = ''; // reset before composer runs
     _cellOverrideVariant = (_cellOv && _cellOv.variant) ? _cellOv.variant : null;
+    if (rhyme && !(_cellOv && _cellOv.archetype) && !(_cellOv && _cellOv.variant) && rhyme.variant) _cellOverrideVariant = rhyme.variant;
     _cellTextLog = [];     // reset text position tracking
 
     // Update diversity tracking using ORIGINAL archetype (not override) so
@@ -24098,14 +25400,29 @@ function generate(frameIndex) {
     let suppressedBefore = _drawingSuppressed;
     // Self-framed panels take the full padded rect and get no cell border
     let selfFramed = SELF_FRAMED_ARCHETYPES.has(archetype);
-    try { composeArchetypeCell(archetype, selfFramed ? padded : inner, cellScale, cellPrng); }
+    let flopFrom = svgRec.groupStack[1] ? svgRec.groupStack[1].children.length : 0;
+    _cellFlop = flop;
+    try {
+      if (archetype === 'band') _cellVariantInfo = ComposedLayout.drawBand(inner, lay || { orbit: i }, _cellOv);
+      else composeArchetypeCell(archetype, selfFramed ? padded : inner, cellScale, cellPrng);
+    }
     catch (err) { console.error(`${archetype} failed in cell ${i}:`, err); }
     finally { _drawingSuppressed = suppressedBefore; }
+    // A composed page's panel that came out nearly empty is drawn again as another archetype
+    if (lay && archetype !== 'band' && lay.role !== 'field' && !(_cellOv && _cellOv.archetype) && !_drawingSuppressed) {
+      let alt = ComposedLayout.refillPanel(archetype, padded, inner, cellScale, lay, i, flopFrom);
+      if (alt) { archetype = alt; selfFramed = SELF_FRAMED_ARCHETYPES.has(alt); }
+    }
+    if (lay && archetype !== 'band' && !orbitPick[lay.orbit]) orbitPick[lay.orbit] = { archetype, variant: _cellVariantInfo };
+    // The cell's flop: the layout's mirror and its editor's Flop H / Flop V; its type still reads forwards
+    if (flop && !_drawingSuppressed) flopCellDrawing(cell, flopFrom, flop, true);
+    _cellFlop = '';
 
     // Store debug metadata for tooltip (after composer runs, so variant info is populated)
     _cellMeta.push({
       index: i, archetype: archetype,
-      label: ARCHETYPE_DEFS[archetype] ? ARCHETYPE_DEFS[archetype].label : archetype,
+      label: archetype === 'band' ? 'Band' : ARCHETYPE_DEFS[archetype] ? ARCHETYPE_DEFS[archetype].label : archetype,
+      role: lay ? lay.role : '', orbit: lay ? lay.orbit : null, layFlip: lay ? lay.flip : '',
       variant: _cellVariantInfo || '',
       scale: cellScale,
       rect: { x: cell.x, y: cell.y, w: cell.w, h: cell.h },
@@ -26187,7 +27504,8 @@ function _sanitizeCellOverrides(ov) {
     if (!/^\d+$/.test(k) || !v || typeof v !== 'object') continue;
     let clean = {};
     for (let [f, val] of Object.entries(v)) {
-      if (f === 'archetype') { if (ARCHETYPE_DEFS[val]) clean.archetype = val; }
+      if (f === 'archetype') { if (ARCHETYPE_DEFS[val] || val === 'band') clean.archetype = val; }
+      else if (f === 'flop') { if (val === 'x' || val === 'y' || val === 'xy') clean.flop = val; }
       else if (f === 'variant') { if (typeof val === 'string' && MG_RENAMED[val]) val = MG_RENAMED[val]; if (typeof val === 'string' && Object.values(VARIANT_DEFS).some(l => l && l.includes(val))) clean.variant = val; }
       else if (f === 'game') { if (val && typeof val === 'object' && typeof val.v === 'string' && val.st && typeof val.st === 'object' && JSON.stringify(val).length < 60000) clean.game = JSON.parse(JSON.stringify(val)); }
       else if (typeof val === 'number' || typeof val === 'boolean' || val === null) clean[f] = val;
@@ -26969,6 +28287,13 @@ function randomizeParams(prng) {
       }
     }
   }
+
+  // The layout: about a third of pages composed (drawn last, so every parameter above keeps its draw)
+  if (isRandEnabled('rand-composition')) {
+    let rl = prng.nextFloat(), rd = prng.nextFloat(), rr = prng.nextFloat(), rb = prng.nextFloat();
+    state.multi.layout = rl < 0.35 ? 'composed' : 'random';
+    state.multi.composed = { scheme: 'auto', rhythm: 'auto', depth: rd < 0.25 ? 0 : rd < 0.75 ? 1 : 2, rhyme: rr < 0.7, bands: rb < 0.9 };
+  }
 }
 
 function doRandomize() {
@@ -26988,12 +28313,28 @@ function doRandomize() {
   }
 }
 
+// Composed layouts show their own controls; Subdivision Depth and Irregularity are the random layout's
+function syncLayoutMode() {
+  let composed = state.multi.layout === 'composed', box = document.getElementById('composed-params');
+  if (box) box.style.display = composed ? '' : 'none';
+  for (let el of document.querySelectorAll('#panel-multi .random-only')) el.style.display = composed ? 'none' : '';
+}
+
 function syncAllUI() {
   document.getElementById('scale-slider').value = state.scale;
   updateScale(state.scale);
   setMode(state.mode, true);
   document.getElementById('multi-depth').value = state.multi.depth;
   document.getElementById('multi-depth-val').textContent = state.multi.depth;
+  let cm = state.multi.composed || {};
+  document.getElementById('multi-layout').value = state.multi.layout === 'composed' ? 'composed' : 'random';
+  document.getElementById('composed-scheme').value = cm.scheme || 'auto';
+  document.getElementById('composed-rhythm').value = cm.rhythm || 'auto';
+  document.getElementById('composed-depth').value = cm.depth == null ? 1 : cm.depth;
+  document.getElementById('composed-depth-val').textContent = cm.depth == null ? 1 : cm.depth;
+  document.getElementById('composed-rhyme').checked = cm.rhyme !== false;
+  document.getElementById('composed-bands').checked = cm.bands !== false;
+  syncLayoutMode();
   document.getElementById('multi-irreg').value = state.multi.irregularity;
   document.getElementById('multi-irreg-val').textContent = state.multi.irregularity.toFixed(2);
   document.getElementById('multi-min-cell').value = state.multi.minCellSize;
@@ -27476,6 +28817,18 @@ function setCellVariant(val) {
   refreshCellEditor();
 }
 
+// Flop H / Flop V: toggles the cell's mirror on that axis (both make 'xy')
+function setCellFlop(axis) {
+  if (_selectedCell === null) return;
+  pushUndo();
+  let k = String(_selectedCell), ov = state.cellOverrides[k] || (state.cellOverrides[k] = {});
+  let x = (ov.flop || '').includes('x'), y = (ov.flop || '').includes('y');
+  if (axis === 'x') x = !x; else y = !y;
+  if (x || y) ov.flop = (x ? 'x' : '') + (y ? 'y' : ''); else delete ov.flop;
+  generate(); fixCanvasVisibility();
+  refreshCellEditor();
+}
+
 function setCellLocked(locked) {
   if (_selectedCell === null) return;
   pushUndo();
@@ -27602,6 +28955,9 @@ function buildCellEditorHTML(cellMeta) {
   html += '<div class="ce-actions">';
   html += '<button onclick="regenCell(false)" title="New content, same archetype">&#x27F3; Regen</button>';
   html += '<button onclick="regenCell(true)" title="New archetype and content">&#x2726; Randomize</button>';
+  let fl = flopXor(cellMeta.layFlip, ov.flop);
+  html += `<button onclick="setCellFlop('x')" class="${fl.includes('x') ? 'on' : ''}" title="Flop horizontally: the cell's layout mirrored left to right (a mirrored cell of a composed page starts flopped), its type still reading forwards">&#x21C6; Flop H</button>`;
+  html += `<button onclick="setCellFlop('y')" class="${fl.includes('y') ? 'on' : ''}" title="Flop vertically: the layout mirrored top to bottom, its type still reading forwards">&#x21C5; Flop V</button>`;
   if (ov.game && !(_mgPlay && _mgPlay.cell === cellMeta.index)) {
     html += '<button onclick="resumeCellGame()" title="Play on from the paused moment">&#9654; Resume</button>';
     html += '<button onclick="clearCellGame()" title="Forget the paused moment: the loop plays again">New game</button>';
@@ -27947,6 +29303,7 @@ document.addEventListener('keydown', (e) => {
 window.setCellArchetype = setCellArchetype;
 window.setCellVariant = setCellVariant;
 window.setCellLocked = setCellLocked;
+window.setCellFlop = setCellFlop;
 window.clearSingleCellOverride = clearSingleCellOverride;
 window.copyCellStyle = copyCellStyle;
 window.regenCell = regenCell;
