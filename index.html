@@ -265,6 +265,16 @@
     #cell-tooltip .ce-pens button i { display: inline-block; width: 8px; height: 8px; margin-right: 4px; vertical-align: -1px; border: 1px solid var(--pen, #888); background: transparent; }
     #cell-tooltip .ce-pens button.on { border-color: var(--pen, #00ff88); color: #e8f0f0; background: #111022; }
     #cell-tooltip .ce-pens button.on i { background: var(--pen, #00ff88); }
+    #cell-tooltip .ce-text { color: #5a6a80; font-size: 9px; }
+    #cell-tooltip .ce-text b { color: #ffcc66; }
+    #cell-tooltip .ce-text button { background: #0d0a18; border: 1px solid #1a1a2e; color: #88ffcc; font-family: monospace; font-size: 9px; padding: 1px 6px; cursor: pointer; margin-left: 4px; }
+    #cell-tooltip .ce-text button:hover { border-color: #00ff88; }
+    /* the selected cell's texts, as boxes over the canvas: click one to change it */
+    #text-boxes .tb { position: fixed; z-index: 90; cursor: text; border: 1px dotted #00e5ff40; box-sizing: border-box; }
+    #text-boxes .tb:hover { border: 1px solid #00e5ff; background: #00e5ff18; }
+    #text-boxes .tb.edited { border: 1px dotted #ffcc66cc; }
+    #text-boxes .tb.edited:hover { border-style: solid; background: #ffcc6618; }
+    #text-edit { position: fixed; z-index: 300; box-sizing: border-box; background: #0a0612; color: #e8f0f0; border: 1px solid #00e5ff; font-family: monospace; padding: 0 4px; outline: none; box-shadow: 0 0 14px #00e5ff44; }
     .edit-mode-btn { width: 100%; margin-top: 6px !important; transition: border-color 0.15s, color 0.15s; }
     .edit-mode-btn.active { border-color: #00ff88 !important; color: #00ff88 !important; background: #0a1a12 !important; }
     details.collapsible { margin-top: 10px; }
@@ -434,6 +444,8 @@
       margin-left: auto; float: right;
     }
     .rand-toggle:hover { color: #00e5ff; }
+    .control-group > .rand-toggle { display: inline-flex; float: right; color: #5a6a80; font-size: 0.72em; margin: 0; }
+    .control-group > .rand-toggle:hover { color: #00e5ff; }
     /* Treatment layer stack */
     .fx-row {
       margin-bottom: 4px; padding: 0; background: rgba(0,255,136,0.03);
@@ -757,6 +769,7 @@
       </div>
       <div id="panel-multi" class="mode-panel">
         <div class="control-group">
+          <label class="rand-toggle" data-tip="Off: Randomize leaves the layout (Random or Composed) as you set it."><input type="checkbox" id="rand-layout" checked> rand</label>
           <label data-tip="Random splits the page into cells by chance. Composed lays its sections out on purpose, by a scheme with a symmetry, a rhythm of widths and a nesting.">Layout</label>
           <select id="multi-layout" onchange="updateState('multi.layout', this.value); syncLayoutMode()">
             <option value="random">Random</option>
@@ -767,6 +780,7 @@
           <div class="row">
             <div class="control-group">
               <label data-tip="The plan of the page. Carpet: a field in rings of borders. Courthouse Steps: strips in pairs round a field. Log Cabin: strips spiralling in. Triptych: a centre panel and two wings. Colonnade: columns and bays. Pinwheel: four arms turning. Cross: a column crossed by a band. Nine-Patch: three by three, nested. Strata: courses in running bond. Canon: a manuscript page. Auto deals one per seed.">Scheme</label>
+              <label class="rand-toggle" data-tip="Off: Randomize leaves the scheme as you set it (Auto still deals one per seed)."><input type="checkbox" id="rand-scheme" checked> rand</label>
               <select id="composed-scheme" onchange="updateState('multi.composed.scheme', this.value)">
                 <option value="auto">Auto</option>
                 <option value="carpet">Carpet</option>
@@ -779,10 +793,23 @@
                 <option value="ninepatch">Nine-Patch</option>
                 <option value="strata">Strata</option>
                 <option value="canon">Canon</option>
+                <option value="tartan">Tartan</option>
+                <option value="spiral">Spiral</option>
+                <option value="mondrian">Mondrian</option>
+                <option value="cockpit">Cockpit</option>
+                <option value="sampler">Sampler</option>
+                <option value="parquet">Parquet</option>
+                <option value="arrangement">Arrangement</option>
+                <option value="cascade">Cascade</option>
+                <option value="columns">Columns</option>
+                <option value="rows">Rows</option>
+                <option value="colvary">Varied Columns</option>
+                <option value="rowvary">Varied Rows</option>
               </select>
             </div>
             <div class="control-group">
               <label data-tip="How the widths of strips and panels run. Even; Alternating, wide and narrow by turns; Palindrome, mirrored about the middle; Golden, each the last times phi; Fibonacci; Euclidean, wide ones spread as evenly as they go; Harmonic, the ratios of musical intervals. Auto takes one that suits the scheme.">Rhythm</label>
+              <label class="rand-toggle" data-tip="Off: Randomize leaves the rhythm as you set it (Auto still takes one that suits the scheme)."><input type="checkbox" id="rand-rhythm" checked> rand</label>
               <select id="composed-rhythm" onchange="updateState('multi.composed.rhythm', this.value)">
                 <option value="auto">Auto</option>
                 <option value="even">Even</option>
@@ -2221,6 +2248,30 @@ let _undoStack = [];
 let _redoStack = [];
 let _cellClipboard = null;  // { archetype, variant, scale }
 let _cellTextLog = [];     // Tracks text draw positions within current cell for treatment effects
+// Edited text. Every text a cell draws takes the next number of the cell's run (t0, t1, ...; the hero
+// word is h), whether or not this frame shows it, so a number names the same text on every frame. The
+// user's edits are kept under those numbers in the cell's override (cellOverrides[i].text) and swapped
+// in as the text is drawn, after the panel has made every choice from the original, so nothing else
+// moves. The record's nodes for each text carry its number (_txt), for the editor to find it on the page
+let _txtOrd = 0;           // the next text number in this cell
+let _txtOv = null;         // this cell's edited texts, or null
+let _txtLog = null;        // this cell's texts as drawn: number -> { orig, str }
+let _txtLogs = [];         // each cell's _txtLog, by cell index
+let _txtPend = null;       // the original of a text a helper swapped early (it measures before it draws)
+function _txtEdit(str, key) {
+  let orig = _txtPend && _txtPend.key === key ? _txtPend.orig : str, out = _txtOv && typeof _txtOv[key] === 'string' ? _txtOv[key] : str;
+  _txtPend = null;
+  if (_txtLog) _txtLog[key] = { orig: String(orig), str: String(out) };
+  return out;
+}
+// the edit for the next text drawn (a helper that aligns a text measures it before it draws it)
+function _txtPeek(str) {
+  let key = 't' + _txtOrd;
+  if (!_txtOv || typeof _txtOv[key] !== 'string') return str;
+  _txtPend = { key, orig: str };
+  return _txtOv[key];
+}
+function _txtTag(par, n0, key) { if (par) for (let i = n0; i < par.children.length; i++) par.children[i]._txt = key; }
 let _cellFlop = '';        // the cell's flop while it is composed ('', 'x', 'y', 'xy'): type drawn as outlines groups itself as 'hero-word' so the flop keeps it readable
 
 // Build composition bus (called once in generate() before cell loop)
@@ -4757,6 +4808,8 @@ function _measureBuiltinText(str, fontSize) {
 // Primary text drawing — uses loaded fonts when available, builtin otherwise
 function drawFallbackText(str, x, y, fontSize) {
   fontSize = Math.max(fontSize, getMinTextSizePx());
+  let key = 't' + (_txtOrd++), par = svgRec.groupStack[svgRec.groupStack.length - 1], n0 = par ? par.children.length : 0;
+  str = _txtEdit(str, key);
   if (_cellPRNG) { // getTextRenderer makes its draw even before fonts load (then returns builtin)
     // CRITICAL: Always call getTextRenderer to consume PRNG for font selection,
     // even when drawing is suppressed. This keeps the PRNG stream stable.
@@ -4765,6 +4818,7 @@ function drawFallbackText(str, x, y, fontSize) {
   } else {
     if (!_drawingSuppressed) _drawBuiltinText(str, x, y, fontSize);
   }
+  _txtTag(par, n0, key);
   // Track text position for treatment effects (only during cell composition, not suppressed)
   if (!_drawingSuppressed && _cellTextLog && str.length > 0) {
     _cellTextLog.push({ x, y, fontSize, str });
@@ -5631,6 +5685,204 @@ const ComposedLayout = (() => {
   SCHEMES.strata.rhythms = ['euclid', 'alt', 'fib', 'harmonic'];
   SCHEMES.canon.rhythms = ['golden', 'fib', 'euclid'];
 
+
+  // Strips across the whole block, all columns or all rows. Even: one width, an odd count (five or seven,
+  // two more a step of nesting), panels and bands by turns out from a panel in the middle, so the page mirrors about it.
+  // Varied: widths by the rhythm, mirrored about the middle or (on some seeds) running from one side to
+  // the other; strips under 72 px run as bands, the rest hold panels however long they are
+  function strips(R, P, o, cols, vary) {
+    let L = cols ? R.w : R.h, mirror = !vary || P.nextFloat() < 0.65, n, ws;
+    for (n = odd(5 + 2 * Math.min(3, o.depth) + (P.nextFloat() < 0.5 ? 0 : 2)); n > 3; n -= 2) {
+      ws = !vary ? Array(n).fill(1) : mirror ? symRhythm(o.rhythm, n, P) : rhythmW(o.rhythm, n, P);
+      if (L * Math.min(...ws) / sum(ws) >= o.ms * (vary ? 0.55 : 1.2)) break;
+    }
+    if (n <= 3) ws = !vary ? [1, 1, 1] : mirror ? symRhythm(o.rhythm, 3, P) : rhythmW(o.rhythm, 3, P);
+    let mid = (ws.length - 1) / 2, cells = segs(cols ? R.x : R.y, L, ws).map(([a, l], i) => {
+      let role = vary ? 'strip' : Math.abs(i - mid) % 2 ? 'stripe' : 'strip';
+      return cols ? rc(a, R.y, l, R.h, role) : rc(R.x, a, R.w, l, role);
+    });
+    return { cells, group: mirror ? [cols ? 'mx' : 'my'] : [] };
+  }
+
+  // ---- more schemes (2026-11-16). Auto deals them on a second roll of the seed, so a page Auto gave one
+  // of the first ten keeps it unless that roll moves it here (the 22 come out equally likely)
+  const TRIALS = {
+    // TARTAN: a sett, one stripe order across and down, mirrored about the middle: wide grounds between
+    // groups of one or two thin stripes, a stripe at each edge. Ground on ground is a panel (the middle one
+    // the field), stripe on ground a band, stripe on stripe a small block. Two mirrors.
+    tartan(R, P, o) {
+      let full, t;
+      for (let h = 2 + Math.min(2, o.depth); h >= 1; h--) {
+        let half = [], gw = rhythmW(o.rhythm, h, P);
+        for (let i = 0; i < h; i++) { let n = P.nextFloat() < 0.5 ? 1 : 2; for (let k = 0; k < n; k++) half.push(['s', 1]); half.push(['g', gw[i]]); }
+        full = half.concat(half.slice(0, -1).reverse());
+        t = Math.max(o.ms * 0.55, Math.min(R.w, R.h) * 0.035);
+        let ns = full.filter(x => x[0] === 's').length, gs = sum(full.filter(x => x[0] === 'g').map(x => x[1])), gmin = Math.min(...full.filter(x => x[0] === 'g').map(x => x[1]));
+        if ((Math.min(R.w, R.h) - ns * t) * gmin / gs >= o.ms * 1.3) break;
+      }
+      let axis = (o0, len) => {
+        let ns = full.filter(x => x[0] === 's').length, gs = sum(full.filter(x => x[0] === 'g').map(x => x[1])), rest = len - ns * t, out = [], a = o0;
+        for (let [k, w] of full) { let l = k === 's' ? t : rest * w / gs; out.push([k, a, l]); a += l; }
+        return out;
+      };
+      let X = axis(R.x, R.w), Y = axis(R.y, R.h), mid = (full.length - 1) / 2, cells = [];
+      Y.forEach(([ky, y, h], j) => X.forEach(([kx, x, w], i) => cells.push(rc(x, y, w, h, kx === 'g' && ky === 'g' ? (i === mid && j === mid ? 'field' : 'panel') : kx === 's' && ky === 's' ? 'corner' : 'band'))));
+      return { cells, group: ['mx', 'my'] };
+    },
+
+    // SPIRAL: whirling golden cuts: a piece 1 - 1/phi of the block taken from one side, then from the next
+    // side round, and so on in toward an eye (on a golden page the pieces are the golden spiral's squares).
+    // With nesting, a strip along each piece's inner edge runs on as one spiralling band. The largest
+    // piece is the field; the rest rhyme by turns.
+    spiral(R, P, o) {
+      let cells = [], x0 = R.x, y0 = R.y, x1 = R.x + R.w, y1 = R.y + R.h, side = Math.floor(P.nextFloat() * 4), dir = P.nextFloat() < 0.5 ? 1 : -1, f = 1 - 1 / PHI;
+      for (let k = 0; k < 24; k++) {
+        let w = x1 - x0, hh = y1 - y0, across = side % 2 === 0, q = (across ? w : hh) * f;
+        if (q < o.ms * 1.1 || (across ? hh : w) < o.ms * 1.1 || (across ? w : hh) - q < o.ms * 1.1) break;
+        let S = side === 0 ? rc(x0, y0, q, hh) : side === 1 ? rc(x0, y0, w, q) : side === 2 ? rc(x1 - q, y0, q, hh) : rc(x0, y1 - q, w, q);
+        if (side === 0) x0 += q; else if (side === 1) y0 += q; else if (side === 2) x1 -= q; else y1 -= q;
+        let t = clamp(Math.min(S.w, S.h) * 0.16, o.ms * 0.5, o.ms * 1.0), inner = (side + 2) % 4, role = k === 0 ? 'field' : 'panel', ob = k ? 'turn' + (k % 2) : undefined;
+        if (o.depth >= 1 && Math.min(S.w, S.h) > t * 3.5) {
+          let st = inner === 0 ? rc(S.x, S.y, t, S.h) : inner === 1 ? rc(S.x, S.y, S.w, t) : inner === 2 ? rc(S.x + S.w - t, S.y, t, S.h) : rc(S.x, S.y + S.h - t, S.w, t);
+          st.role = 'band'; st.orbit = 'spiral'; cells.push(st);
+          cells.push(rc(S.x + (inner === 0 ? t : 0), S.y + (inner === 1 ? t : 0), S.w - (inner % 2 === 0 ? t : 0), S.h - (inner % 2 === 1 ? t : 0), role, ob));
+        } else cells.push(rc(S.x, S.y, S.w, S.h, role, ob));
+        side = (((side + dir) % 4) + 4) % 4;
+      }
+      cells.push(rc(x0, y0, x1 - x0, y1 - y0, 'panel', 'eye'));
+      return { cells, group: [] };
+    },
+
+    // MONDRIAN: the block cut at golden places by bars (bands, heavier for the first cuts), the larger part
+    // cut again more often than the smaller; the largest piece is the field. No symmetry: balance.
+    mondrian(R, P, o) {
+      let cells = [], leaves = [], t0 = Math.max(o.ms * 0.5, Math.min(R.w, R.h) * 0.035);
+      let go = (Q, d, big) => {
+        let vert = Q.w >= Q.h, L = vert ? Q.w : Q.h, t = t0 * [1.4, 1, 0.8, 0.7][Math.min(3, d)];
+        let fs = [1 / PHI, 1 - 1 / PHI, 1 / (PHI * PHI), 1 - 1 / (PHI * PHI)].filter(f => L * f - t / 2 > o.ms * 1.3 && L * (1 - f) - t / 2 > o.ms * 1.3);
+        if (!fs.length || d >= 2 + o.depth || (d >= 1 && P.nextFloat() > (big ? 0.85 : 0.5))) { leaves.push(Q); return; }
+        let f = pick(P, fs), cut = L * f - t / 2, A, B;
+        if (vert) { cells.push(rc(Q.x + cut, Q.y, t, Q.h, 'band', 'bar' + Math.min(d, 2))); A = rc(Q.x, Q.y, cut, Q.h); B = rc(Q.x + cut + t, Q.y, Q.w - cut - t, Q.h); }
+        else { cells.push(rc(Q.x, Q.y + cut, Q.w, t, 'band', 'bar' + Math.min(d, 2))); A = rc(Q.x, Q.y, Q.w, cut); B = rc(Q.x, Q.y + cut + t, Q.w, Q.h - cut - t); }
+        let aBig = A.w * A.h >= B.w * B.h;
+        go(A, d + 1, aBig); go(B, d + 1, !aBig);
+      };
+      go(R, 0, true);
+      let big = leaves.reduce((a, b) => a.w * a.h >= b.w * b.h ? a : b);
+      leaves.forEach(q => cells.push(rc(q.x, q.y, q.w, q.h, q === big ? 'field' : 'panel')));
+      return { cells, group: [] };
+    },
+
+    // COCKPIT: a status bar over all and a ticker under it, mirrored instrument stacks down each side
+    // (with nesting a scale strip inside each), and between them the viewport, a scale under it and a row
+    // of readouts. One mirror.
+    cockpit(R, P, o) {
+      let cells = [], th = Math.max(o.ms * 0.6, R.h * 0.045), bh = th * (1 + 0.4 * P.nextFloat());
+      let nT = odd(clamp(Math.round(R.w / (th * 6)), 3, 9)), nB = odd(clamp(Math.round(R.w / (bh * 9)), 1, 5));
+      for (let [a, l] of segs(R.x, R.w, symRhythm(o.rhythm, nT, P))) cells.push(rc(a, R.y, l, th, 'band'));
+      for (let [a, l] of segs(R.x, R.w, symRhythm(o.rhythm, nB, P))) cells.push(rc(a, R.y + R.h - bh, l, bh, 'band'));
+      let y0 = R.y + th, y1 = R.y + R.h - bh, cw = R.w * (0.16 + 0.05 * P.nextFloat()), sw = o.depth >= 1 ? Math.max(o.ms * 0.5, R.w * 0.035) : 0;
+      let nS = 3 + Math.floor(P.nextFloat() * (2 + o.depth)), ws = rhythmW(o.rhythm, nS, P);
+      for (let side of [0, 1]) {
+        let x = side ? R.x + R.w - cw : R.x;
+        for (let [a, l] of segs(y0, y1 - y0, ws)) cells.push(rc(x, a, cw, l, 'panel'));
+        if (sw) cells.push(rc(side ? R.x + R.w - cw - sw : R.x + cw, y0, sw, y1 - y0, 'band'));
+      }
+      let vx = R.x + cw + sw, vw = R.w - 2 * (cw + sw), rh = (y1 - y0) * (0.14 + 0.06 * P.nextFloat()), sh = Math.max(o.ms * 0.45, (y1 - y0) * 0.035);
+      let nR = odd(clamp(Math.round(vw / (rh * 1.3)), 1, 7));
+      cells.push(rc(vx, y0, vw, y1 - y0 - rh - sh, 'field'), rc(vx, y1 - rh - sh, vw, sh, 'band'));
+      for (let [a, l] of segs(vx, vw, symRhythm(o.rhythm, nR, P))) cells.push(rc(a, y1 - rh, l, rh, 'panel'));
+      return { cells, group: ['mx'] };
+    },
+
+    // SAMPLER: a quilt of blocks set like a checkerboard, two block designs (each laid out by another
+    // scheme) by turns, sashing strips between the blocks and cornerstones where the sashing crosses.
+    // Every A block is the same layout, every B block too; inside a block, its own mirrors hold
+    sampler(R, P, o) {
+      let cells = [], cols = R.w > R.h * 1.2 ? 3 : 2 + (o.depth >= 2 ? 1 : 0), sash = Math.max(o.ms * 0.45, Math.min(R.w, R.h) * 0.03);
+      let rows = clamp(Math.round((R.h - sash) / ((R.w - sash) / cols)), 2, 5), pool = ['carpet', 'courthouse', 'logcabin', 'pinwheel', 'ninepatch', 'cross'];
+      let tA = pick(P, pool), tB = pick(P, pool.filter(x => x !== tA)), seeds = [P.nextFloat(), P.nextFloat()];
+      let bw = (R.w - (cols + 1) * sash) / cols, bh = (R.h - (rows + 1) * sash) / rows;
+      for (let j = 0; j <= rows; j++) for (let i = 0; i <= cols; i++) {
+        let x = R.x + i * (bw + sash), y = R.y + j * (bh + sash);
+        cells.push(rc(x, y, sash, sash, 'corner', 'stone'));
+        if (i < cols) cells.push(rc(x + sash, y, bw, sash, 'band', 'sashH'));
+        if (j < rows) cells.push(rc(x, y + sash, sash, bh, 'band', 'sashV'));
+        if (i < cols && j < rows) {
+          let ti = (i + j) % 2, B = rc(x + sash, y + sash, bw, bh), Q = new PRNG('sampler' + seeds[ti]), S = SCHEMES[ti ? tB : tA];
+          let oo = { depth: Math.max(0, o.depth - 1), ms: o.ms * 0.8, rhythm: S.rhythms[Math.floor(Q.nextFloat() * S.rhythms.length)] };
+          let res = S(B, Q, oo), sub = res.cells.filter(c => c.w > 1 && c.h > 1);
+          orbits(sub, B, res.group);
+          for (let c of sub) { c.orbit = 'blk' + ti + ':' + c.orbitId; c.flipKeep = c.flip; delete c.orbitId; delete c.flip; cells.push(c); }
+        }
+      }
+      return { cells, group: [] };
+    },
+
+    // PARQUET: basketweave: square tiles of two or three strips, laid across and down by turns like a
+    // checkerboard, all bands (the across strips one kind, the down another); with nesting, a medallion
+    // of tiles in the middle left out for the field. Two mirrors.
+    parquet(R, P, o) {
+      let cells = [], n = 2 + Math.floor(P.nextFloat() * 2), T0 = o.ms * n * (1.25 + 0.4 * P.nextFloat());
+      let cols = odd(Math.max(3, Math.round(R.w / T0))), rows = odd(Math.max(3, Math.round(R.h / (R.w / cols)))), tw = R.w / cols, th = R.h / rows;
+      let mc = o.depth >= 1 ? odd(Math.max(1, Math.round(cols * (0.25 + 0.12 * o.depth)))) : 0, mr = o.depth >= 1 ? odd(Math.max(1, Math.round(rows * (0.25 + 0.12 * o.depth)))) : 0;
+      let ci0 = (cols - mc) / 2, cj0 = (rows - mr) / 2;
+      for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) {
+        if (mc && i >= ci0 && i < ci0 + mc && j >= cj0 && j < cj0 + mr) continue;
+        let x = R.x + i * tw, y = R.y + j * th, across = (i + j) % 2 === 0;
+        for (let k = 0; k < n; k++) cells.push(across ? rc(x, y + k * th / n, tw, th / n, 'band', 'across') : rc(x + k * tw / n, y, tw / n, th, 'band', 'down'));
+      }
+      if (mc) cells.push(rc(R.x + ci0 * tw, R.y + cj0 * th, mc * tw, mr * th, 'field'));
+      return { cells, group: ['mx', 'my'] };
+    },
+
+    // ARRANGEMENT: a sequencer's arrangement: a ruler over tracks of clips, a head panel at each track's
+    // start. Each track a clip more or fewer than the one above (the counts in a repeating order), its
+    // long and short clips by turns, a step on from the track above, so the clips stagger down the page;
+    // thin tracks run as bands. Long clips rhyme, short clips rhyme, heads rhyme.
+    arrangement(R, P, o) {
+      let cells = [], hw = R.w * (0.12 + 0.04 * P.nextFloat()), rul = Math.max(o.ms * 0.45, R.h * 0.03), x0 = R.x + hw, cw = R.w - hw;
+      let n = 5 + o.depth * 2 + Math.floor(P.nextFloat() * 3), hs = rhythmW(o.rhythm, n, P), N0 = 2 + Math.floor(P.nextFloat() * 2), drift = pick(P, [[0, 1, 2, 1], [0, 1], [0, 2, 1, 3]]);
+      cells.push(rc(R.x, R.y, hw, rul, 'corner', 'origin'), rc(x0, R.y, cw, rul, 'band', 'ruler'));
+      segs(R.y + rul, R.h - rul, hs).forEach(([y, h], k) => {
+        cells.push(rc(R.x, y, hw, h, 'panel', 'head'));
+        let m = N0 + drift[k % drift.length], ws = Array.from({ length: m }, (_, i) => (i + k) % 2 ? 1 : PHI);
+        segs(x0, cw, ws).forEach(([x, w], i) => cells.push(rc(x, y, w, h, 'panel', 'clip' + ((i + k) % 2))));
+      });
+      return { cells, group: [] };
+    },
+
+    // CASCADE: a golden grid (each column and row 1/phi of the last) with its diagonal the steps, the
+    // largest the field; the cells on each diagonal rhyme, so the pattern runs down the page in
+    // shrinking echoes. From the top left or the top right
+    cascade(R, P, o) {
+      let cells = [], n = 4 + o.depth + Math.floor(P.nextFloat() * 2), r = 1 / PHI, rev = P.nextFloat() < 0.5;
+      let ws = Array.from({ length: n }, (_, i) => Math.pow(r, i)), xs = segs(R.x, R.w, ws), ys = segs(R.y, R.h, ws);
+      for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+        let [x, w] = xs[i], [y, h] = ys[j];
+        if (rev) x = 2 * R.x + R.w - x - w;
+        cells.push(rc(x, y, w, h, i === 0 && j === 0 ? 'field' : 'panel', i === j ? (i ? 'step' + (i % 2) : undefined) : 'd' + (i - j)));
+      }
+      return { cells, group: [] };
+    }
+  };
+  Object.assign(TRIALS, {
+    columns: (R, P, o) => strips(R, P, o, true, false),
+    rows: (R, P, o) => strips(R, P, o, false, false),
+    colvary: (R, P, o) => strips(R, P, o, true, true),
+    rowvary: (R, P, o) => strips(R, P, o, false, true)
+  });
+  TRIALS.columns.rhythms = TRIALS.rows.rhythms = ['even'];
+  TRIALS.colvary.rhythms = TRIALS.rowvary.rhythms = ['golden', 'fib', 'pal', 'harmonic', 'alt', 'euclid'];
+  TRIALS.tartan.rhythms = ['pal', 'alt', 'golden', 'even'];
+  TRIALS.spiral.rhythms = ['golden'];
+  TRIALS.mondrian.rhythms = ['golden'];
+  TRIALS.cockpit.rhythms = ['pal', 'alt', 'harmonic', 'even'];
+  TRIALS.sampler.rhythms = ['even'];
+  TRIALS.parquet.rhythms = ['even'];
+  TRIALS.arrangement.rhythms = ['alt', 'euclid', 'harmonic', 'fib'];
+  TRIALS.cascade.rhythms = ['golden'];
+
   // Cells that meet on a mirror axis and are each other's image join into one
   // (a field or a cap that spans the axis)
   function mergeOnAxes(cells, R) {
@@ -5672,6 +5924,7 @@ const ComposedLayout = (() => {
     cells.forEach(c => {
       let l = lead[c.orbitId], mx = 2 * R.x + R.w - l.x - l.w, my = 2 * R.y + R.h - l.y - l.h;
       c.flip = c === l || Math.abs(c.w - l.w) > 1 || Math.abs(c.h - l.h) > 1 ? '' : same(c, mx, l.y) && (group.includes('mx') || group.includes('r180')) ? 'x' : same(c, l.x, my) && group.includes('my') ? 'y' : same(c, mx, my) ? 'xy' : '';
+      if (c.flipKeep !== undefined) c.flip = c.flipKeep; // a flop set inside a nested layout (the sampler's blocks)
     });
     return n;
   }
@@ -6803,7 +7056,9 @@ const ComposedLayout = (() => {
   const dropFrom = (cg, k0) => { while (svgRec.groupStack.length > 2) svgRec.endGroup(); cg.children.splice(k0); };
 
   // Thin cells (under 72 px across, or 2.5:1 and longer) take a band, the field never
-  const isBandCell = (lay, w, h) => !!lay && lay.role !== 'field' && (Math.min(w, h) < 72 || Math.max(w / h, h / w) >= 2.5);
+  // (a strip, of the all-columns and all-rows schemes, holds a panel however long it is unless it is under
+  // 72 px; a stripe is always a band)
+  const isBandCell = (lay, w, h) => !!lay && lay.role !== 'field' && (lay.role === 'stripe' || Math.min(w, h) < 72 || (lay.role !== 'strip' && Math.max(w / h, h / w) >= 2.5));
 
   // Draw cell i's band: its kind pinned by the cell's editor, or dealt per orbit; returns the kind.
   // mo = { flop, page }: the cell's flop and the page's content rect, for the motion. An animation frame
@@ -6875,6 +7130,7 @@ const ComposedLayout = (() => {
   function fillWith(alt, padded, inner, sc, lay, cg, k0) {
     dropFrom(cg, k0);
     _cellTextLog = [];
+    _txtOrd = 0; if (_txtLog) for (let k in _txtLog) delete _txtLog[k];
     _cellVariantInfo = ''; _cellOverrideVariant = null;
     let R = SELF_FRAMED_ARCHETYPES.has(alt.arch) ? padded : inner, base = seedNumber(state.seed), saved = _drawingSuppressed;
     try { composeArchetypeCell(alt.arch, R, sc, new PRNG((base ^ Math.imul(lay.orbit + 1, 0x85EBCA6B) ^ (alt.attempt + 1) * 0x27D4EB2F) >>> 0)); }
@@ -6884,11 +7140,12 @@ const ComposedLayout = (() => {
   }
 
   // ---- the page: lay the cells out by a scheme, find the orbits, inset the gutters
-  const SCHEME_NAMES = Object.keys(SCHEMES);
+  const FIRST_NAMES = Object.keys(SCHEMES), MORE_NAMES = Object.keys(TRIALS), SCHEME_NAMES = FIRST_NAMES.concat(MORE_NAMES);
   function compose(rect, gap, opt) {
     let seed = String(state.seed);
-    let scheme = SCHEMES[opt.scheme] ? opt.scheme : SCHEME_NAMES[Math.floor(new PRNG(seed + '#layscheme').nextFloat() * SCHEME_NAMES.length)];
-    let P = new PRNG(seed + '#lay#' + scheme), S = SCHEMES[scheme];
+    let roll = new PRNG(seed + '#layscheme').nextFloat(), more = new PRNG(seed + '#layscheme2').nextFloat() < MORE_NAMES.length / SCHEME_NAMES.length;
+    let scheme = SCHEMES[opt.scheme] || TRIALS[opt.scheme] ? opt.scheme : more ? MORE_NAMES[Math.floor(roll * MORE_NAMES.length)] : FIRST_NAMES[Math.floor(roll * FIRST_NAMES.length)];
+    let P = new PRNG(seed + '#lay#' + scheme), S = SCHEMES[scheme] || TRIALS[scheme];
     let o = { depth: Math.max(0, Math.min(3, opt.depth | 0)), ms: Math.max(60, opt.minCell, Math.min(rect.w, rect.h) / 15) };
     let rhythmRoll = P.nextFloat();
     o.rhythm = opt.rhythm && opt.rhythm !== 'auto' ? opt.rhythm : S.rhythms[Math.floor(rhythmRoll * S.rhythms.length)];
@@ -7655,7 +7912,7 @@ function kitWeight(role) {
 
 // Text anchored left / center / right of x. `seed` makes it animate like drawAnimText.
 function kitText(str, x, y, size, align, seed, hint) {
-  str = String(str);
+  str = String(_txtPeek(str));
   if (align === 'center' || align === 'right') {
     let w = measureFallbackText(str, size);
     x -= align === 'center' ? w / 2 : w;
@@ -8412,6 +8669,7 @@ function _radText(str, x, y, size, align, seed, hint) {
     if (prof.active && !applyPresence(prof, animCtx.frameIndex, animCtx.frameCount, animCtx.t).visible) {
       if (align === 'center' || align === 'right') measureFallbackText(str, size);
       measureFallbackText(str, size);
+      _txtOrd++; // a text this frame hides still takes its number
       return;
     }
   }
@@ -9864,7 +10122,7 @@ function _txBold(size) { kitWeight(size > getMinTextSizePx() * 2.2 ? 'heavy' : '
 
 // kitText with alignment measured by _txW.
 function _txText(str, x, y, size, align, seed, hint) {
-  str = String(str);
+  str = String(_txtPeek(str));
   if (align === 'center' || align === 'right') x -= align === 'center' ? _txW(str, size) / 2 : _txW(str, size);
   kitText(str, x, y, size, 'left', seed, hint);
 }
@@ -12701,6 +12959,7 @@ function composeHeroText(rect, s, prng) {
 
   // ---- Fit the word ----
   let font = _heroFont();
+  str = _txtEdit(str, 'h');
   let display = animated ? animatedText(str, 'heroScramble', elemSeed) : str;
   let animT = heroProf && animCtx ? animCtx.t : 0;
   let animPh = heroProf ? heroProf.phase : 0;
@@ -12842,7 +13101,7 @@ function composeHeroText(rect, s, prng) {
   }
 
   // ---- The word ----
-  let step = Math.max(1.2, size / 160);
+  let step = Math.max(1.2, size / 160), wPar = svgRec.groupStack[svgRec.groupStack.length - 1], w0 = wPar ? wPar.children.length : 0;
   _flopTypeBegin();
   if (shape) {
     let contours = shape.map(c => c.pts);
@@ -12913,6 +13172,7 @@ function composeHeroText(rect, s, prng) {
     drawFallbackText(display, heroOriginX, baseY, size);
   }
   _flopTypeEnd();
+  _txtTag(wPar, w0, 'h');
 
   // ---- Field: repeated word / Swiss arcs / modular grid in the free band ----
   if (fieldKind) {
@@ -14430,6 +14690,7 @@ function dgAnimText(str, x, y, size, seed, hint) {
 // Spend the font-selection draws that n skipped text calls would have made, so
 // labels that move in and out of view frame-to-frame keep the text stream aligned.
 function dgSpend(n) {
+  _txtOrd += n; // skipped texts still take their numbers
   if (!loadedFonts.ready || !_cellPRNG) return;
   for (let i = 0; i < n; i++) getTextRenderer(_cellScale, state.geometry.fontBias, _cellPRNG);
 }
@@ -14450,7 +14711,7 @@ function dgTextStreamBegin(prng) {
 function dgTextStreamEnd(saved) { _cellPRNG = saved.rng; _cellScale = saved.scale; }
 // Anchored animated text (kitText alignment + dgAnimText)
 function dgText(str, x, y, size, align, seed, hint) {
-  str = String(str);
+  str = String(_txtPeek(str));
   if (align === 'center' || align === 'right') { let w = measureFallbackText(str, size); x -= align === 'center' ? w / 2 : w; }
   dgAnimText(str, x, y, size, seed, hint);
 }
@@ -25609,10 +25870,12 @@ function generate(frameIndex) {
 
   svgRec.beginGroup('composition');
 
+  _txtLogs = [];
   for (let i = 0; i < cells.length; i++) {
     let cell = cells[i];
     let cellScale = cell.scale !== undefined ? cell.scale : state.scale;
     _cellScale = cellScale;
+    _txtOrd = 0; _txtOv = null; _txtLog = _txtLogs[i] = {};
     // Per-cell PRNG isolation: each cell gets an independent stream derived from
     // main prng. Main prng advances by exactly 1 value per cell, so overriding
     // one cell's archetype/variant cannot shift the stream for subsequent cells.
@@ -25781,6 +26044,7 @@ function generate(frameIndex) {
     _cellOverrideVariant = (_cellOv && _cellOv.variant) ? _cellOv.variant : null;
     if (rhyme && !(_cellOv && _cellOv.archetype) && !(_cellOv && _cellOv.variant) && rhyme.variant) _cellOverrideVariant = rhyme.variant;
     _cellTextLog = [];     // reset text position tracking
+    _txtOrd = 0; _txtOv = (_cellOv && _cellOv.text) || null; // the cell's text run starts here, with its edits
 
     // Update diversity tracking using ORIGINAL archetype (not override) so
     // overriding one cell doesn't shift diversity weights for subsequent cells
@@ -25959,6 +26223,7 @@ function generate(frameIndex) {
 
   // Treatments that span the page (the intrusion's links between cells)
   _cellTextLog = null;
+  _txtOv = null; _txtLog = null;
   treatPage();
 
   svgRec.endGroup();
@@ -26054,6 +26319,10 @@ function generate(frameIndex) {
   animCtx = null;
 
   noLoop();
+
+  syncAutoLabels();
+  // Edit mode: the selected cell's texts, as boxes to click (after layout settles)
+  if (_editMode || _tbLayer) setTimeout(refreshTextBoxes, 30);
 
   // Edit mode: draw selection highlight (canvas only, not SVG)
   if (_editMode && _metaForCell(_selectedCell)) {
@@ -27978,6 +28247,7 @@ function _sanitizeCellOverrides(ov) {
       if (f === 'archetype') { if (ARCHETYPE_DEFS[val] || val === 'band') clean.archetype = val; }
       else if (f === 'flop') { if (val === 'x' || val === 'y' || val === 'xy') clean.flop = val; }
       else if (f === 'pens') { if (Number.isInteger(val) && val >= 1 && val <= 7) clean.pens = val; }
+      else if (f === 'text') { if (val && typeof val === 'object') { let t = {}; for (let [tk, tv] of Object.entries(val)) if (/^(h|t\d{1,5})$/.test(tk) && typeof tv === 'string') t[tk] = tv.slice(0, 120); if (Object.keys(t).length) clean.text = t; } }
       else if (f === 'variant') { if (typeof val === 'string' && MG_RENAMED[val]) val = MG_RENAMED[val]; if (typeof val === 'string' && Object.values(VARIANT_DEFS).some(l => l && l.includes(val))) clean.variant = val; }
       else if (f === 'game') { if (val && typeof val === 'object' && typeof val.v === 'string' && val.st && typeof val.st === 'object' && JSON.stringify(val).length < 60000) clean.game = JSON.parse(JSON.stringify(val)); }
       else if (typeof val === 'number' || typeof val === 'boolean' || val === null) clean[f] = val;
@@ -28762,9 +29032,11 @@ function randomizeParams(prng) {
 
   // The layout: about a third of pages composed (drawn last, so every parameter above keeps its draw)
   if (isRandEnabled('rand-composition')) {
-    let rl = prng.nextFloat(), rd = prng.nextFloat(), rr = prng.nextFloat(), rb = prng.nextFloat();
-    state.multi.layout = rl < 0.35 ? 'composed' : 'random';
-    state.multi.composed = { scheme: 'auto', rhythm: 'auto', depth: rd < 0.25 ? 0 : rd < 0.75 ? 1 : 2, rhyme: rr < 0.7, bands: rb < 0.9 };
+    // Layout, Scheme and Rhythm each have a lock of their own (the draws are made either way)
+    let rl = prng.nextFloat(), rd = prng.nextFloat(), rr = prng.nextFloat(), rb = prng.nextFloat(), was = state.multi.composed || {};
+    if (isRandEnabled('rand-layout')) state.multi.layout = rl < 0.35 ? 'composed' : 'random';
+    state.multi.composed = { scheme: isRandEnabled('rand-scheme') ? 'auto' : was.scheme || 'auto', rhythm: isRandEnabled('rand-rhythm') ? 'auto' : was.rhythm || 'auto',
+                             depth: rd < 0.25 ? 0 : rd < 0.75 ? 1 : 2, rhyme: rr < 0.7, bands: rb < 0.9 };
   }
 }
 
@@ -28790,6 +29062,16 @@ function syncLayoutMode() {
   let composed = state.multi.layout === 'composed', box = document.getElementById('composed-params');
   if (box) box.style.display = composed ? '' : 'none';
   for (let el of document.querySelectorAll('#panel-multi .random-only')) el.style.display = composed ? 'none' : '';
+  syncAutoLabels();
+}
+// Auto in the Scheme and Rhythm menus names what it dealt this page ('Auto · Tartan')
+function syncAutoLabels() {
+  for (let [id, dealt] of [['composed-scheme', _layInfo && _layInfo.scheme], ['composed-rhythm', _layInfo && _layInfo.rhythm]]) {
+    let sel = document.getElementById(id);
+    if (!sel || !sel.options.length) continue;
+    let o = dealt && [...sel.options].find(x => x.value === dealt);
+    sel.options[0].text = o ? 'Auto \u00b7 ' + o.text : 'Auto';
+  }
 }
 
 function syncAllUI() {
@@ -29274,6 +29556,7 @@ function setCellArchetype(val) {
   if (!state.cellOverrides[k]) state.cellOverrides[k] = {};
   state.cellOverrides[k].archetype = val || null;
   state.cellOverrides[k].variant = null; // reset variant on archetype change
+  delete state.cellOverrides[k].text;    // the edited texts belonged to the old panel
   generate(); fixCanvasVisibility();
   refreshCellEditor();
 }
@@ -29285,6 +29568,7 @@ function setCellVariant(val) {
   let k = String(_selectedCell);
   if (!state.cellOverrides[k]) state.cellOverrides[k] = {};
   state.cellOverrides[k].variant = val || null;
+  delete state.cellOverrides[k].text;
   generate(); fixCanvasVisibility();
   refreshCellEditor();
 }
@@ -29372,6 +29656,7 @@ function regenCell(randomize) {
   }
   ov.reseed = 1 + Math.floor(Math.random() * 0x7FFFFFFE);
   delete ov.game;
+  delete ov.text; // new content: the edited texts belonged to the old
   generate(); fixCanvasVisibility();
   refreshCellEditor();
 }
@@ -29468,6 +29753,10 @@ function buildCellEditorHTML(cellMeta) {
     html += '</div></div>';
   }
 
+  // Text: click a text in the cell to change it
+  let nTxt = ov.text ? Object.keys(ov.text).length : 0;
+  html += `<div class="ce-section ce-text">Click a text in the cell to change it${nTxt ? ` &middot; <b>${nTxt}</b> changed<button onclick="clearCellTexts()" title="Put back the texts as the panel wrote them">Restore</button>` : ''}</div>`;
+
   // Actions
   html += '<div class="ce-actions">';
   html += '<button onclick="regenCell(false)" title="New content, same archetype">&#x27F3; Regen</button>';
@@ -29487,6 +29776,90 @@ function buildCellEditorHTML(cellMeta) {
 
   return html;
 }
+
+// ---- Text in place: in edit mode the selected cell's texts are boxes over the canvas; click one to
+// change it. An edit is kept under the text's number in the cell (cellOverrides[i].text); an empty edit,
+// or the original typed back, restores it
+function _cellTextBoxes(i) {
+  let comp = svgRec.groups.find(g => g.id === 'composition'), cg = comp && comp.children.find(g => g.id === 'cell-' + i), by = {}, log = _txtLogs[i] || {};
+  if (!cg) return [];
+  const walk = (node, A) => {
+    for (let n of node.children || []) {
+      if (n._txt) {
+        let bx = _recInkBox(n, A), b = by[n._txt];
+        if (isFinite(bx[0])) by[n._txt] = b ? [Math.min(b[0], bx[0]), Math.min(b[1], bx[1]), Math.max(b[2], bx[2]), Math.max(b[3], bx[3])] : bx;
+      } else if (n.children) walk(n, n.transform ? _affMul(A, parseTransformMatrix(n.transform)) : A);
+    }
+  };
+  let A0 = comp.transform ? parseTransformMatrix(comp.transform) : [1, 0, 0, 1, 0, 0];
+  walk(cg, cg.transform ? _affMul(A0, parseTransformMatrix(cg.transform)) : A0);
+  return Object.entries(by).filter(([k]) => log[k] && log[k].str.trim()).map(([key, box]) => ({ key, box, orig: log[key].orig, str: log[key].str }));
+}
+let _tbLayer = null;
+function refreshTextBoxes() {
+  if (!_tbLayer) { _tbLayer = document.createElement('div'); _tbLayer.id = 'text-boxes'; document.body.appendChild(_tbLayer); }
+  _tbLayer.innerHTML = '';
+  let canvas = document.querySelector('#canvas-container canvas');
+  if (!_editMode || _selectedCell === null || !canvas || (state.animation.enabled && state.animation.playing)) return;
+  let b = canvasDrawBox(canvas), cell = _selectedCell, edited = (state.cellOverrides[String(cell)] || {}).text || {};
+  let boxes = _cellTextBoxes(cell).sort((p, q) => (q.box[2] - q.box[0]) * (q.box[3] - q.box[1]) - (p.box[2] - p.box[0]) * (p.box[3] - p.box[1]));
+  for (let t of boxes) {
+    let x0 = b.left + t.box[0] * b.scale, y0 = b.top + t.box[1] * b.scale, w = (t.box[2] - t.box[0]) * b.scale, h = (t.box[3] - t.box[1]) * b.scale;
+    let pw = Math.max(0, 8 - w) / 2 + 2, ph = Math.max(0, 8 - h) / 2 + 2, el = document.createElement('div');
+    el.className = 'tb' + (t.key in edited ? ' edited' : '');
+    Object.assign(el.style, { left: (x0 - pw) + 'px', top: (y0 - ph) + 'px', width: (w + pw * 2) + 'px', height: (h + ph * 2) + 'px' });
+    el.title = (t.key === 'h' ? 'The hero word' : 'Text') + (t.key in edited ? ' (was: ' + t.orig + ')' : '') + ': click to change it';
+    el.addEventListener('click', e => { e.stopPropagation(); openTextEditor(cell, t, el); });
+    el.addEventListener('dblclick', e => e.stopPropagation());
+    el.addEventListener('mousedown', e => e.stopPropagation());
+    _tbLayer.appendChild(el);
+  }
+}
+window.addEventListener('resize', () => { if (_tbLayer && _tbLayer.childElementCount) refreshTextBoxes(); });
+document.addEventListener('scroll', () => { if (_tbLayer && _tbLayer.childElementCount) refreshTextBoxes(); }, true);
+
+function openTextEditor(cell, t, el) {
+  let old = document.getElementById('text-edit');
+  if (old) old.blur();
+  let r = el.getBoundingClientRect(), inp = document.createElement('input'), done = false;
+  inp.id = 'text-edit'; inp.type = 'text'; inp.value = t.str; inp.spellcheck = false; inp.maxLength = 120;
+  let fs = Math.max(11, Math.min(32, r.height * 0.7));
+  Object.assign(inp.style, { left: r.left + 'px', top: (r.top + r.height / 2 - (fs + 8) / 2) + 'px', width: Math.max(r.width + 32, 140) + 'px', height: (fs + 8) + 'px', fontSize: fs + 'px' });
+  let finish = keep => {
+    if (done) return;
+    done = true;
+    let v = inp.value;
+    inp.remove();
+    if (keep && v !== t.str) setCellText(cell, t.key, v, t.orig);
+  };
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+  });
+  inp.addEventListener('blur', () => finish(true));
+  document.body.appendChild(inp);
+  inp.focus(); inp.select();
+}
+
+function setCellText(cell, key, val, orig) {
+  if (cell === null || cell === undefined) return;
+  pushUndo();
+  let k = String(cell), ov = state.cellOverrides[k] || (state.cellOverrides[k] = {}), t = Object.assign({}, ov.text);
+  if (val === '' || val === orig) delete t[key]; else t[key] = val.slice(0, 120);
+  if (Object.keys(t).length) ov.text = t; else delete ov.text;
+  generate(); fixCanvasVisibility();
+  refreshCellEditor();
+}
+function clearCellTexts() {
+  if (_selectedCell === null) return;
+  let ov = state.cellOverrides[String(_selectedCell)];
+  if (!ov || !ov.text) return;
+  pushUndo();
+  delete ov.text;
+  generate(); fixCanvasVisibility();
+  refreshCellEditor();
+}
+window.clearCellTexts = clearCellTexts;
 
 // Refresh editor content without repositioning
 function refreshCellEditor() {
@@ -29753,6 +30126,7 @@ function applyEdgeDrag(edge, delta) {
       let k = String(hit.index);
       if (!state.cellOverrides[k]) state.cellOverrides[k] = {};
       state.cellOverrides[k].variant = nextVar;
+      delete state.cellOverrides[k].text;
       // Also pin the archetype so variant override works
       if (!state.cellOverrides[k].archetype) state.cellOverrides[k].archetype = arch;
       _selectedCell = hit.index;
